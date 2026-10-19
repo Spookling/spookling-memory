@@ -19,7 +19,7 @@ from . import hooks
 from .portability import read_archive
 from .store import Store
 
-HOST, PORT = "127.0.0.1", 8765
+HOST, PORT = "127.0.0.1", 7447
 POST_TYPES = ("application/json", "application/octet-stream")
 
 

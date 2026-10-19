@@ -106,7 +106,9 @@ const envValue = (text, k) => text.match(new RegExp(`^${k}=(.+)$`, 'm'))?.[1]?.t
 function startServer(ctx) {
   mkdirSync(ctx.mem, { recursive: true });
   const log = openSync(join(ctx.mem, 'server.log'), 'a');
-  const child = spawn('uv', ['run', '--project', SERVER_DIR, 'spookling-memory', 'serve', '--folder', '.memory', '--port', String(PORT)], {
+  const args = ['run', '--project', SERVER_DIR, 'spookling-memory', 'serve', '--folder', '.memory', '--port', String(PORT)];
+  if (ctx.keys.OPENROUTER_API_KEY) args.push('--model', 'typesafe/jev-router'); // Jev tags when an OpenRouter key was given
+  const child = spawn('uv', args, {
     cwd: ctx.project, detached: true, stdio: ['ignore', log, log], env: { ...process.env, ...ctx.keys },
   });
   child.on('error', () => {});

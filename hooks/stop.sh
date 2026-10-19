@@ -3,5 +3,5 @@
 # only what is new, and replies at once (the tagging runs after the reply), so Claude is not held.
 # stdin: the hook's JSON (session_id, transcript_path, stop_hook_active, ...). Exits 0 whatever happens.
 curl -sf --noproxy '*' --max-time 15 -H 'content-type: application/json' --data-binary @- \
-  "${SPOOKLING_MEMORY_URL:-http://127.0.0.1:8765}/v1/hook/stop" >/dev/null || true
+  "${SPOOKLING_MEMORY_URL:-http://127.0.0.1:7447}/v1/hook/stop" >/dev/null || true
 exit 0

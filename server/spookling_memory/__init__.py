@@ -1,6 +1,6 @@
 """Spookling Memory: the local memory server over memory-bench's spookling adapter. See README.md.
 
-    spookling-memory serve  [--folder .memory] [--port 8765] [--model M]   HTTP API on 127.0.0.1
+    spookling-memory serve  [--folder .memory] [--port 7447] [--model M]   HTTP API on 127.0.0.1
     spookling-memory mcp                                                    stdio MCP tools (client of serve)
     spookling-memory export [--folder .memory] FILE                         the two records, one archive
     spookling-memory import [--folder .memory] FILE                         restore into an empty folder
@@ -20,7 +20,7 @@ def main(argv: list[str] | None = None) -> None:
         s = sub.add_parser(name, help=what)
         s.add_argument("--folder", default=".memory", help="the memory folder (default .memory)")
         if name == "serve":
-            s.add_argument("--port", type=int, default=8765)
+            s.add_argument("--port", type=int, default=7447)
             s.add_argument("--model", help="writer model for tagging and the slow path (default: the adapter's)")
         else:
             s.add_argument("file")

@@ -11,7 +11,7 @@ from spookling_memory.api import create_app
 
 
 def client(store):
-    return TestClient(create_app(store), base_url="http://127.0.0.1:8765")
+    return TestClient(create_app(store), base_url="http://127.0.0.1:7447")
 
 
 def test_every_endpoint(open_store):

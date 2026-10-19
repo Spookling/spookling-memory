@@ -1,6 +1,6 @@
 """Stdio MCP server: the HTTP API's operations as tools, for Claude Code, Codex or any MCP client.
 
-A thin client of the local server (SPOOKLING_MEMORY_URL, default http://127.0.0.1:8765): one process owns a memory
+A thin client of the local server (SPOOKLING_MEMORY_URL, default http://127.0.0.1:7447): one process owns a memory
 folder, so the hooks and these tools share one memory. Start `spookling-memory serve` first.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ _open = urllib.request.build_opener(urllib.request.ProxyHandler({})).open  # nev
 
 
 def call(path: str, body: dict | None = None, raw: bytes | None = None):
-    url = os.environ.get("SPOOKLING_MEMORY_URL", "http://127.0.0.1:8765").rstrip("/") + path
+    url = os.environ.get("SPOOKLING_MEMORY_URL", "http://127.0.0.1:7447").rstrip("/") + path
     data = raw if raw is not None else None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method="GET" if data is None else "POST", headers={
         "content-type": "application/octet-stream" if raw is not None else "application/json"})

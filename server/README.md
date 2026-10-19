@@ -8,7 +8,7 @@ server side of three Claude Code hooks.
 ```bash
 cd server
 uv sync
-uv run spookling-memory serve --folder .memory          # http://127.0.0.1:8765, 127.0.0.1 only
+uv run spookling-memory serve --folder .memory          # http://127.0.0.1:7447, 127.0.0.1 only
 uv run spookling-memory serve --folder .memory --port 8800 --model anthropic/claude-haiku-4.5
 uv run spookling-memory mcp                             # stdio MCP; talks to serve at SPOOKLING_MEMORY_URL
 uv run spookling-memory export --folder .memory memory.spookling   # server stopped
