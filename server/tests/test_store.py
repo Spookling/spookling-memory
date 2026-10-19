@@ -39,6 +39,8 @@ def test_an_altered_log_line_is_refused(open_store, tmp_path):
     path.write_text(path.read_text().replace("Toyota Corolla", "Tesla Model 3"))
     with pytest.raises(ValueError, match="altered"):
         Store(tmp_path / "m", triage=Stub(TAGS))
+    path.write_text(path.read_text().replace("Tesla Model 3", "Toyota Corolla"))
+    assert len(open_store().mem.log.events) == 4  # the refused open left the folder unlocked
 
 
 def test_tail_ingest_logs_only_new_turns(open_store):

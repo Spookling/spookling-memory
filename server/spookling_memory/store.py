@@ -107,12 +107,16 @@ class Store:
             self._lockfile.close()
             raise RuntimeError(f"{self.folder} is open in another process (one server per memory folder)") from None
         self.adapter, self.lock, self._post = adapter, threading.RLock(), None
-        events, decisions = read_jsonl(self.folder / LOG), read_jsonl(self.folder / JUDGEMENTS)
-        self.mem = SpooklingMemory(**adapter)
-        load(self.mem, events, decisions)
-        self.written = (len(events), len(decisions))
-        self.mem.settle()
-        self._flush()  # a full sleep may judge items left pending: those judgements are records too
+        try:
+            events, decisions = read_jsonl(self.folder / LOG), read_jsonl(self.folder / JUDGEMENTS)
+            self.mem = SpooklingMemory(**adapter)
+            load(self.mem, events, decisions)
+            self.written = (len(events), len(decisions))
+            self.mem.settle()
+            self._flush()  # a full sleep may judge items left pending: those judgements are records too
+        except BaseException:
+            self._lockfile.close()
+            raise
 
     @contextmanager
     def _busy(self):
