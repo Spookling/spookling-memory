@@ -3,7 +3,7 @@ import json
 
 import pytest
 from bench.adapters.spookling.recall import ABSTAIN
-from conftest import HISTORY, NOW, turns
+from conftest import HISTORY, NOW, TAGS, Stub, turns
 from fastapi.testclient import TestClient
 
 from spookling_memory import hooks
@@ -117,3 +117,18 @@ def test_hooks_log_the_transcript_and_recall_for_the_prompt(open_store, tmp_path
 def test_an_empty_prompt_injects_nothing(open_store, prompt):
     c = client(open_store())
     assert c.post("/v1/hook/user-prompt-submit", json={"session_id": "x", "prompt": prompt}).json() == {}
+
+
+def test_a_missing_model_key_is_a_503_and_the_server_lives(open_store):
+    class NoKey(Stub):
+        def judge(self, turns, date, known):
+            raise SystemExit("OPENROUTER_API_KEY is not set")  # what bench.models does
+
+    store = open_store()
+    c = client(store)
+    store.mem.triage = NoKey(TAGS)
+    r = c.post("/v1/ingest", json={"id": "s1", "ts": "2024-05-22T10:00:00Z", "turns": turns(["I drive a Toyota Corolla, nothing fancy."])})
+    assert r.status_code == 503 and "OPENROUTER_API_KEY" in r.json()["detail"]
+    store.mem.triage = Stub(TAGS)
+    assert c.post("/v1/ingest", json={"id": "s2", "ts": "2024-05-23T10:00:00Z", "turns": turns(["How do I roast peppers?"])}).status_code == 200
+    assert c.get("/v1/stats").json()["n_events"] == 4  # the first session waited in memory and was written, tagged

@@ -63,6 +63,10 @@ def create_app(store: Store) -> FastAPI:
     async def refused(request: Request, e: ValueError):
         return JSONResponse({"detail": str(e)}, 409)
 
+    @app.exception_handler(RuntimeError)
+    async def unavailable(request: Request, e: RuntimeError):  # the writer model (no key, provider down): try again later
+        return JSONResponse({"detail": str(e)}, 503)
+
     @app.post("/v1/ingest")
     def ingest(s: SessionIn) -> dict:
         return {"logged": store.ingest(s.id, [t.model_dump() for t in s.turns], s.ts, s.agent, s.tail)}

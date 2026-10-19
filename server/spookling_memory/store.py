@@ -15,6 +15,7 @@ import json
 import os
 import re
 import threading
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -113,6 +114,16 @@ class Store:
         self.mem.settle()
         self._flush()  # a full sleep may judge items left pending: those judgements are records too
 
+    @contextmanager
+    def _busy(self):
+        """The store's one lock, and a model layer that cannot stop the server: bench.models calls sys.exit() when a
+        provider key is missing, which in a server thread kills the process."""
+        with self.lock:
+            try:
+                yield
+            except SystemExit as e:
+                raise RuntimeError(f"the writer model could not be called: {e}") from None
+
     def _flush(self) -> None:
         log, dec = lines(self.mem, self.written)
         append(self.folder / LOG, log)  # the LOG first: judgements point into it
@@ -127,7 +138,7 @@ class Store:
         """Log one session's turns; returns how many were new. tail=True: `turns` is the whole conversation so far;
         only the turns past those already logged for session_id are logged, as session "<id>#<n>" stamped now (so
         the LOG's time order follows arrival, which the fold needs, and a retried call adds nothing)."""
-        with self.lock:
+        with self._busy():
             m = self.mem
             if tail:
                 have = sum(1 for e in m.log.events if e.session_id == session_id or e.session_id.startswith(session_id + "#"))
@@ -147,7 +158,7 @@ class Store:
     def retrieve(self, question: str, ts: str | None = None) -> dict:
         """{context, digest, strong}. After a reset, a question about now is answered from the after-reset view."""
         ts = ts or now()
-        with self.lock:
+        with self._busy():
             self.mem.settle()
             self._flush()
             r = R.latest(self.mem.log.decisions)
@@ -174,7 +185,7 @@ class Store:
         """Before the harness summarises a session: keep its rules, decisions, values, dates, paths and names verbatim
         (the adapter's compact(), with session_id also matching its "<id>#<n>" tail parts), log what was kept as a
         "compact" ruling, and return the survivor block: the <invariant> every later context leads with."""
-        with self.lock:
+        with self._busy():
             m = self.mem
             evs = [e for e in m.log.events if e.session_id == session_id or e.session_id.startswith(session_id + "#")]
             have = {k.text for k in m.staging}
@@ -188,20 +199,20 @@ class Store:
                 return {"block": m.invariant_block(), "kept": len(new)}
 
     def reset(self, note: str = "", at: str | None = None) -> dict:
-        with self.lock:
+        with self._busy():
             out = R.reset(self.mem, at or now(), note)
             self._flush()
             return out
 
     def undo_reset(self) -> dict:
-        with self.lock:
+        with self._busy():
             out = R.undo_reset(self.mem)
             self._flush()
             return out
 
     def restore(self, events: list[dict], decisions: list[dict]) -> dict:
         """Load an archive's records into this (empty) memory and rebuild every view."""
-        with self.lock:
+        with self._busy():
             if self.mem.log.events or self.mem.log.decisions:
                 raise ValueError("this memory is not empty: import into an empty folder")
             load(self.mem, events, decisions)
@@ -212,17 +223,17 @@ class Store:
     def export(self, path) -> dict:
         from .portability import export
 
-        with self.lock:
+        with self._busy():
             return export(self.mem, path)
 
     def stats(self) -> dict:
-        with self.lock:
+        with self._busy():
             r = R.latest(self.mem.log.decisions)
             return self.mem.stats() | {"folder": str(self.folder), "before_reset": len(R.before_reset(self.mem)),
                                        "reset": {k: r[k] for k in ("id", "at", "note", "upto")} if r else None}
 
     def close(self) -> None:
-        with self.lock:
+        with self._busy():
             if self._post is not None:
                 self._post[1].close()
                 self._post = None
