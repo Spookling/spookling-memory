@@ -104,3 +104,31 @@ def test_the_reset_cannot_predate_the_log_nor_a_session_the_reset(s):
     with pytest.raises(ValueError, match="predates the reset"):
         s.ingest("late", turns(["I drive a Honda Civic now."]), "2024-12-31T23:00:00Z")
     assert len(s.mem.log.events) == 12
+
+
+def test_judgements_pending_at_the_reset_fall_before_its_ruling(open_store):
+    store = open_store()
+    fill(store)  # not settled: the rule tag still waits for the slow path
+    r = store.reset("", RESET_AT)
+    steps = [d["step"] for d in store.mem.log.decisions]
+    assert store.mem.log.decisions[-1] == r and steps.index("resolve") < steps.index("reset")
+
+
+def test_two_resets_and_undoing_the_second(s):
+    s.reset("first", RESET_AT)
+    fill(s, [AFTER])
+    second = s.reset("second", "2025-02-15T00:00:00Z")
+    assert s.retrieve("What car do I drive?", NOW)["context"] == ABSTAIN
+    assert sorted(believed(s)) == sorted(CLOSED + [("car", "Honda Civic", "2025-02-01", "2025-02-15")])
+    assert s.undo_reset()["of"] == second["id"]
+    assert "Honda Civic" in s.retrieve("What car do I drive?", NOW)["context"]  # the first reset still holds
+    assert "Corolla" not in s.retrieve("What car do I drive?", NOW)["context"]
+
+
+def test_a_reset_on_an_empty_memory(open_store):
+    store = open_store()
+    r = store.reset("", RESET_AT)
+    assert (r["upto"], r["source"]) == (0, "")
+    assert store.retrieve("What car do I drive?", NOW)["context"] == ABSTAIN
+    fill(store, [AFTER])
+    assert "Honda Civic" in store.retrieve("What car do I drive?", NOW)["context"]

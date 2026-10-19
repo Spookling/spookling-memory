@@ -21,6 +21,7 @@ from pathlib import Path
 
 from bench.adapters.spookling import SpooklingMemory
 from bench.adapters.spookling import compact as keep
+from bench.adapters.spookling.sleep import tx_of
 from bench.schema import Session, Turn
 
 from . import reset as R
@@ -134,6 +135,7 @@ class Store:
                     return 0
                 turns, session_id, ts = turns[have:], f"{session_id}#{have}", None
             ts = ts or now()
+            tx_of(ts, 0, 0)  # a bad timestamp is refused here: in the LOG it would fail every later sleep
             if not R.admits(m.log.decisions, ts):
                 raise ValueError(f"session {session_id} at {ts} predates the reset at {R.latest(m.log.decisions)['at']}")
             n = len(m.log.events)
@@ -155,7 +157,9 @@ class Store:
                 return self.mem.retrieve(question, "user", ts)
 
     def _view(self, r: dict) -> SpooklingMemory:
-        """The memory rebuilt from the records after reset r, cached until the records grow."""
+        """The memory rebuilt from the records after reset r, cached until the records grow.
+        ponytail: rebuilt from zero after every change, as the adapter's own full sleep is; grow it in place (ingest the
+        new sessions into it) if a long after-reset history makes the first question after a change slow."""
         key = (r["id"], len(self.mem.log.events), len(self.mem.log.decisions))
         if self._post is None or self._post[0] != key:
             if self._post is not None:

@@ -69,3 +69,12 @@ def test_a_failed_tagging_call_writes_nothing(open_store, tmp_path):
     assert len((tmp_path / "m" / "log.jsonl").read_text().splitlines()) == 8
     s.close()
     assert len(open_store().mem.log.events) == 8
+
+
+def test_a_bad_timestamp_is_refused_before_it_reaches_the_log(open_store):
+    s = open_store()
+    with pytest.raises(ValueError):
+        s.ingest("s1", turns(["I drive a Toyota Corolla, nothing fancy."]), "last tuesday")
+    assert s.mem.log.events == []
+    fill(s, HISTORY[:1])  # the memory still works
+    assert len(s.mem.log.events) == 4
