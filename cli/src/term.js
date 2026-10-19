@@ -81,6 +81,10 @@ export function enterScreen() {
   stdout.write('\x1b[?1049h\x1b[?25l\x1b[2J');
   state.alt = state.cursor = true;
 }
+export function cursor(show) {
+  stdout.write(show ? '\x1b[?25h' : '\x1b[?25l');
+  state.cursor = !show;
+}
 export function restore() {
   let s = '';
   if (state.alt) s += '\x1b[?1049l';
@@ -115,7 +119,7 @@ function pump() {
     }
     else if (ch === '\x7f' || ch === '\b') waiter.text = waiter.text.slice(0, -1);
     else if (ch === '\x15') waiter.text = '';
-    else if (ch === '\x04' && !waiter.text) { ended = true; waiter.done(null); }
+    else if (ch === '\x04' && !waiter.text) waiter.done(null);
     else if (ch >= ' ') waiter.text += ch;
   }
 }
@@ -135,6 +139,9 @@ function readLine(hidden) {
         waiter = null;
         if (raw) setRaw(false);
         stdin.pause();
+        // End of input at a real terminal (Ctrl-D) aborts, so no write is ever confirmed by default.
+        // Piped or closed stdin takes the defaults, which is how a non-interactive run completes.
+        if (v === null && stdin.isTTY) bail();
         resolve(v);
       },
     };

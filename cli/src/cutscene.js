@@ -95,8 +95,11 @@ export function play({ anim = true } = {}) {
   }
   return new Promise((resolve) => {
     const { stdin, stdout } = process;
-    let s = 0, last = '', timer;
+    const t0 = Date.now();
+    let last = '', timer, done = false;
     const finish = () => {
+      if (done) return;
+      done = true;
       clearInterval(timer);
       if (stdin.isTTY) { stdin.off('data', onKey); stdin.pause(); }
       restore();
@@ -109,10 +112,9 @@ export function play({ anim = true } = {}) {
     timer = setInterval(() => {
       const { cols, rows } = size();
       if (cols < 40 || rows < 16) return finish();
-      const dims = `${cols}x${rows}`;
+      const dims = `${cols}x${rows}`, s = (Date.now() - t0) / 1000; // wall clock, so a slow terminal drops frames, not time
       stdout.write((dims !== last ? '\x1b[2J' : '') + '\x1b[H' + frame(s, cols, rows));
       last = dims;
-      s += 0.05;
       if (s > T.end) finish();
     }, 50);
   });

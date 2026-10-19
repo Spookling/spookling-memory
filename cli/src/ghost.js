@@ -1,6 +1,6 @@
 // The Spookling ghost: 26 x 14 pixels, drawn as 7 text rows of half blocks.
 // K hat and eyes, M hat band, G body, L tail streaks, . transparent.
-import { C, canvas, dot, mix, render, size, sleep, MODE } from './term.js';
+import { C, MODE, canvas, cursor, dot, mix, render, size, sleep } from './term.js';
 
 const PAL = { K: C.BLACK, M: C.PURPLE_MID, G: C.GHOST, L: C.LILAC };
 
@@ -58,9 +58,9 @@ export function fly(cv, s, { dur = 1.7, y = 0, flip = false, stopAt = null } = {
 
 // The done screen: the ghost flies across once in the normal screen and parks on the right.
 export async function flyOnce(out = process.stdout, { anim = true } = {}) {
-  const { cols } = size();
+  const { cols, rows: tall } = size();
   const cv = () => canvas(Math.min(cols, 100), H + 4, C.FIELD); // the hat needs the purple behind it
-  if (!anim || MODE === 'none' || cols < 40) {
+  if (!anim || MODE === 'none' || !out.isTTY || cols < 40 || tall < 12) {
     if (MODE !== 'none') {
       const c = cv();
       fly(c, 1.7, { y: 2, stopAt: c.w - W - 2 });
@@ -69,7 +69,8 @@ export async function flyOnce(out = process.stdout, { anim = true } = {}) {
     return;
   }
   const rows = (H + 4) / 2;
-  out.write('\n'.repeat(rows) + `\x1b[${rows}A\x1b[?25l`);
+  out.write('\n'.repeat(rows) + `\x1b[${rows}A`);
+  cursor(false);
   for (let s = 0; ; s += 0.05) {
     const c = cv();
     const more = fly(c, s, { y: 2, stopAt: c.w - W - 2 });
@@ -77,5 +78,6 @@ export async function flyOnce(out = process.stdout, { anim = true } = {}) {
     if (!more) break;
     await sleep(50);
   }
-  out.write(`\x1b[${rows - 1}B\n\x1b[?25h`);
+  out.write(`\x1b[${rows - 1}B\n`);
+  cursor(true);
 }
