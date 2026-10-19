@@ -11,14 +11,17 @@ export const HOOK_FILES = {
 };
 export const MCP_NAME = 'spookling-memory';
 
-const shq = (p) => (/^[\w./-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`);
-export const hookCommands = (hooksDir) =>
-  Object.fromEntries(Object.entries(HOOK_FILES).map(([ev, f]) => [ev, shq(join(hooksDir, f))]));
+const shq = (p) => (/^[\w./:-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`);
+// The hook scripts and the MCP client find the server through SPOOKLING_MEMORY_URL.
+export const hookCommands = (hooksDir, url) => Object.fromEntries(Object.entries(HOOK_FILES)
+  .map(([ev, f]) => [ev, `SPOOKLING_MEMORY_URL=${shq(url)} ${shq(join(hooksDir, f))}`]));
 
-export const mcpEntry = (serverDir) => ({
+// `mcp` is a thin client of `serve`, so it takes the URL, not the folder.
+export const mcpEntry = (serverDir, url) => ({
   type: 'stdio',
   command: 'uv',
-  args: ['run', '--project', serverDir, 'spookling-memory', 'mcp', '--folder', '.memory'],
+  args: ['run', '--project', serverDir, 'spookling-memory', 'mcp'],
+  env: { SPOOKLING_MEMORY_URL: url },
 });
 
 // Ours = a command naming one of our scripts under a spookling path (any install location).

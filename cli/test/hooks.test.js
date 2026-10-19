@@ -7,7 +7,8 @@ import {
   addHooks, removeHooks, addMcp, removeMcp, hookCommands, mcpEntry, wiring, readJson, isOurs, MCP_NAME,
 } from '../src/hooks.js';
 
-const cmds = hookCommands('/opt/spookling-memory/hooks');
+const URL = 'http://127.0.0.1:7447';
+const cmds = hookCommands('/opt/spookling-memory/hooks', URL);
 const theirs = { type: 'command', command: 'npm run lint' };
 const user = {
   model: 'opus',
@@ -20,11 +21,11 @@ const user = {
 
 test('hook commands point at the package hooks folder', () => {
   assert.deepEqual(cmds, {
-    PreCompact: '/opt/spookling-memory/hooks/pre-compact.sh',
-    UserPromptSubmit: '/opt/spookling-memory/hooks/user-prompt-submit.sh',
-    Stop: '/opt/spookling-memory/hooks/stop.sh',
+    PreCompact: `SPOOKLING_MEMORY_URL=${URL} /opt/spookling-memory/hooks/pre-compact.sh`,
+    UserPromptSubmit: `SPOOKLING_MEMORY_URL=${URL} /opt/spookling-memory/hooks/user-prompt-submit.sh`,
+    Stop: `SPOOKLING_MEMORY_URL=${URL} /opt/spookling-memory/hooks/stop.sh`,
   });
-  assert.equal(hookCommands('/my spookling/hooks').Stop, "'/my spookling/hooks/stop.sh'");
+  assert.equal(hookCommands("/my spookling's/hooks", URL).Stop, `SPOOKLING_MEMORY_URL=${URL} '/my spookling'\\''s/hooks/stop.sh'`);
 });
 
 test('addHooks on an empty file adds the three events', () => {
@@ -49,10 +50,10 @@ test('addHooks twice is a no-op', () => {
 });
 
 test('addHooks replaces a Spookling hook from an older install path', () => {
-  const old = addHooks(user, hookCommands('/old/npx/@spookling/memory/hooks'));
+  const old = addHooks(user, hookCommands('/old/npx/@spookling/memory/hooks', URL));
   const out = addHooks(old, cmds);
   const all = Object.values(out.hooks).flat().flatMap((g) => g.hooks.map((h) => h.command));
-  assert.ok(!all.some((c) => c.startsWith('/old/')));
+  assert.ok(!all.some((c) => c.includes('/old/')));
   assert.ok(all.includes(cmds.Stop) && all.includes('npm run lint'));
 });
 
@@ -83,12 +84,13 @@ test('isOurs only matches our scripts under a spookling path', () => {
 
 test('MCP entry is added, kept beside others, and removed cleanly', () => {
   const cfg = { mcpServers: { github: { command: 'gh-mcp' } } };
-  const entry = mcpEntry('/opt/spookling-memory/server');
+  const entry = mcpEntry('/opt/spookling-memory/server', URL);
   const out = addMcp(cfg, entry);
   assert.deepEqual(out.mcpServers.github, cfg.mcpServers.github);
   assert.deepEqual(out.mcpServers[MCP_NAME], {
     type: 'stdio', command: 'uv',
-    args: ['run', '--project', '/opt/spookling-memory/server', 'spookling-memory', 'mcp', '--folder', '.memory'],
+    args: ['run', '--project', '/opt/spookling-memory/server', 'spookling-memory', 'mcp'],
+    env: { SPOOKLING_MEMORY_URL: URL },
   });
   assert.deepEqual(removeMcp(out), cfg);
   assert.deepEqual(addMcp({}, entry), { mcpServers: { [MCP_NAME]: entry } });
@@ -98,7 +100,7 @@ test('MCP entry is added, kept beside others, and removed cleanly', () => {
 
 test('wiring reports what is in place', () => {
   assert.deepEqual(wiring({}, {}), { events: [], mcp: false });
-  const s = addHooks(user, cmds), m = addMcp({}, mcpEntry('/x'));
+  const s = addHooks(user, cmds), m = addMcp({}, mcpEntry('/x', URL));
   const w = wiring(s, m);
   assert.deepEqual([w.events.sort(), w.mcp], [['PreCompact', 'Stop', 'UserPromptSubmit'], true]);
 });
