@@ -424,7 +424,13 @@ export async function uninstall(project = process.cwd(), { scope = 'project' } =
   } else ok(`no ${MCP_NAME} entry in ${rel(ctx, mcpPath(project, 'user'))}`);
   const p = readPid(project);
   if (p?.alive && (await confirm(`   Stop the memory server (pid ${p.pid})?`))) {
-    if (stopServer(p.pid)) { rmSync(pidFile(project), { force: true }); ok(`stopped pid ${p.pid}`); }
+    if (stopServer(p.pid)) {
+      // SIGTERM is graceful: uvicorn closes the store first. Wait up to 10 s before claiming it is gone.
+      const gone = () => { try { process.kill(p.pid, 0); return false; } catch (e) { return e.code !== 'EPERM'; } };
+      for (let i = 0; i < 50 && !gone(); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+      rmSync(pidFile(project), { force: true });
+      if (gone()) ok(`stopped pid ${p.pid}`); else warn(`pid ${p.pid} is still shutting down; check with: status`);
+    }
     else warn(`could not stop pid ${p.pid}`);
   } else if (p && !p.alive) rmSync(pidFile(project), { force: true });
   for (const prob of ctx.problems) warn(prob);
