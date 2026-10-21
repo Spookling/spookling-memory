@@ -8,7 +8,7 @@ import path, { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   addHooks, removeHooks, addMcp, removeMcp, hookHandlers, mcpEntry, mcpPath, settingsPath, showHandler, wiring, readJson,
-  isOurs, HOOK_FILES, MCP_NAME,
+  isOurs, wslShare, HOOK_FILES, MCP_NAME,
 } from '../src/hooks.js';
 
 const URL = 'http://127.0.0.1:7447';
@@ -194,4 +194,20 @@ test('readJson: missing or empty is {}, broken JSON throws', () => {
   assert.deepEqual(readJson(join(d, 'empty.json')), {});
   writeFileSync(join(d, 'bad.json'), '{ "a": ');
   assert.throws(() => readJson(join(d, 'bad.json')), /left it untouched/);
+});
+
+test('a server folder inside WSL, seen from Windows, runs through wsl.exe, never a Windows uv', () => {
+  const dir = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\jane o'neil\\spookling-memory\\server";
+  assert.deepEqual(wslShare(dir), { distro: 'Ubuntu-24.04', path: "/home/jane o'neil/spookling-memory/server" });
+  assert.deepEqual(wslShare('\\\\wsl$\\Debian\\srv\\'), { distro: 'Debian', path: '/srv' });
+  assert.equal(wslShare('C:\\src\\server'), null);
+  assert.equal(wslShare('/home/jane/server'), null);
+  assert.deepEqual(mcpEntry(dir, URL), {
+    type: 'stdio', command: 'wsl.exe',
+    args: ['-d', 'Ubuntu-24.04', '--', 'bash', '-lc', "exec uv run --project '/home/jane o'\\''neil/spookling-memory/server' spookling-memory mcp"],
+    env: { SPOOKLING_MEMORY_URL: URL, WSLENV: 'SPOOKLING_MEMORY_URL' },
+  });
+  // the quoted path survives bash: what the -lc string hands uv
+  const r = spawnSync('bash', ['-c', mcpEntry(dir, URL).args[5].replace('exec uv run --project', 'printf %s')], { encoding: 'utf8' });
+  if (!r.error) assert.equal(r.stdout, "/home/jane o'neil/spookling-memory/serverspookling-memorymcp");
 });

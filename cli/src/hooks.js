@@ -22,13 +22,24 @@ export const hookHandlers = (hooksDir, p = path) => Object.fromEntries(Object.en
   .map(([ev, f]) => [ev, { type: 'command', command: 'node', args: [p.join(hooksDir, f)] }]));
 export const showHandler = (h) => [h.command, ...(h.args ?? [])].map((a) => (/[\s"']/.test(a) ? JSON.stringify(a) : a)).join(' ');
 
-// `mcp` is a thin client of `serve`, so it takes the URL, not the folder.
-export const mcpEntry = (serverDir, url) => ({
-  type: 'stdio',
-  command: 'uv',
-  args: ['run', '--project', serverDir, 'spookling-memory', 'mcp'],
-  env: { SPOOKLING_MEMORY_URL: url },
-});
+// A clone inside WSL as Windows sees it: \\wsl.localhost\<distro>\... (or \\wsl$\...) -> { distro, path }.
+export const wslShare = (dir) => {
+  const m = /^\\\\wsl(?:\.localhost|\$)\\([^\\]+)((?:\\[^\\]+)*)\\?$/i.exec(dir);
+  return m && { distro: m[1], path: m[2].replace(/\\/g, '/') || '/' };
+};
+
+// `mcp` is a thin client of `serve`, so it takes the URL, not the folder. From Windows, a server folder inside WSL is
+// run inside WSL through wsl.exe: a Windows `uv run` there would build a Windows .venv over WSL's. bash -l puts uv
+// (~/.local/bin) on PATH; WSLENV carries the URL across.
+export const mcpEntry = (serverDir, url) => {
+  const w = wslShare(serverDir);
+  if (!w) return { type: 'stdio', command: 'uv', args: ['run', '--project', serverDir, 'spookling-memory', 'mcp'], env: { SPOOKLING_MEMORY_URL: url } };
+  const q = `'${w.path.replace(/'/g, `'\\''`)}'`;
+  return {
+    type: 'stdio', command: 'wsl.exe', args: ['-d', w.distro, '--', 'bash', '-lc', `exec uv run --project ${q} spookling-memory mcp`],
+    env: { SPOOKLING_MEMORY_URL: url, WSLENV: 'SPOOKLING_MEMORY_URL' },
+  };
+};
 
 // Ours = a handler naming one of our scripts (.js, or .sh from an older install) under a spookling path, in its
 // command or its args. Takes a handler or a bare command string.

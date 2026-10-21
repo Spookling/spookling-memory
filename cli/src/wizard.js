@@ -11,7 +11,7 @@ import { play } from './cutscene.js';
 import { flyOnce } from './ghost.js';
 import {
   HOOK_FILES, MCP_NAME, addHooks, addMcp, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
-  showHandler, wiring,
+  showHandler, wiring, wslShare,
 } from './hooks.js';
 
 // server/ and hooks/ sit beside cli/ in the repo, or inside the package once bundled.
@@ -266,7 +266,14 @@ export async function init({ anim = true, project = process.cwd(), scope = 'proj
 
   // 4. Server
   step(4);
-  if (!existsSync(join(SERVER_DIR, 'pyproject.toml'))) {
+  const share = WIN && wslShare(SERVER_DIR);
+  if (share) {
+    // Run from PowerShell against a clone inside WSL: one server, in WSL, serves both sides on 127.0.0.1.
+    info(`The server folder is inside WSL (${share.distro}), so the server runs there. In WSL, from your project:`);
+    info(`  node '${share.path.replace(/\/server$/, '')}/cli/bin/spookling-memory.js' init`);
+    info('No uv sync from Windows: it would build a Windows .venv over the one WSL uses.');
+    ctx.skipped.push('the server install (it runs in WSL)');
+  } else if (!existsSync(join(SERVER_DIR, 'pyproject.toml'))) {
     warn(`No memory server found at ${SERVER_DIR}.`);
     ctx.problems.push('memory server not found');
   } else {
@@ -311,7 +318,7 @@ export async function init({ anim = true, project = process.cwd(), scope = 'proj
     if (scope === 'project') {
       await mergeFile(ctx, mcpPath(project), (c) => addMcp(c, entry), {
         what: `MCP server ${MCP_NAME}`,
-        preview: `+ mcpServers.${MCP_NAME}  (stdio) ${entry.command} ${entry.args.join(' ')}\n    env SPOOKLING_MEMORY_URL=${SERVER_URL}\n  other servers stay`,
+        preview: `+ mcpServers.${MCP_NAME}  (stdio) ${showHandler(entry)}\n    env SPOOKLING_MEMORY_URL=${SERVER_URL}\n  other servers stay`,
         same: '.mcp.json already has the MCP entry',
       });
     } else await userMcp(ctx, entry);
@@ -324,7 +331,7 @@ export async function init({ anim = true, project = process.cwd(), scope = 'proj
   out('\n');
   if (res) ok(`the server answered: ${JSON.stringify(res).slice(0, 72)}`);
   else {
-    warn(`nothing answered on 127.0.0.1:${PORT}. Look in .memory/server.log.`);
+    warn(`nothing answered on 127.0.0.1:${PORT}. ${share ? 'Start the server in WSL (the command in step 4).' : 'Look in .memory/server.log.'}`);
     ctx.problems.push('smoke test failed');
   }
 
