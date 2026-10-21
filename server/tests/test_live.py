@@ -7,6 +7,7 @@ import shutil
 import socket
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -72,9 +73,12 @@ def test_mcp_tools(live, tmp_path, monkeypatch):
     r = M.memory_reset("fresh start")
     assert M.memory_retrieve("What car do I drive?")["context"] == "Nothing on record about this."
     assert M.memory_reset(undo=True)["of"] == r["id"]
-    monkeypatch.setenv("SPOOKLING_MEMORY_URL", nobody())
-    with pytest.raises(RuntimeError, match="no Spookling Memory server"):
-        M.memory_stats()
+    for down in (nobody(), "http://10.255.255.1:7447"):  # refused, and dropped (see below)
+        monkeypatch.setenv("SPOOKLING_MEMORY_URL", down)
+        t = time.monotonic()
+        with pytest.raises(RuntimeError, match="no Spookling Memory server"):
+            M.memory_stats()
+        assert time.monotonic() - t < 5
 
 
 @pytest.mark.parametrize("runner", RUNNERS)
@@ -99,6 +103,11 @@ def test_hook_scripts(live, tmp_path, runner):
 
 @pytest.mark.parametrize("runner", RUNNERS)
 @pytest.mark.parametrize("name", ["user-prompt-submit", "pre-compact", "stop"])
-def test_hook_scripts_never_block_claude_when_the_server_is_down(name, runner):
-    out = hook(runner, name, {"session_id": "x", "prompt": "hi", "transcript_path": "/nope.jsonl"}, nobody())
-    assert (out.returncode, out.stdout) == (0, "")
+@pytest.mark.parametrize("where", ["refused", "dropped"])
+def test_hook_scripts_never_block_claude_when_the_server_is_down(name, runner, where):
+    """refused: nothing listens. dropped: the connect is never answered, as a dead port on WSL's mirrored network
+    behaves (10.255.255.1 is not routed; where there is no route at all it fails at once, which also passes)."""
+    url = nobody() if where == "refused" else "http://10.255.255.1:7447"
+    t = time.monotonic()
+    out = hook(runner, name, {"session_id": "x", "prompt": "hi", "transcript_path": "/nope.jsonl"}, url)
+    assert (out.returncode, out.stdout) == (0, "") and time.monotonic() - t < 5

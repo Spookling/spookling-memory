@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -24,12 +26,15 @@ def call(path: str, body: dict | None = None, raw: bytes | None = None):
     req = urllib.request.Request(url, data=data, method="GET" if data is None else "POST", headers={
         "content-type": "application/octet-stream" if raw is not None else "application/json"})
     try:
+        # A dead port on WSL's mirrored network is dropped, not refused: a 300 s read timeout would hang the tool there.
+        u = urllib.parse.urlsplit(url)
+        socket.create_connection((u.hostname, u.port or 80), timeout=2).close()
         with _open(req, timeout=300) as r:
             out = r.read()
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"{path}: {e.code} {e.read().decode(errors='replace')}") from None
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"no Spookling Memory server at {url} ({e.reason}); run `spookling-memory serve`") from None
+    except (urllib.error.URLError, OSError) as e:
+        raise RuntimeError(f"no Spookling Memory server at {url} ({getattr(e, 'reason', e)}); run `spookling-memory serve`") from None
     return out if path == "/v1/export" else json.loads(out)
 
 

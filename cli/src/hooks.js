@@ -1,20 +1,26 @@
-// Merge and unmerge Spookling's entries in .claude/settings.json and .mcp.json.
+// Merge and unmerge Spookling's entries in Claude Code's settings.json and .mcp.json.
 // Pure functions on parsed JSON; they never drop a key they did not add.
+// Shapes checked against the Claude Code hooks, settings and MCP docs on 21 Oct 2026 (docs/claude-code-facts.md).
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import path, { join } from 'node:path';
 
 // Claude Code hook event -> script in the package's hooks/ folder.
 export const HOOK_FILES = {
-  PreCompact: 'pre-compact.sh',
-  UserPromptSubmit: 'user-prompt-submit.sh',
-  Stop: 'stop.sh',
+  PreCompact: 'pre-compact.js',
+  UserPromptSubmit: 'user-prompt-submit.js',
+  Stop: 'stop.js',
 };
 export const MCP_NAME = 'spookling-memory';
 
-const shq = (p) => (/^[\w./:-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`);
-// The hook scripts and the MCP client find the server through SPOOKLING_MEMORY_URL.
-export const hookCommands = (hooksDir, url) => Object.fromEntries(Object.entries(HOOK_FILES)
-  .map(([ev, f]) => [ev, `SPOOKLING_MEMORY_URL=${shq(url)} ${shq(join(hooksDir, f))}`]));
+// Exec form: with `args` set, Claude Code spawns `command` directly with `args` as its argv, no shell on any OS, so a
+// path with spaces, quotes, $ or a \\wsl.localhost\ share is passed exactly as written. Shell form would go through
+// sh, Git Bash or PowerShell, each with its own quoting. node.exe is a real executable, which exec form needs on
+// Windows. Exec form needs Claude Code v2.1.139 or later. No URL here: the scripts default to http://127.0.0.1:7447
+// and read SPOOKLING_MEMORY_URL from the environment. `p` is node:path; tests pass path.win32.
+export const hookHandlers = (hooksDir, p = path) => Object.fromEntries(Object.entries(HOOK_FILES)
+  .map(([ev, f]) => [ev, { type: 'command', command: 'node', args: [p.join(hooksDir, f)] }]));
+export const showHandler = (h) => [h.command, ...(h.args ?? [])].map((a) => (/[\s"']/.test(a) ? JSON.stringify(a) : a)).join(' ');
 
 // `mcp` is a thin client of `serve`, so it takes the URL, not the folder.
 export const mcpEntry = (serverDir, url) => ({
@@ -24,9 +30,14 @@ export const mcpEntry = (serverDir, url) => ({
   env: { SPOOKLING_MEMORY_URL: url },
 });
 
-// Ours = a command naming one of our scripts under a spookling path (any install location).
-export const isOurs = (cmd) => typeof cmd === 'string' && /spookling/i.test(cmd)
-  && Object.values(HOOK_FILES).some((f) => cmd.replace(/\\/g, '/').includes(`/hooks/${f}`));
+// Ours = a handler naming one of our scripts (.js, or .sh from an older install) under a spookling path, in its
+// command or its args. Takes a handler or a bare command string.
+const SCRIPT = /[\\/]hooks[\\/](pre-compact|user-prompt-submit|stop)\.(js|sh)\b/;
+export const isOurs = (h) => {
+  const s = typeof h === 'string' ? h : [h?.command, ...(Array.isArray(h?.args) ? h.args : [])].filter((x) => typeof x === 'string').join(' ');
+  return /spookling/i.test(s) && SCRIPT.test(s);
+};
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 function checkShape(settings) {
@@ -38,24 +49,23 @@ function checkShape(settings) {
     for (const g of groups) if (!isObj(g) || !Array.isArray(g.hooks ?? [])) throw new Error(`hooks.${ev} has an entry without a "hooks" list`);
   }
 }
-const ours = (g) => (g.hooks ?? []).some((h) => isOurs(h.command));
+const ours = (g) => (g.hooks ?? []).some(isOurs);
 // Drop our hooks from a group list (except those keep() spares); drop a group only if we emptied it.
 const strip = (groups, keep = () => false) => groups.flatMap((g) => {
   if (!ours(g)) return [g];
-  const hooks = g.hooks.filter((h) => !isOurs(h.command) || keep(h));
+  const hooks = g.hooks.filter((h) => !isOurs(h) || keep(h));
   return hooks.length ? [{ ...g, hooks }] : [];
 });
 
-// Add our three hooks. Leaves every other hook alone; replaces an old Spookling path.
-export function addHooks(settings, cmds) {
+// Add our three handlers, each in a group of its own with no matcher (UserPromptSubmit and Stop take none; on
+// PreCompact none means manual and auto). Leaves every other hook alone; replaces an old Spookling path or form.
+export function addHooks(settings, handlers) {
   checkShape(settings);
   const out = structuredClone(settings);
   out.hooks ??= {};
-  for (const [ev, cmd] of Object.entries(cmds)) {
-    const groups = strip(out.hooks[ev] ?? [], (h) => h.command === cmd);
-    if (!groups.some((g) => (g.hooks ?? []).some((h) => h.command === cmd))) {
-      groups.push({ hooks: [{ type: 'command', command: cmd }] });
-    }
+  for (const [ev, handler] of Object.entries(handlers)) {
+    const groups = strip(out.hooks[ev] ?? [], (h) => same(h, handler));
+    if (!groups.some((g) => (g.hooks ?? []).some((h) => same(h, handler)))) groups.push({ hooks: [handler] });
     out.hooks[ev] = groups;
   }
   return out;
@@ -105,5 +115,13 @@ export function readJson(path) {
   try { return JSON.parse(text); } catch (e) { throw new Error(`${path} is not valid JSON (${e.message}); left it untouched`); }
 }
 
-export const settingsPath = (project) => join(project, '.claude', 'settings.json');
-export const mcpPath = (project) => join(project, '.mcp.json');
+// --scope project (default): <project>/.claude/settings.json and <project>/.mcp.json.
+// --scope user: ~/.claude/settings.json (every project), and the MCP entry in ~/.claude.json's top-level mcpServers.
+// Claude Code writes ~/.claude.json itself, so the wizard only reads it and changes it through `claude mcp`.
+// CLAUDE_CONFIG_DIR moves both (on Windows ~ is %USERPROFILE%).
+const configDir = (env) => env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+export const settingsPath = (project, scope = 'project', env = process.env) =>
+  scope === 'user' ? join(configDir(env), 'settings.json') : join(project, '.claude', 'settings.json');
+export const mcpPath = (project, scope = 'project', env = process.env) =>
+  scope === 'user' ? (env.CLAUDE_CONFIG_DIR ? join(env.CLAUDE_CONFIG_DIR, '.claude.json') : join(homedir(), '.claude.json'))
+    : join(project, '.mcp.json');

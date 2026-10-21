@@ -1,14 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { spawnSync, spawn } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
+import { homedir, tmpdir } from 'node:os';
+import path, { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
-  addHooks, removeHooks, addMcp, removeMcp, hookCommands, mcpEntry, wiring, readJson, isOurs, MCP_NAME,
+  addHooks, removeHooks, addMcp, removeMcp, hookHandlers, mcpEntry, mcpPath, settingsPath, showHandler, wiring, readJson,
+  isOurs, HOOK_FILES, MCP_NAME,
 } from '../src/hooks.js';
 
 const URL = 'http://127.0.0.1:7447';
-const cmds = hookCommands('/opt/spookling-memory/hooks', URL);
+const cmds = hookHandlers('/opt/spookling-memory/hooks', path.posix);
 const theirs = { type: 'command', command: 'npm run lint' };
 const user = {
   model: 'opus',
@@ -19,19 +23,96 @@ const user = {
   },
 };
 
-test('hook commands point at the package hooks folder', () => {
-  assert.deepEqual(cmds, {
-    PreCompact: `SPOOKLING_MEMORY_URL=${URL} /opt/spookling-memory/hooks/pre-compact.sh`,
-    UserPromptSubmit: `SPOOKLING_MEMORY_URL=${URL} /opt/spookling-memory/hooks/user-prompt-submit.sh`,
-    Stop: `SPOOKLING_MEMORY_URL=${URL} /opt/spookling-memory/hooks/stop.sh`,
+test('hooks run in exec form: node, then the script path as one argument', () => {
+  const h = (f) => ({ type: 'command', command: 'node', args: [`/opt/spookling-memory/hooks/${f}`] });
+  assert.deepEqual(cmds, { PreCompact: h('pre-compact.js'), UserPromptSubmit: h('user-prompt-submit.js'), Stop: h('stop.js') });
+  assert.deepEqual(hookHandlers("/my spookling's $dir/hooks", path.posix).Stop.args, ["/my spookling's $dir/hooks/stop.js"]);
+});
+
+test('win32: a path with spaces, quotes, $ or a WSL share goes into args verbatim, no quoting', () => {
+  for (const dir of ['C:\\Users\\Jane O\'Neil\\My $pace\\spookling-memory\\hooks',
+    '\\\\wsl.localhost\\Ubuntu-24.04\\home\\jane\\spookling-memory\\hooks']) {
+    const hs = hookHandlers(dir, path.win32);
+    for (const [ev, f] of Object.entries(HOOK_FILES)) {
+      assert.deepEqual(hs[ev].args, [`${dir}\\${f}`]);
+      assert.equal(hs[ev].command, 'node');
+      assert.ok(isOurs(hs[ev]));
+    }
+    const settings = JSON.parse(JSON.stringify(addHooks({}, hs)));  // what settings.json holds, backslashes escaped
+    assert.deepEqual(settings.hooks.Stop[0].hooks[0].args, [`${dir}\\stop.js`]);
+    assert.deepEqual(removeHooks(settings), {});
+  }
+  assert.equal(showHandler(hookHandlers('C:\\a b\\hooks', path.win32).Stop), 'node "C:\\\\a b\\\\hooks\\\\stop.js"');
+});
+
+test('addHooks swaps an older shell-form .sh install for the exec form', () => {
+  const old = { hooks: { Stop: [{ hooks: [theirs, { type: 'command', command: `SPOOKLING_MEMORY_URL=${URL} /old/spookling-memory/hooks/stop.sh` }] }] } };
+  const out = addHooks(old, cmds);
+  assert.deepEqual(out.hooks.Stop, [{ hooks: [theirs] }, { hooks: [cmds.Stop] }]);
+});
+
+test('scope: project files, or the user files (CLAUDE_CONFIG_DIR moves them)', () => {
+  const p = join('/work', 'app');
+  assert.equal(settingsPath(p), join(p, '.claude', 'settings.json'));
+  assert.equal(mcpPath(p), join(p, '.mcp.json'));
+  assert.equal(settingsPath(p, 'user', {}), join(homedir(), '.claude', 'settings.json'));
+  assert.equal(mcpPath(p, 'user', {}), join(homedir(), '.claude.json'));
+  assert.equal(settingsPath(p, 'user', { CLAUDE_CONFIG_DIR: '/cfg' }), join('/cfg', 'settings.json'));
+  assert.equal(mcpPath(p, 'user', { CLAUDE_CONFIG_DIR: '/cfg' }), join('/cfg', '.claude.json'));
+});
+
+// Run the real hook scripts the way Claude Code's exec form does: spawn node with the path as one argv element, no
+// shell, from a folder whose name has a space, a quote and a $.
+const HOOKS = fileURLToPath(new globalThis.URL('../../hooks/', import.meta.url));  // URL is the server's, above
+const spaced = () => {
+  const d = join(mkdtempSync(join(tmpdir(), 'spk-')), "Jane O'Neil $pace", 'spookling-memory', 'hooks');
+  mkdirSync(d, { recursive: true });
+  for (const f of Object.values(HOOK_FILES)) copyFileSync(join(HOOKS, f), join(d, f));
+  return hookHandlers(d);
+};
+const run = (h, url, input) => new Promise((res) => {
+  const c = spawn(h.command, h.args, { env: { ...process.env, SPOOKLING_MEMORY_URL: url } });
+  let out = '';
+  c.stdout.on('data', (d) => { out += d; });
+  c.on('close', (code) => res({ code, out }));
+  c.stdin.end(input);
+});
+
+test('exec form: with no server the hooks print nothing and exit 0, within seconds even if the connect hangs', async () => {
+  const hs = spaced(), t = Date.now();
+  // 10.255.255.1 is not routed: the connect is never answered, as a dead port on WSL's mirrored network behaves
+  for (const h of Object.values(hs)) assert.deepEqual(await run(h, 'http://10.255.255.1:7447', '{"prompt":"hi"}'), { code: 0, out: '' });
+  assert.ok(Date.now() - t < 10000);
+  assert.equal(spawnSync(hs.Stop.command, hs.Stop.args, { input: 'not json', timeout: 20000 }).status, 0);
+});
+
+test('exec form: UserPromptSubmit prints the server reply whole; Stop and PreCompact print nothing', async () => {
+  const reply = JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'x'.repeat(9990) } });
+  const seen = [];
+  const srv = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => { body += d; });
+    req.on('end', () => {
+      seen.push([req.url, req.headers['content-type'], body]);
+      res.setHeader('content-type', 'application/json');
+      res.end(req.url.endsWith('user-prompt-submit') ? reply : '{}');
+    });
   });
-  assert.equal(hookCommands("/my spookling's/hooks", URL).Stop, `SPOOKLING_MEMORY_URL=${URL} '/my spookling'\\''s/hooks/stop.sh'`);
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${srv.address().port}`, hs = spaced(), input = '{"session_id":"s","prompt":"caf\u00e9"}';
+  try {
+    assert.deepEqual(await run(hs.UserPromptSubmit, url, input), { code: 0, out: reply });
+    assert.deepEqual(await run(hs.Stop, url, input), { code: 0, out: '' });
+    assert.deepEqual(await run(hs.PreCompact, url, input), { code: 0, out: '' });
+  } finally { srv.close(); }
+  assert.deepEqual(seen.map((s) => s[0]), ['/v1/hook/user-prompt-submit', '/v1/hook/stop', '/v1/hook/pre-compact']);
+  assert.ok(seen.every((s) => s[1] === 'application/json' && s[2] === input));
 });
 
 test('addHooks on an empty file adds the three events', () => {
   const out = addHooks({}, cmds);
   assert.deepEqual(Object.keys(out.hooks), ['PreCompact', 'UserPromptSubmit', 'Stop']);
-  assert.deepEqual(out.hooks.Stop, [{ hooks: [{ type: 'command', command: cmds.Stop }] }]);
+  assert.deepEqual(out.hooks.Stop, [{ hooks: [cmds.Stop] }]);
 });
 
 test('addHooks keeps every existing key and hook', () => {
@@ -50,11 +131,11 @@ test('addHooks twice is a no-op', () => {
 });
 
 test('addHooks replaces a Spookling hook from an older install path', () => {
-  const old = addHooks(user, hookCommands('/old/npx/@spookling/memory/hooks', URL));
+  const old = addHooks(user, hookHandlers('/old/npx/@spookling/memory/hooks', path.posix));
   const out = addHooks(old, cmds);
-  const all = Object.values(out.hooks).flat().flatMap((g) => g.hooks.map((h) => h.command));
-  assert.ok(!all.some((c) => c.includes('/old/')));
-  assert.ok(all.includes(cmds.Stop) && all.includes('npm run lint'));
+  const all = Object.values(out.hooks).flat().flatMap((g) => g.hooks);
+  assert.ok(!all.some((h) => JSON.stringify(h).includes('/old/')));
+  assert.ok(all.some((h) => JSON.stringify(h) === JSON.stringify(cmds.Stop)) && all.some((h) => h.command === 'npm run lint'));
 });
 
 test('removeHooks restores the original settings exactly', () => {
@@ -63,7 +144,7 @@ test('removeHooks restores the original settings exactly', () => {
 });
 
 test('removeHooks keeps a foreign hook that shares a group with ours', () => {
-  const s = { hooks: { Stop: [{ hooks: [theirs, { type: 'command', command: cmds.Stop }] }] } };
+  const s = { hooks: { Stop: [{ hooks: [theirs, cmds.Stop] }] } };
   assert.deepEqual(removeHooks(s), { hooks: { Stop: [{ hooks: [theirs] }] } });
 });
 
@@ -76,7 +157,8 @@ test('malformed settings throw instead of being overwritten', () => {
 
 test('isOurs only matches our scripts under a spookling path', () => {
   assert.ok(isOurs(cmds.Stop));
-  assert.ok(isOurs('C:\\Users\\a\\spookling-memory\\hooks\\stop.sh'));
+  assert.ok(isOurs('C:\\Users\\a\\spookling-memory\\hooks\\stop.sh'));  // an older shell-form install
+  assert.ok(!isOurs({ type: 'command', command: 'node', args: ['/home/a/other/hooks/stop.js'] }));
   assert.ok(!isOurs('/home/a/other/hooks/stop.sh'));
   assert.ok(!isOurs('npm run lint'));
   assert.ok(!isOurs(undefined));
