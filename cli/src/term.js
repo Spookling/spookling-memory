@@ -107,6 +107,9 @@ process.on('exit', restore);
 // One shared line reader so piped answers are never lost between prompts.
 // Raw mode is used only for hidden input; cooked mode lets the terminal echo and edit.
 let buf = '', waiter = null, ended = false, listening = false;
+// No terminal and no answer (an assistant's shell can hold stdin open and never write): take the default after this
+// long, once, instead of waiting forever; later prompts then take theirs at once. Every write is still previewed first, so the log shows what a default wrote.
+const NO_TTY_WAIT = 20_000;
 function pump() {
   while (waiter) {
     if (!buf.length) return ended && waiter.done(waiter.text || null);
@@ -133,9 +136,16 @@ function readLine(hidden) {
   return new Promise((resolve) => {
     const raw = hidden && stdin.isTTY;
     if (raw) setRaw(true);
-    waiter = {
+    const timer = stdin.isTTY ? null : setTimeout(() => {
+      if (waiter !== w) return;
+      stdout.write(paint(C.GREY, `(no answer in ${NO_TTY_WAIT / 1000} s) `));
+      ended = true; // the rest take their defaults at once
+      w.done(w.text || null);
+    }, NO_TTY_WAIT);
+    const w = waiter = {
       text: '',
       done(v) {
+        clearTimeout(timer);
         waiter = null;
         if (raw) setRaw(false);
         stdin.pause();

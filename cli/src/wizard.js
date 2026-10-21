@@ -2,15 +2,16 @@
 import process from 'node:process';
 import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
-import { accessSync, chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { delimiter, dirname, join, relative, resolve } from 'node:path';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { C, ask, askHidden, confirm, paint, sleep } from './term.js';
 import { play } from './cutscene.js';
 import { flyOnce } from './ghost.js';
 import {
-  HOOK_FILES, MCP_NAME, addHooks, addMcp, hookCommands, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath, wiring,
+  HOOK_FILES, MCP_NAME, addHooks, addMcp, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
+  showHandler, wiring,
 } from './hooks.js';
 
 // server/ and hooks/ sit beside cli/ in the repo, or inside the package once bundled.
@@ -19,6 +20,7 @@ const ROOT = existsSync(join(PKG, 'server')) ? PKG : resolve(PKG, '..');
 export const SERVER_DIR = join(ROOT, 'server'), HOOKS_DIR = join(ROOT, 'hooks');
 export const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`, STATS = `${SERVER_URL}/v1/stats`;
 const STEPS = ['Checks', 'Harness', 'Keys', 'Server', 'Wire Claude Code', 'Smoke test', 'Done'];
+const WIN = process.platform === 'win32';
 
 const out = (s) => process.stdout.write(s);
 const ok = (s) => out(`   ${paint(C.MINT, '✓')} ${s}\n`);
@@ -31,11 +33,15 @@ function step(n) {
   out(`${paint(C.GHOST, `${n}  ${STEPS[n - 1]}`, true)}\n`);
 }
 
-const newCtx = (project) => ({ project, mem: join(project, '.memory'), written: [], skipped: [], problems: [], keys: {} });
-const rel = (ctx, p) => relative(ctx.project, p) || p;
+const newCtx = (project, scope = 'project') => ({ project, scope, mem: join(project, '.memory'), written: [], skipped: [], problems: [], keys: {} });
+// Inside the project: relative. Elsewhere (the user files): from ~, or absolute.
+const rel = (ctx, p) => {
+  const r = relative(ctx.project, p), h = relative(homedir(), p);
+  return !r ? p : !r.startsWith('..') && !isAbsolute(r) ? r : !h.startsWith('..') && !isAbsolute(h) ? join('~', h) : p;
+};
 const pidFile = (project) => join(project, '.memory', 'server.pid');
 const version = (cmd) => {
-  const r = spawnSync(cmd, ['--version'], { encoding: 'utf8', timeout: 5000 });
+  const r = spawnSync(cmd, ['--version'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
   return r.status === 0 ? r.stdout.trim().split('\n')[0] : null;
 };
 
@@ -62,9 +68,11 @@ function readPid(project) {
   } catch { return null; }
 }
 
-// Show the write, ask, then write. preview defaults to the content.
+// Show the write, ask, then write. preview defaults to the content. mode is POSIX only: on Windows the file keeps the
+// folder's access rules (your user profile's, inside it), and chmod would change only the read-only flag.
 async function write(ctx, path, content, { what, preview = content, mode } = {}) {
   const name = rel(ctx, path);
+  if (WIN) mode = undefined;
   out(`\n   ${paint(C.GHOST, 'write')} ${name}${mode ? paint(C.GREY, ` (mode ${mode.toString(8)})`) : ''}\n`);
   out(preview.trimEnd().split('\n').map((l) => `     ${paint(C.GREY, l)}`).join('\n') + '\n');
   if (!(await confirm('   Write it?'))) {
@@ -92,6 +100,37 @@ async function mergeFile(ctx, path, fn, { what, preview, same }) {
   await write(ctx, path, JSON.stringify(after, null, 2) + '\n', { what, preview });
 }
 
+// Show a command, ask, then run it (no shell, stdin closed: `claude mcp` waits on an open stdin). Its output is shown.
+async function runCmd(ctx, cmd, args, { what, show }) {
+  out(`\n   ${paint(C.GHOST, 'run')} ${show}\n`);
+  if (!(await confirm('   Run it?'))) {
+    ctx.skipped.push(what);
+    info('skipped');
+    return null;
+  }
+  const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 60_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  for (const l of `${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n').filter(Boolean)) info(l);
+  if (r.status === 0) { ctx.written.push([cmd, what]); ok('done'); } else warn(r.error ? `${cmd}: ${r.error.code ?? r.error.message}` : `${cmd} exited ${r.status}`);
+  return r;
+}
+const shq = (s) => (/^[\w./:@=-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
+
+// User scope: Claude Code keeps user MCP servers in ~/.claude.json, a file it writes itself, so the wizard only reads it
+// and changes it through `claude mcp` (add-json refuses a name that exists, hence remove first).
+const userEntry = (project) => { try { return readJson(mcpPath(project, 'user')).mcpServers?.[MCP_NAME]; } catch { return undefined; } };
+async function userMcp(ctx, entry) {
+  const have = userEntry(ctx.project), json = JSON.stringify(entry);
+  if (JSON.stringify(have) === json) return ok(`${rel(ctx, mcpPath(ctx.project, 'user'))} already has the MCP entry`);
+  const add = ['mcp', 'add-json', MCP_NAME, json, '--scope', 'user'];
+  if (have) {
+    const r = await runCmd(ctx, 'claude', ['mcp', 'remove', MCP_NAME, '--scope', 'user'],
+      { what: `the old ${MCP_NAME} entry removed`, show: `claude mcp remove ${MCP_NAME} --scope user` });
+    if (r?.status !== 0) return void ctx.problems.push(`MCP entry not replaced: run claude mcp remove ${MCP_NAME} --scope user, then init again`);
+  }
+  const r = await runCmd(ctx, 'claude', add, { what: `MCP server ${MCP_NAME}, user scope`, show: `claude ${add.map(shq).join(' ')}` });
+  if (r && r.status !== 0) ctx.problems.push(`MCP entry not added: run the claude mcp add-json line above in your shell`);
+}
+
 // Keys: replace our lines, keep anything else in the file.
 function keysFile(text, keys) {
   const lines = text ? text.replace(/\n$/, '').split('\n') : [];
@@ -108,8 +147,12 @@ function startServer(ctx) {
   const log = openSync(join(ctx.mem, 'server.log'), 'a');
   const args = ['run', '--project', SERVER_DIR, 'spookling-memory', 'serve', '--folder', '.memory', '--port', String(PORT)];
   if (ctx.keys.OPENROUTER_API_KEY) args.push('--model', 'typesafe/jev-router'); // Jev tags when an OpenRouter key was given
+  // detached: its own process group (POSIX) or console (Windows), so it outlives this wizard; windowsHide keeps that
+  // console from opening a window. PYTHONUTF8: memory-bench reads its data files in the locale encoding (cp1252 on
+  // Windows); UTF-8 mode makes that UTF-8 everywhere.
   const child = spawn('uv', args, {
-    cwd: ctx.project, detached: true, stdio: ['ignore', log, log], env: { ...process.env, ...ctx.keys },
+    cwd: ctx.project, detached: true, windowsHide: true, stdio: ['ignore', log, log],
+    env: { ...process.env, PYTHONUTF8: '1', ...ctx.keys },
   });
   child.on('error', () => {});
   child.unref();
@@ -132,10 +175,10 @@ async function waitForStats(ctx) {
   return null;
 }
 
-export async function init({ anim = true, project = process.cwd() } = {}) {
+export async function init({ anim = true, project = process.cwd(), scope = 'project' } = {}) {
   await play({ anim });
-  const ctx = newCtx(project);
-  out(`   Setting up Spookling Memory in ${paint(C.GHOST, project)}\n`);
+  const ctx = newCtx(project, scope);
+  out(`   Setting up Spookling Memory in ${paint(C.GHOST, project)}${scope === 'user' ? paint(C.GREY, ' (hooks and MCP for all your projects)') : ''}\n`);
   info('Every file is shown before it is written. Answer n to skip it.');
 
   // 1. Checks
@@ -160,8 +203,6 @@ export async function init({ anim = true, project = process.cwd() } = {}) {
     if (!uv) { warn('Install uv, then run init again.'); return 1; }
   }
   ok(uv);
-  if (version('curl')) ok('curl (the hooks call the server with it)');
-  else { warn('curl not found. The Claude Code hooks need it to reach the server.'); ctx.problems.push('curl missing'); }
   const git = version('git');
   if (git) ok(git); else warn('git not found. That is fine; .memory/ is just easier to back up inside a repo.');
 
@@ -211,7 +252,7 @@ export async function init({ anim = true, project = process.cwd() } = {}) {
   }
   if (Object.keys(fresh).length) {
     await write(ctx, envPath, keysFile(envText, fresh), {
-      what: 'your keys, readable only by you', mode: 0o600,
+      what: WIN ? 'your keys (kept out of git; mind who can read this folder)' : 'your keys, readable only by you', mode: 0o600,
       preview: Object.keys(fresh).map((k) => `${k}=********`).join('\n'),
     });
   } else if (Object.keys(ctx.keys).length) ok('.memory/keys.env already up to date');
@@ -230,7 +271,7 @@ export async function init({ anim = true, project = process.cwd() } = {}) {
     ctx.problems.push('memory server not found');
   } else {
     info(`uv sync in ${SERVER_DIR}`);
-    const r = spawnSync('uv', ['sync'], { cwd: SERVER_DIR, stdio: 'inherit', timeout: 10 * 60_000 });
+    const r = spawnSync('uv', ['sync'], { cwd: SERVER_DIR, stdio: ['ignore', 'inherit', 'inherit'], timeout: 10 * 60_000, windowsHide: true });
     if (r.status !== 0) {
       warn('uv sync failed (output above).');
       ctx.problems.push('uv sync failed');
@@ -251,25 +292,29 @@ export async function init({ anim = true, project = process.cwd() } = {}) {
   step(5);
   if (ctx.harness !== 'claude') info('Codex: nothing to wire yet (see .memory/CODEX-TODO.md).');
   else {
-    const cmds = hookCommands(HOOKS_DIR, SERVER_URL);
+    const handlers = hookHandlers(HOOKS_DIR);
     for (const f of Object.values(HOOK_FILES)) {
-      const p = join(HOOKS_DIR, f);
-      try { accessSync(p, constants.X_OK); } catch {
-        warn(`${p} is ${existsSync(p) ? 'not executable' : 'missing'}; Claude Code will report it on each event.`);
-        ctx.problems.push(`hook script ${f} not ready`);
+      if (!existsSync(join(HOOKS_DIR, f))) {
+        warn(`${join(HOOKS_DIR, f)} is missing; Claude Code will report it on each event.`);
+        ctx.problems.push(`hook script ${f} missing`);
       }
     }
-    await mergeFile(ctx, settingsPath(project), (s) => addHooks(s, cmds), {
+    if (!version('node')) warn('`node` is not on your PATH here. The hooks run `node`, so Claude Code needs it on its PATH.');
+    const sp = settingsPath(project, scope);
+    await mergeFile(ctx, sp, (s) => addHooks(s, handlers), {
       what: 'hooks: PreCompact, UserPromptSubmit, Stop',
-      preview: Object.entries(cmds).map(([ev, c]) => `+ hooks.${ev.padEnd(17)} ${c}`).join('\n') + '\n  merged in; nothing else in the file changes',
-      same: '.claude/settings.json already has the hooks',
+      preview: Object.entries(handlers).map(([ev, h]) => `+ hooks.${ev.padEnd(17)} ${showHandler(h)}`).join('\n')
+        + '\n  merged in; nothing else in the file changes',
+      same: `${rel(ctx, sp)} already has the hooks`,
     });
     const entry = mcpEntry(SERVER_DIR, SERVER_URL);
-    await mergeFile(ctx, mcpPath(project), (c) => addMcp(c, entry), {
-      what: `MCP server ${MCP_NAME}`,
-      preview: `+ mcpServers.${MCP_NAME}  (stdio) ${entry.command} ${entry.args.join(' ')}\n    env SPOOKLING_MEMORY_URL=${SERVER_URL}\n  other servers stay`,
-      same: '.mcp.json already has the MCP entry',
-    });
+    if (scope === 'project') {
+      await mergeFile(ctx, mcpPath(project), (c) => addMcp(c, entry), {
+        what: `MCP server ${MCP_NAME}`,
+        preview: `+ mcpServers.${MCP_NAME}  (stdio) ${entry.command} ${entry.args.join(' ')}\n    env SPOOKLING_MEMORY_URL=${SERVER_URL}\n  other servers stay`,
+        same: '.mcp.json already has the MCP entry',
+      });
+    } else await userMcp(ctx, entry);
   }
 
   // 6. Smoke test
@@ -292,7 +337,7 @@ export async function init({ anim = true, project = process.cwd() } = {}) {
   let wired = true;
   if (ctx.harness === 'claude') {
     try {
-      const w = wiring(readJson(settingsPath(project)), readJson(mcpPath(project)));
+      const w = wiring(readJson(settingsPath(project, scope)), readJson(mcpPath(project, scope)));
       wired = w.events.length === 3 && w.mcp;
     } catch { wired = false; }
   }
@@ -306,50 +351,72 @@ export async function init({ anim = true, project = process.cwd() } = {}) {
 
 export async function status(project = process.cwd()) {
   const line = (label, text, good) => out(`   ${good ? paint(C.MINT, '✓') : paint(C.LILAC, '!')} ${label.padEnd(8)} ${text}\n`);
+  const ctx = newCtx(project);
   out(`${paint(C.GHOST, 'Spookling Memory', true)}  ${paint(C.GREY, project)}\n`);
   const s = await stats(), p = readPid(project);
   line('server', s ? `up on 127.0.0.1:${PORT}${p?.alive ? `, pid ${p.pid}` : ''}`
     : `down${p && !p.alive ? ` (stale .memory/server.pid: pid ${p.pid} is not running)` : ''}`, !!s);
-  let w = { events: [], mcp: false };
-  try { w = wiring(readJson(settingsPath(project)), readJson(mcpPath(project))); } catch (e) { line('config', e.message, false); }
-  line('hooks', w.events.length ? `${w.events.join(', ')} in .claude/settings.json` : 'none in .claude/settings.json', w.events.length === 3);
-  line('mcp', w.mcp ? `${MCP_NAME} in .mcp.json` : 'no entry in .mcp.json', w.mcp);
+  // Both scopes count: project files, or the user files that reach every project.
+  const where = { events: [], mcp: [] }, got = new Set();
+  for (const scope of ['project', 'user']) {
+    try {
+      const w = wiring(readJson(settingsPath(project, scope)), readJson(mcpPath(project, scope)));
+      if (w.events.length) where.events.push(`${w.events.join(', ')} in ${rel(ctx, settingsPath(project, scope))}`);
+      if (w.mcp) where.mcp.push(`${MCP_NAME} in ${rel(ctx, mcpPath(project, scope))}`);
+      w.events.forEach((ev) => got.add(ev));
+    } catch (e) { line('config', e.message, false); }
+  }
+  const events = [...got];
+  line('hooks', where.events.join('; ') || 'none in .claude/settings.json or ~/.claude/settings.json', events.length === 3);
+  line('mcp', where.mcp.join('; ') || 'no entry in .mcp.json or ~/.claude.json', where.mcp.length > 0);
   const missing = Object.values(HOOK_FILES).filter((f) => !existsSync(join(HOOKS_DIR, f)));
-  if (w.events.length && missing.length) line('scripts', `missing in ${HOOKS_DIR}: ${missing.join(', ')}`, false);
+  if (events.length && missing.length) line('scripts', `missing in ${HOOKS_DIR}: ${missing.join(', ')}`, false);
   const codex = existsSync(join(project, '.memory', 'CODEX-TODO.md'));
-  const claude = w.events.length === 3 && w.mcp;
+  const claude = events.length === 3 && where.mcp.length > 0;
   line('harness', claude ? 'Claude Code' : codex ? 'Codex (TODO note only, no wiring yet)' : 'none wired', claude || codex);
   const envPath = join(project, '.memory', 'keys.env');
   if (existsSync(envPath)) {
     const names = [...readFileSync(envPath, 'utf8').matchAll(/^([A-Z_][A-Z0-9_]*)=./gm)].map((m) => m[1]);
-    const mode = process.platform === 'win32' ? null : statSync(envPath).mode & 0o777;
+    const mode = WIN ? null : statSync(envPath).mode & 0o777;
     line('keys', `${names.join(', ') || 'none'} in .memory/keys.env${mode && mode !== 0o600 ? ` (mode ${mode.toString(8)}, should be 600)` : ''}`,
       names.includes('ANTHROPIC_API_KEY') && (!mode || mode === 0o600));
   } else line('keys', 'no .memory/keys.env', !!process.env.ANTHROPIC_API_KEY);
   return s && (claude || codex) && !missing.length ? 0 : 1;
 }
 
-export async function uninstall(project = process.cwd()) {
-  const ctx = newCtx(project);
-  out(`${paint(C.GHOST, 'Removing Spookling Memory wiring', true)}  ${paint(C.GREY, project)}\n`);
-  await mergeFile(ctx, settingsPath(project), removeHooks, {
+// Stop the server and the Python under it. POSIX: it was started detached, so its pid leads a process group.
+// Windows: process.kill would end uv.exe alone; taskkill /T ends the tree.
+function stopServer(pid) {
+  if (WIN) return spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).status === 0;
+  try { process.kill(-pid, 'SIGTERM'); return true; } catch { try { process.kill(pid, 'SIGTERM'); return true; } catch { return false; } }
+}
+
+export async function uninstall(project = process.cwd(), { scope = 'project' } = {}) {
+  const ctx = newCtx(project, scope);
+  const sp = settingsPath(project, scope);
+  out(`${paint(C.GHOST, 'Removing Spookling Memory wiring', true)}  ${paint(C.GREY, scope === 'user' ? `${project} (user scope)` : project)}\n`);
+  await mergeFile(ctx, sp, removeHooks, {
     what: 'removed the Spookling hooks',
     preview: 'drop the Spookling PreCompact, UserPromptSubmit and Stop hooks; everything else stays',
-    same: 'no Spookling hooks in .claude/settings.json',
+    same: `no Spookling hooks in ${rel(ctx, sp)}`,
   });
-  await mergeFile(ctx, mcpPath(project), removeMcp, {
-    what: `removed MCP server ${MCP_NAME}`,
-    preview: `drop mcpServers.${MCP_NAME}; other servers stay`,
-    same: `no ${MCP_NAME} entry in .mcp.json`,
-  });
+  if (scope === 'project') {
+    await mergeFile(ctx, mcpPath(project), removeMcp, {
+      what: `removed MCP server ${MCP_NAME}`,
+      preview: `drop mcpServers.${MCP_NAME}; other servers stay`,
+      same: `no ${MCP_NAME} entry in .mcp.json`,
+    });
+  } else if (userEntry(project)) {
+    const r = await runCmd(ctx, 'claude', ['mcp', 'remove', MCP_NAME, '--scope', 'user'],
+      { what: `removed MCP server ${MCP_NAME}, user scope`, show: `claude mcp remove ${MCP_NAME} --scope user` });
+    if (r && r.status !== 0) ctx.problems.push(`run claude mcp remove ${MCP_NAME} --scope user yourself`);
+  } else ok(`no ${MCP_NAME} entry in ${rel(ctx, mcpPath(project, 'user'))}`);
   const p = readPid(project);
   if (p?.alive && (await confirm(`   Stop the memory server (pid ${p.pid})?`))) {
-    // Detached at start, so the pid leads its own group: this stops uv and the Python child.
-    try { process.kill(-p.pid, 'SIGTERM'); } catch { try { process.kill(p.pid, 'SIGTERM'); } catch {} }
-    rmSync(pidFile(project), { force: true });
-    ok(`stopped pid ${p.pid}`);
+    if (stopServer(p.pid)) { rmSync(pidFile(project), { force: true }); ok(`stopped pid ${p.pid}`); }
+    else warn(`could not stop pid ${p.pid}`);
   } else if (p && !p.alive) rmSync(pidFile(project), { force: true });
   for (const prob of ctx.problems) warn(prob);
-  out(`\n   Your memory stays in .memory/. Run ${paint(C.GHOST, 'npx @spookling/memory init')} to wire it back.\n`);
+  out(`\n   Your memory stays in .memory/. Run ${paint(C.GHOST, `npx @spookling/memory init${scope === 'user' ? ' --scope user' : ''}`)} to wire it back.\n`);
   return ctx.problems.length ? 1 : 0;
 }
