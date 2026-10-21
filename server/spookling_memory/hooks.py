@@ -1,33 +1,54 @@
-"""Claude Code hooks, server side. hooks/*.sh pipe the hook's stdin JSON to POST /v1/hook/<event> and print the reply,
-so the scripts need only curl (no jq) and the transcript parsing is Python, tested here.
+"""Claude Code hooks, server side. hooks/*.js (node, any OS) and hooks/*.sh (curl) pipe the hook's stdin JSON to
+POST /v1/hook/<event> and print the reply, so the transcript parsing is Python, tested here.
+Checked against the Claude Code hooks reference on 21 Oct 2026 (docs/claude-code-facts.md):
 
-Hook input (Claude Code hooks reference): session_id, transcript_path, cwd, hook_event_name; UserPromptSubmit adds
-prompt, PreCompact adds trigger and custom_instructions, Stop adds stop_hook_active.
-TODO(confirm against the current Claude Code docs before shipping the wizard):
-- UserPromptSubmit injects hookSpecificOutput.additionalContext, and the size it keeps (we send at most CAP);
-- the transcript line shape read in turns(): {"type": "user"|"assistant", "message": {"content": str | blocks},
-  "isMeta", "isSidechain", "isCompactSummary"}; whether injected context is ever written into a user line (OURS
-  strips our own blocks either way, so memory never re-ingests what it recalled).
+- Input: session_id, transcript_path, cwd, hook_event_name; UserPromptSubmit adds prompt, PreCompact adds trigger and
+  custom_instructions, Stop adds stop_hook_active and last_assistant_message.
+- UserPromptSubmit output: hookSpecificOutput.additionalContext, at most 10,000 characters. A longer value is saved
+  to a file and Claude gets only the path and a 2,000-character preview, so we cut at CAP.
+- The transcript may lag at Stop; last_assistant_message is the final reply, so Stop adds it when the file has not.
+- The transcript line format is internal to Claude Code and changes between versions (sessions docs). turns() reads
+  what 2.1.283 writes: {"type": "user"|"assistant", "message": {"content": str | blocks}, "isMeta",
+  "isCompactSummary"}; injected context is stored as "attachment" lines, which turns() skips. OURS strips our own
+  blocks anyway, so memory never re-ingests what it recalled.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
 from bench.adapters.spookling.recall import ABSTAIN
 
+from .store import jsonl
+
 EVENTS = ("user-prompt-submit", "pre-compact", "stop")
-CAP = 50_000  # characters of injected context: about 12,500 tokens at 4 characters a token
+CAP = 10_000  # Claude Code's cap on additionalContext, in characters (counted as UTF-16 units, the stricter count)
 OURS = re.compile(r"<(invariant|recalled-data|memory-index|kept-before-compaction)\b.*?</\1>", re.S)
 COMMAND = ("<command-", "<local-command-")  # slash-command wrappers and their output: not conversation
+MNT = Path("/mnt")  # WSL's default automount root ([automount] root in /etc/wsl.conf moves it)
+
+
+def cap(text: str, n: int = CAP) -> str:
+    """At most n UTF-16 units (an emoji counts two, as in JavaScript), never half a character."""
+    return text.encode("utf-16-le")[: 2 * n].decode("utf-16-le", "ignore")
+
+
+def local_path(p: str) -> Path:
+    """transcript_path as this machine sees it. A Windows Claude Code talking to a server in WSL sends C:\\...; WSL
+    mounts that drive at /mnt/c. ponytail: MNT is the default root; read /etc/wsl.conf if someone moves it."""
+    m = re.match(r"([A-Za-z]):[\\/](.*)", p)
+    if m and os.name != "nt" and (MNT / m[1].lower()).is_dir():
+        return MNT.joinpath(m[1].lower(), *[x for x in re.split(r"[\\/]", m[2]) if x])
+    return Path(p)
 
 
 def turns(path: str | Path) -> list[dict]:
     """The conversation in a Claude Code transcript: user prompts and assistant text, consecutive parts of one role
     merged (tool calls and results are left out)."""
     out: list[dict] = []
-    for line in Path(path).read_text(errors="replace").splitlines():
+    for line in jsonl(Path(path).read_text(encoding="utf-8", errors="replace")):
         try:
             e = json.loads(line)
         except ValueError:
@@ -57,10 +78,16 @@ def handle(store, event: str, p: dict) -> dict:
         ctx = store.retrieve(prompt)["context"] if prompt.strip() else ""
         if not ctx or ctx == ABSTAIN:
             return {}
-        return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ctx[:CAP]}}
-    path = str(p.get("transcript_path") or "")
-    if path.endswith(".jsonl") and Path(path).is_file():
+        return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": cap(ctx)}}
+    path = local_path(str(p.get("transcript_path") or ""))
+    if path.suffix == ".jsonl" and path.is_file():
         conversation = turns(path)
+        last = OURS.sub("", str(p.get("last_assistant_message") or "")).strip()
+        if conversation and last and event == "stop":  # the file can lag the final reply at Stop
+            if conversation[-1]["role"] != "assistant":
+                conversation.append({"role": "assistant", "content": last})
+            elif last not in conversation[-1]["content"]:
+                conversation[-1]["content"] += "\n\n" + last
         if conversation:
             store.ingest(sid, conversation, agent="claude-code", tail=True)
     if event == "pre-compact":

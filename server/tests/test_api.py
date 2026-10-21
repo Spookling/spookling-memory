@@ -1,5 +1,6 @@
 """The HTTP API through FastAPI's TestClient, and the hooks' server side on a fake Claude Code transcript."""
 import json
+import os
 
 import pytest
 from bench.adapters.spookling.recall import ABSTAIN
@@ -132,3 +133,40 @@ def test_a_missing_model_key_is_a_503_and_the_server_lives(open_store):
     store.mem.triage = Stub(TAGS)
     assert c.post("/v1/ingest", json={"id": "s2", "ts": "2024-05-23T10:00:00Z", "turns": turns(["How do I roast peppers?"])}).status_code == 200
     assert c.get("/v1/stats").json()["n_events"] == 4  # the first session waited in memory and was written, tagged
+
+
+def test_injected_context_fits_claude_codes_cap():
+    ghost = "\U0001F47B"  # two UTF-16 units, as Claude Code (JavaScript) counts it
+    assert hooks.CAP == 10_000  # over it, Claude gets a file path and a 2,000-character preview instead
+    out = hooks.cap("a" + ghost * 6000)
+    assert len(out.encode("utf-16-le")) // 2 <= hooks.CAP and out == "a" + ghost * 4999  # never half an emoji
+    assert hooks.cap("short") == "short"
+
+
+def test_stop_adds_the_final_reply_the_transcript_has_not_caught_up_with(open_store, tmp_path):
+    store = open_store()
+    c = client(store)
+    path = tmp_path / "lag.jsonl"
+    write_transcript(path, [{"type": "user", "message": {"role": "user", "content": "I drive a Toyota Corolla, nothing fancy."}}])
+    stop = {"session_id": "lag", "transcript_path": str(path), "hook_event_name": "Stop", "stop_hook_active": False,
+            "last_assistant_message": "Noted, a Corolla."}
+    c.post("/v1/hook/stop", json=stop)
+    assert [(e.role, e.text) for e in store.mem.log.events] == [
+        ("user", "I drive a Toyota Corolla, nothing fancy."), ("assistant", "Noted, a Corolla.")]
+    write_transcript(path, [  # the file caught up, and the next turn came in
+        {"type": "user", "message": {"role": "user", "content": "I drive a Toyota Corolla, nothing fancy."}},
+        {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Noted, a Corolla."}]}},
+        {"type": "user", "message": {"role": "user", "content": "How do I roast peppers?"}}])
+    c.post("/v1/hook/stop", json={**stop, "last_assistant_message": "Under the grill."})
+    assert [e.text for e in store.mem.log.events][2:] == ["How do I roast peppers?", "Under the grill."]  # no repeat
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the server in WSL reading a Windows client's path")
+def test_a_windows_transcript_path_is_read_through_the_wsl_mount(monkeypatch, tmp_path):
+    monkeypatch.setattr(hooks, "MNT", tmp_path)
+    (tmp_path / "c" / "Users" / "Jane Doe" / ".claude").mkdir(parents=True)
+    want = tmp_path / "c" / "Users" / "Jane Doe" / ".claude" / "s.jsonl"
+    assert hooks.local_path("C:\\Users\\Jane Doe\\.claude\\s.jsonl") == want
+    assert hooks.local_path("c:/Users/Jane Doe/.claude/s.jsonl") == want
+    assert hooks.local_path("D:\\nope\\s.jsonl") == hooks.Path("D:\\nope\\s.jsonl")  # no such mount: as given
+    assert hooks.local_path("/home/a/s.jsonl") == hooks.Path("/home/a/s.jsonl")
