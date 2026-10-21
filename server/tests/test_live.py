@@ -111,3 +111,32 @@ def test_hook_scripts_never_block_claude_when_the_server_is_down(name, runner, w
     t = time.monotonic()
     out = hook(runner, name, {"session_id": "x", "prompt": "hi", "transcript_path": "/nope.jsonl"}, url)
     assert (out.returncode, out.stdout) == (0, "") and time.monotonic() - t < 5
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals; Windows stops the server with taskkill /F, see cli/README.md")
+@pytest.mark.parametrize("sig", ["SIGTERM", "SIGINT"])
+def test_serve_cleans_up_on_a_signal(tmp_path, sig):
+    """uvicorn re-raises SIGTERM/SIGINT after it shuts down, so only the lifespan hook gets to close the store and
+    remove the adapter's temp copy of the LOG (spookling-log-*)."""
+    import signal
+    import sys
+    import urllib.request
+
+    tmp, port = tmp_path / "tmp", int(nobody().rsplit(":", 1)[1])
+    tmp.mkdir()
+    proc = subprocess.Popen([sys.executable, "-c", "from spookling_memory import main; main()", "serve", "--folder",
+                             str(tmp_path / "mem"), "--port", str(port)], env={**os.environ, "TMPDIR": str(tmp)},
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(60):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/stats", timeout=1).read()
+                break
+            except OSError:
+                time.sleep(0.5)
+        assert list(tmp.glob("spookling-log-*"))  # the running server holds its temp copy
+        proc.send_signal(getattr(signal, sig))
+        proc.wait(30)
+    finally:
+        proc.kill()
+    assert not list(tmp.glob("spookling-log-*"))

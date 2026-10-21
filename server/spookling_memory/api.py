@@ -7,6 +7,7 @@ page can only send after a CORS preflight this server never grants. No CORS is c
 from __future__ import annotations
 
 import io
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
@@ -119,7 +120,17 @@ def serve(folder: str, port: int = PORT, **adapter) -> None:
     import uvicorn
 
     store = Store(folder, **adapter)
-    try:
-        uvicorn.run(create_app(store), host=HOST, port=port)
-    finally:
+    app = create_app(store)
+
+    @asynccontextmanager
+    async def lifespan(_):
+        yield
+        # Here, not only in the finally: after a graceful shutdown on SIGINT or SIGTERM, uvicorn re-raises the signal,
+        # which ends the process before a finally runs. close() removes the adapter's temp copy of the LOG.
         store.close()
+
+    app.router.lifespan_context = lifespan
+    try:
+        uvicorn.run(app, host=HOST, port=port)
+    finally:
+        store.close()  # idempotent; covers a failed start
