@@ -18,7 +18,27 @@ uv run pytest                                           # offline: stub triage, 
 
 Tagging and the slow path call the writer model through memory-bench's `bench.models`: `OPENROUTER_API_KEY` (or
 `~/spookling-rig/openrouter.env`). Without a key, a call that needs the model answers 503 with the reason and the
-server keeps running. One process owns a folder (a lock file); run `serve` once and point the hooks and MCP at it.
+server keeps running. One process owns a folder (an OS lock on `lock`: `fcntl.flock` on macOS and Linux,
+`msvcrt.locking` on Windows, released if the process dies); run `serve` once and point the hooks and MCP at it.
+
+## Platforms
+
+macOS, Linux and Windows, Python 3.12 (uv fetches it if missing). Tested on WSL2 Ubuntu and native Windows 11; not
+run on macOS.
+
+- **memory-bench** is a path dependency, `../../memory-bench` from this folder: clone `spookling-memory` and
+  `memory-bench` side by side.
+- **Records** are UTF-8 with `\n` line ends on every OS and split on `\n` only, so a `.memory/` folder copied between
+  machines opens unchanged.
+- **Windows**: run the server with `PYTHONUTF8=1` (the wizard sets it). memory-bench reads its data files in the
+  locale encoding, cp1252 on Windows, which garbles words such as "café". uvicorn runs on asyncio (no uvloop is
+  installed). Stop it with Ctrl-C, or `taskkill /PID <pid> /T /F`; the forced stop leaves the adapter's temporary
+  copy of the log in `%TEMP%\spookling-log-*`.
+- **Local models** (sentence-transformers, memory-bench's `vectors` extra) are optional and not installed by
+  `uv sync`: the server runs keyword-only without them. `SPOOKLING_LOCAL_MODELS=0` turns them off when installed.
+- **tiktoken** counts tokens for the recall budget and downloads its `cl100k_base` file (about 1.7 MB) on first use,
+  into `TIKTOKEN_CACHE_DIR`, or `data-gym-cache` under the system temp dir (`%TEMP%` on Windows) when unset. On a
+  machine without network, copy that cache over first, or set `TIKTOKEN_CACHE_DIR` to a folder that has it.
 
 ## Endpoints
 
@@ -42,21 +62,25 @@ cannot drive the server. The MCP tools are `memory_retrieve`, `memory_ingest`, `
 
 ## Hooks
 
-`../hooks/*.sh` pipe the hook's JSON to `/v1/hook/<event>` with curl and always exit 0, so a stopped server never
-blocks Claude. Stop logs the turns not yet logged (the server reads `transcript_path`), PreCompact does the same and
-then keeps the session's rules, decisions, values, dates, paths and names, and UserPromptSubmit adds the recalled
-block as `additionalContext` (at most 50,000 characters, about 12,500 tokens). In `.claude/settings.json`:
+`../hooks/*.js` (node, any OS) and `../hooks/*.sh` (bash and curl, macOS and Linux) pipe the hook's JSON to
+`/v1/hook/<event>` and always exit 0, so a stopped server never blocks Claude; they give a connect 1 second. Stop logs
+the turns not yet logged (the server reads `transcript_path`, and adds `last_assistant_message` when the file has not
+caught up), PreCompact does the same and then keeps the session's rules, decisions, values, dates, paths and names,
+and UserPromptSubmit adds the recalled block as `additionalContext`, cut at 10,000 characters, Claude Code's cap. A
+`C:\...` transcript path from a Windows Claude Code is read through `/mnt/c` when the server runs in WSL. In
+`.claude/settings.json` (exec form: no shell, so no path needs quoting; Claude Code v2.1.139 or later):
 
 ```json
 {"hooks": {
-  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "/path/to/hooks/user-prompt-submit.sh"}]}],
-  "PreCompact": [{"matcher": "", "hooks": [{"type": "command", "command": "/path/to/hooks/pre-compact.sh"}]}],
-  "Stop": [{"hooks": [{"type": "command", "command": "/path/to/hooks/stop.sh"}]}]
+  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "node", "args": ["/path/to/hooks/user-prompt-submit.js"]}]}],
+  "PreCompact": [{"hooks": [{"type": "command", "command": "node", "args": ["/path/to/hooks/pre-compact.js"]}]}],
+  "Stop": [{"hooks": [{"type": "command", "command": "node", "args": ["/path/to/hooks/stop.js"]}]}]
 }}
 ```
 
-To confirm against the current Claude Code docs: the `additionalContext` size cap, and the transcript line shape
-`hooks.turns()` reads.
+The hook contract was checked against the Claude Code docs on 21 Oct 2026: `../docs/claude-code-facts.md`. The
+transcript line format `hooks.turns()` reads is internal to Claude Code and changes between versions; it was checked
+against what 2.1.283 writes.
 
 ## Reset
 
@@ -90,6 +114,10 @@ format, version and line counts, and rebuilds every view with `settle()`. The sa
 before and after.
 
 ## Limits
+
+- Claude Code takes at most 10,000 characters of `additionalContext` per prompt (about 2,500 tokens), so a longer
+  recalled block loses its end there. ponytail: cut, not shaped; give the hook its own smaller recall budget if the
+  cut starts dropping what matters.
 
 - The after-reset view is rebuilt from zero after every change, as the adapter's full sleep is.
 - How often each fact was used (the INDEX page's ordering) is not persisted. After a restart, the page's order can

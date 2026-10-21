@@ -1,39 +1,122 @@
 # @spookling/memory
 
-The install wizard for Spookling Memory. Node 18 or newer, no dependencies.
+The install wizard for Spookling Memory. Node 18 or newer, no dependencies. Works on macOS, Linux (WSL included) and native Windows; what was run on which is listed under [Tested](#tested).
 
 ```bash
-npx @spookling/memory init        # the intro, then the step-by-step install
-npx @spookling/memory demo        # the intro only
-npx @spookling/memory status      # is the server up, which harness is wired (exit 0 when all is well)
-npx @spookling/memory uninstall   # remove the hooks and the MCP entry, keep .memory/
+npx @spookling/memory init                 # the intro, then the step-by-step install, for this project
+npx @spookling/memory init --scope user    # the same, wired for every project you open in Claude Code
+npx @spookling/memory demo                 # the intro only
+npx @spookling/memory status               # is the server up, what is wired (project and user files); exit 0 when all is well
+npx @spookling/memory uninstall            # remove the hooks and the MCP entry (add --scope user for the user files), keep .memory/
 ```
+
+Until the npm package exists, run the same commands from a clone: `node <clone>/cli/bin/spookling-memory.js init` (below).
+
+## Install from a clone
+
+The server imports memory-bench through the path `../../memory-bench`, relative to `server/`. Clone the two repos side by side, in any folder:
+
+```text
+src/
+  spookling-memory/
+  memory-bench/
+```
+
+Neither repo has a public remote yet, so the clone URLs below are placeholders (to confirm with Mohammed). Run `init` from the project folder you want the memory in; `.memory/` is created there.
+
+### macOS (zsh)
+
+```bash
+brew install node                                   # Node 18+, or the installer from nodejs.org
+curl -LsSf https://astral.sh/uv/install.sh | sh     # uv, which runs the Python server
+mkdir -p ~/src && cd ~/src
+git clone <spookling-memory repo URL> spookling-memory
+git clone <memory-bench repo URL> memory-bench
+cd ~/code/your-project
+node ~/src/spookling-memory/cli/bin/spookling-memory.js init                 # this project
+node ~/src/spookling-memory/cli/bin/spookling-memory.js init --scope user    # or every project
+```
+
+### Linux and WSL (bash)
+
+The same commands as macOS, with Node from your package manager or nvm. In WSL, run everything in the WSL shell, with Claude Code installed in WSL, and keep the clones and the project on the Linux side (`~/...`), not under `/mnt/c`.
+
+### Windows, native Claude Code (PowerShell)
+
+```powershell
+winget install OpenJS.NodeJS.LTS                                       # Node 18+, or the installer from nodejs.org
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+# open a new PowerShell window so node and uv are on PATH
+mkdir $HOME\src; cd $HOME\src
+git clone <spookling-memory repo URL> spookling-memory
+git clone <memory-bench repo URL> memory-bench
+cd $HOME\code\your-project
+node $HOME\src\spookling-memory\cli\bin\spookling-memory.js init                # this project
+node $HOME\src\spookling-memory\cli\bin\spookling-memory.js init --scope user   # or every project
+```
+
+Git for Windows is not needed: the hooks run `node` directly, with no shell. The first `uv sync` downloads Python 3.12 if you do not have it (about two minutes here).
+
+### One server in WSL, Claude Code on Windows too
+
+With WSL's mirrored networking (`networkingMode=mirrored` in `%USERPROFILE%\.wslconfig`, the setup tested here), Windows and WSL share 127.0.0.1, so one server in WSL can serve both sides and both share one memory.
+
+1. In WSL, from your project: `node ~/src/spookling-memory/cli/bin/spookling-memory.js init` (or `--scope user`). This installs and starts the server.
+2. In PowerShell, point at the same clone through the WSL share:
+   `node \\wsl.localhost\Ubuntu-24.04\home\<you>\src\spookling-memory\cli\bin\spookling-memory.js init --scope user`
+   The wizard sees the clone is inside WSL. It skips `uv sync` (a Windows `.venv` would replace the one WSL runs), wires the hooks to the scripts on the share, and writes the MCP entry as `wsl.exe -d <distro> -- bash -lc "exec uv run --project '<path>' spookling-memory mcp"`, so the MCP tools run inside WSL too.
+
+Windows sessions then log into the WSL project's `.memory/`; the server reads their `C:\...` transcripts through `/mnt/c`. Starting a hook from the share took 1 to 3 seconds per event here. NAT networking (`localhostForwarding`) was not tested.
 
 ## Flags
 
+- `--scope project` (default) or `--scope user`, for `init` and `uninstall`. See the table below.
 - `--no-anim` skips the animation and prints the wordmark as a still.
 - `--frames N` (demo only) prints N frames from across the intro, one after another. Useful for checking the drawing without a live terminal.
 
 The animation also skips itself when `NO_COLOR` is set, when output is not a terminal, or when the terminal is smaller than 40 x 16. Colour is 24-bit when `COLORTERM` is `truecolor` or `24bit`, 256 colours otherwise. `FORCE_COLOR=1` keeps colour in piped output. Any key skips the intro; Ctrl-C restores the terminal and exits.
 
+Without a terminal (an assistant's shell, a pipe), answers are read from stdin. When stdin ends, or stays open and says nothing for 20 seconds, every prompt takes its default. Every write is still printed before it happens, so the log shows exactly what a default wrote.
+
 ## What `init` writes
 
-Run it from your project folder. Every write is shown before it happens; answer `n` to skip it.
+Every write is shown before it happens; answer `n` to skip it. Every command it runs is shown the same way.
 
 | Where | What |
 | --- | --- |
-| `.memory/keys.env` | `ANTHROPIC_API_KEY`, plus `OPENROUTER_API_KEY` if you give one. Mode 600. Taken from your environment, or typed at a hidden prompt; never printed. |
+| `.memory/keys.env` | `ANTHROPIC_API_KEY`, plus `OPENROUTER_API_KEY` if you give one. Taken from your environment, or typed at a hidden prompt; never printed. Mode 600 on macOS and Linux; on Windows it has the folder's own access rules. |
 | `.memory/.gitignore` | `keys.env`, `server.pid`, `server.log` |
 | `.memory/server.pid`, `.memory/server.log` | the background server: `uv run --project <server> spookling-memory serve --folder .memory --port 7447` |
-| `.claude/settings.json` | three hooks merged in: `PreCompact`, `UserPromptSubmit`, `Stop`, each `SPOOKLING_MEMORY_URL=http://127.0.0.1:7447 <hooks>/<event>.sh` |
-| `.mcp.json` | `mcpServers.spookling-memory`: stdio, `uv run --project <server> spookling-memory mcp`, with `SPOOKLING_MEMORY_URL` in its `env` |
+| `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | three hooks merged in, `PreCompact`, `UserPromptSubmit` and `Stop`, each `{"type": "command", "command": "node", "args": ["<hooks>/<event>.js"]}` |
+| `.mcp.json` (project) | `mcpServers.spookling-memory`: stdio, `uv run --project <server> spookling-memory mcp`, with `SPOOKLING_MEMORY_URL` in its `env` |
+| user MCP list (user scope) | the same entry, added with `claude mcp add-json spookling-memory '<entry>' --scope user`. Claude Code keeps it in `~/.claude.json`, a file it writes itself, so the wizard only reads that file. |
 | `.memory/CODEX-TODO.md` | Codex only: a note that the Codex wiring is not built yet |
 
-It also runs `uv sync` in the server folder. `<server>` and `<hooks>` are the `server/` and `hooks/` folders next to `cli/` in the repo, or inside the package once they are bundled. Every other key in `settings.json` and `.mcp.json` is kept. A file that is not valid JSON is left untouched and reported, never overwritten.
+It also runs `uv sync` in the server folder. `<server>` and `<hooks>` are the `server/` and `hooks/` folders next to `cli/` in the repo, or inside the package once they are bundled. `CLAUDE_CONFIG_DIR` moves the user files, as it does for Claude Code. On Windows, `~` is `%USERPROFILE%`. Every other key in each file is kept. A file that is not valid JSON is left untouched and reported, never overwritten.
+
+## What Claude Code does with it
+
+Checked against the current Claude Code docs on 21 Oct 2026; [docs/claude-code-facts.md](../docs/claude-code-facts.md) has each fact and its source.
+
+- The hooks use exec form (`command` plus `args`), which Claude Code spawns with no shell on every OS, so no path needs quoting. It needs Claude Code v2.1.139 or later.
+- In an interactive session, hooks wait until you accept the folder's trust dialog, and Claude Code asks you once to approve the project's `.mcp.json` server.
+- Recalled memory arrives as `additionalContext`, at most 10,000 characters. The server cuts there, because Claude Code would otherwise save a longer value to a file and show Claude only a 2,000-character preview.
+- With the server down, the hooks print nothing and exit 0, within about a second, so a prompt is never blocked.
+- To see them: `/hooks` in Claude Code lists them; `claude --debug` writes each run to `~/.claude/debug/<session-id>.txt`.
 
 ## Undo
 
-`npx @spookling/memory uninstall` removes only the Spookling hooks and the `spookling-memory` MCP entry; everything else in both files stays exactly as it was. It also offers to stop the server named in `.memory/server.pid`. Your memory in `.memory/` stays, keys included. To remove that too, delete the folder yourself.
+`npx @spookling/memory uninstall` (with `--scope user` for the user files) removes only the Spookling hooks and the `spookling-memory` MCP entry; everything else in those files stays exactly as it was. It also offers to stop the server named in `.memory/server.pid`: a SIGTERM to its process group on macOS and Linux, `taskkill /T /F` on Windows. Your memory in `.memory/` stays, keys included. To remove that too, delete the folder yourself.
+
+On Windows the stop is forced, so the server cannot remove its temporary copy of the log: delete `%TEMP%\spookling-log-*` if you want it gone. On macOS and Linux the server removes it on the way out.
+
+## Tested
+
+On 21 Oct 2026, on one PC: WSL2 Ubuntu 24.04 (Node 24.19, uv 0.12.5) and native Windows 11 (Node 24.7, uv 0.9.29, Python 3.12.12 fetched by uv).
+
+- WSL: `npm test` and the server suite; `init`, `status` and `uninstall` in both scopes, in a sandbox home.
+- Windows: `node --test test/hooks.test.js` (18 of 18) and the server suite (38 passed, 8 skipped: the `.sh` hooks and a WSL-only path test); `init`, `status` and `uninstall` (project scope) in a temp project, with the hooks and MCP entry it wrote driven the way Claude Code drives them, and the server tree gone after uninstall; `init` against the WSL clone through `\\wsl.localhost`.
+- Not run: macOS (no Mac to hand), Claude Code itself firing these hooks (that needs a model call), Windows without mirrored networking.
 
 ## Develop
 
