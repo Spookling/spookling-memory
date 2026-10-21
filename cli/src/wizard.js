@@ -246,8 +246,12 @@ export async function init({ anim = true, project = process.cwd(), scope = 'proj
       if (name === 'ANTHROPIC_API_KEY' && !v.startsWith('sk-ant-')) warn('That key does not start with sk-ant-. Kept as given.');
     } else if (optional) info(`${name} skipped`);
     else {
-      warn(`${name} not set. Put it in .memory/keys.env later; the server needs it to tag and read.`);
-      ctx.problems.push('no ANTHROPIC_API_KEY');
+      if (name === 'ANTHROPIC_API_KEY' && ctx.keys.OPENROUTER_API_KEY) {
+        ok('no ANTHROPIC_API_KEY: fine, Jev tags through OpenRouter and your harness is the reader');
+      } else {
+        warn(`${name} not set. Put it in .memory/keys.env later; the server needs it to tag.`);
+        ctx.problems.push(`no ${name}`);
+      }
     }
   }
   if (Object.keys(fresh).length) {
