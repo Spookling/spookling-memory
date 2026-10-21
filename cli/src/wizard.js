@@ -246,12 +246,8 @@ export async function init({ anim = true, project = process.cwd(), scope = 'proj
       if (name === 'ANTHROPIC_API_KEY' && !v.startsWith('sk-ant-')) warn('That key does not start with sk-ant-. Kept as given.');
     } else if (optional) info(`${name} skipped`);
     else {
-      if (name === 'ANTHROPIC_API_KEY' && ctx.keys.OPENROUTER_API_KEY) {
-        ok('no ANTHROPIC_API_KEY: fine, Jev tags through OpenRouter and your harness is the reader');
-      } else {
-        warn(`${name} not set. Put it in .memory/keys.env later; the server needs it to tag.`);
-        ctx.problems.push(`no ${name}`);
-      }
+      // decided after both keys are read: without ANTHROPIC_API_KEY, Jev (OpenRouter) can still tag
+      ctx.missingKeys = [...(ctx.missingKeys || []), name];
     }
   }
   if (Object.keys(fresh).length) {
@@ -260,6 +256,16 @@ export async function init({ anim = true, project = process.cwd(), scope = 'proj
       preview: Object.keys(fresh).map((k) => `${k}=********`).join('\n'),
     });
   } else if (Object.keys(ctx.keys).length) ok('.memory/keys.env already up to date');
+  for (const name of ctx.missingKeys || []) {
+    if (name === 'ANTHROPIC_API_KEY' && ctx.keys.OPENROUTER_API_KEY) {
+      ok('no ANTHROPIC_API_KEY: fine, Jev tags through OpenRouter and your harness is the reader');
+    } else if (name === 'OPENROUTER_API_KEY' && ctx.keys.ANTHROPIC_API_KEY) {
+      ok('no OPENROUTER_API_KEY: fine, Haiku tags through Anthropic');
+    } else {
+      warn(`${name} not set. Put it in .memory/keys.env later; the server needs a key to tag.`);
+      ctx.problems.push(`no ${name}`);
+    }
+  }
   const giPath = join(ctx.mem, '.gitignore');
   const gi = existsSync(giPath) ? readFileSync(giPath, 'utf8') : '';
   if (!/^keys\.env$/m.test(gi)) {
