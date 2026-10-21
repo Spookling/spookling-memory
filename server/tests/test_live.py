@@ -1,7 +1,9 @@
-"""Against a real server on a 127.0.0.1 socket: the MCP tools (thin clients of the API) and the bash hook scripts."""
+"""Against a real server on a 127.0.0.1 socket: the MCP tools (thin clients of the API) and both sets of hook scripts
+(hooks/*.js with node, any OS; hooks/*.sh with bash and curl, macOS and Linux)."""
 import asyncio
 import json
 import os
+import shutil
 import socket
 import subprocess
 import threading
@@ -16,6 +18,11 @@ from spookling_memory.api import create_app
 from spookling_memory.portability import read_archive
 
 HOOKS = Path(__file__).resolve().parents[2] / "hooks"
+RUNNERS = [
+    pytest.param(("node", ".js"), id="js", marks=pytest.mark.skipif(not shutil.which("node"), reason="no node")),
+    pytest.param(("bash", ".sh"), id="sh", marks=pytest.mark.skipif(
+        os.name == "nt" or not shutil.which("curl"), reason="the .sh hooks are for macOS and Linux")),
+]
 
 
 @pytest.fixture
@@ -40,9 +47,11 @@ def nobody() -> str:
         return f"http://127.0.0.1:{s.getsockname()[1]}"
 
 
-def hook(name, payload, url):
-    return subprocess.run(["bash", str(HOOKS / name)], input=json.dumps(payload), capture_output=True, text=True,
-                          env={**os.environ, "SPOOKLING_MEMORY_URL": url}, timeout=90)
+def hook(runner, name, payload, url):
+    """Run one hook script as Claude Code's exec form does: the interpreter, the script path as one argument."""
+    exe, ext = runner
+    return subprocess.run([exe, str(HOOKS / (name + ext))], input=json.dumps(payload), capture_output=True,
+                          text=True, encoding="utf-8", env={**os.environ, "SPOOKLING_MEMORY_URL": url}, timeout=90)
 
 
 def test_mcp_tools(live, tmp_path, monkeypatch):
@@ -68,26 +77,28 @@ def test_mcp_tools(live, tmp_path, monkeypatch):
         M.memory_stats()
 
 
-def test_hook_scripts(live, tmp_path):
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_hook_scripts(live, tmp_path, runner):
     url, store = live
     path = tmp_path / "abc.jsonl"
-    path.write_text("".join(json.dumps(e) + "\n" for e in [
+    path.write_text(encoding="utf-8", data="".join(json.dumps(e) + "\n" for e in [
         {"type": "user", "message": {"role": "user", "content": "I drive a Toyota Corolla, nothing fancy."}},
         {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Noted."}]}},
         {"type": "user", "message": {"role": "user", "content": "We decided to use Postgres 16 for the shop."}}]))
     base = {"session_id": "abc", "transcript_path": str(path)}
-    out = hook("stop.sh", {**base, "hook_event_name": "Stop", "stop_hook_active": False}, url)
+    out = hook(runner, "stop", {**base, "hook_event_name": "Stop", "stop_hook_active": False}, url)
     assert (out.returncode, out.stdout) == (0, "")
-    out = hook("pre-compact.sh", {**base, "hook_event_name": "PreCompact", "trigger": "manual"}, url)
+    out = hook(runner, "pre-compact", {**base, "hook_event_name": "PreCompact", "trigger": "manual"}, url)
     assert (out.returncode, out.stdout) == (0, "")
     assert len(store.mem.log.events) == 3 and [k.kind for k in store.mem.staging] == ["decision"]
-    out = hook("user-prompt-submit.sh", {**base, "hook_event_name": "UserPromptSubmit", "prompt": "What car do I drive?"}, url)
+    out = hook(runner, "user-prompt-submit", {**base, "hook_event_name": "UserPromptSubmit", "prompt": "What car do I drive?"}, url)
     assert out.returncode == 0
     ctx = json.loads(out.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "Toyota Corolla" in ctx and "Postgres 16" in ctx  # the decision leads every context
 
 
-@pytest.mark.parametrize("name", ["user-prompt-submit.sh", "pre-compact.sh", "stop.sh"])
-def test_hook_scripts_never_block_claude_when_the_server_is_down(name):
-    out = hook(name, {"session_id": "x", "prompt": "hi", "transcript_path": "/nope.jsonl"}, nobody())
+@pytest.mark.parametrize("runner", RUNNERS)
+@pytest.mark.parametrize("name", ["user-prompt-submit", "pre-compact", "stop"])
+def test_hook_scripts_never_block_claude_when_the_server_is_down(name, runner):
+    out = hook(runner, name, {"session_id": "x", "prompt": "hi", "transcript_path": "/nope.jsonl"}, nobody())
     assert (out.returncode, out.stdout) == (0, "")
