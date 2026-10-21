@@ -142,7 +142,7 @@ class Store:
         except OSError:
             self._lockfile.close()
             raise RuntimeError(f"{self.folder} is open in another process (one server per memory folder)") from None
-        self.adapter, self.lock, self._post = adapter, threading.RLock(), None
+        self.adapter, self.lock, self._post, self.mem = adapter, threading.RLock(), None, None
         try:
             events, decisions = read_jsonl(self.folder / LOG), read_jsonl(self.folder / JUDGEMENTS)
             self.mem = SpooklingMemory(**adapter)
@@ -151,6 +151,8 @@ class Store:
             self.mem.settle()
             self._flush()  # a full sleep may judge items left pending: those judgements are records too
         except BaseException:
+            if self.mem is not None:  # its LOG is an open SQLite file in a temp dir, which Windows cannot delete open
+                self.mem.close()
             unlock(self._lockfile)
             raise
 
