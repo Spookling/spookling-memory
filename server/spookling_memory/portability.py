@@ -15,7 +15,7 @@ from pathlib import Path
 
 from bench.adapters.spookling import VERSION
 
-from .store import JUDGEMENTS, LOG, Store, lines, now
+from .store import JUDGEMENTS, LOG, Store, jsonl, lines, now
 
 FORMAT, ARCHIVE_VERSION = "spookling-memory", 1
 MEMBERS = ("manifest.json", LOG, JUDGEMENTS)
@@ -30,7 +30,7 @@ def export(mem, path) -> dict:
              JUDGEMENTS: "".join(x + "\n" for x in dec)}
     with (tarfile.open(path, "w:gz") if isinstance(path, (str, Path)) else tarfile.open(fileobj=path, mode="w:gz")) as tar:
         for name in MEMBERS:
-            data = files[name].encode()
+            data = files[name].encode("utf-8")
             info = tarfile.TarInfo(name)
             info.size, info.mtime, info.mode = len(data), 0, 0o600
             tar.addfile(info, io.BytesIO(data))
@@ -45,10 +45,10 @@ def read_archive(path) -> tuple[list[dict], list[dict], dict]:
             members = {m.name: m for m in tar.getmembers()}
             if sorted(members) != sorted(MEMBERS) or not all(m.isfile() for m in members.values()):
                 raise ValueError(f"expected exactly {', '.join(MEMBERS)}, found {', '.join(sorted(members)) or 'nothing'}")
-            text = {n: tar.extractfile(members[n]).read().decode() for n in MEMBERS}
+            text = {n: tar.extractfile(members[n]).read().decode("utf-8") for n in MEMBERS}
         manifest = json.loads(text["manifest.json"])
-        events = [json.loads(x) for x in text[LOG].splitlines()]
-        decisions = [json.loads(x) for x in text[JUDGEMENTS].splitlines()]
+        events = [json.loads(x) for x in jsonl(text[LOG]) if x.strip()]
+        decisions = [json.loads(x) for x in jsonl(text[JUDGEMENTS]) if x.strip()]
     except (tarfile.TarError, OSError, EOFError, UnicodeDecodeError, json.JSONDecodeError) as e:
         raise ValueError(f"not a readable Spookling Memory archive: {e}") from None
     if manifest.get("format") != FORMAT or manifest.get("version") != ARCHIVE_VERSION:

@@ -2,15 +2,15 @@
 
     log.jsonl         the LOG: every turn, verbatim, once (the adapter's Log.lines() format)
     judgements.jsonl  the judgement log: every adapter decision, plus this server's rulings (compact, reset, reset_undo)
-    lock              held while the folder is open, so one process writes it
+    lock              locked while the folder is open, so one process writes it (an OS lock: a crash never leaves it held)
 
 The adapter keeps its SQLite in a temp dir that close() removes, so these two files are the only durable copy.
-Each change appends the new lines and fsyncs. Opening a folder replays them into a fresh SpooklingMemory (load())
+Each change appends the new lines and fsyncs. The files are UTF-8 with \n line ends on every OS, so a folder copied
+between Windows, macOS and Linux opens unchanged. Opening a folder replays them into a fresh SpooklingMemory (load())
 and settle() rebuilds FACTS, EVENTS, the INDEX page and SEARCH; no model is called for what was already judged.
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -28,17 +28,26 @@ from bench.schema import Session, Turn
 from . import reset as R
 
 LOG, JUDGEMENTS = "log.jsonl", "judgements.jsonl"
+WINDOWS = os.name == "nt"
 
 
 def now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def jsonl(text: str) -> list[str]:
+    """The lines of a JSONL text, split on \\n only (a \\r before it is dropped). str.splitlines() would also split on
+    U+2028, U+0085 and the like, which JSON keeps raw inside a string."""
+    return [x.removesuffix("\r") for x in text.split("\n")]
+
+
 def read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
     out = []
-    for n, line in enumerate(path.read_text().splitlines(), 1):
+    for n, line in enumerate(jsonl(path.read_text(encoding="utf-8")), 1):
+        if not line.strip():
+            continue
         try:
             out.append(json.loads(line))
         except ValueError as e:
@@ -87,10 +96,37 @@ def replay(mem, d: dict) -> None:
 
 def append(path: Path, new: list[str]) -> None:
     if new:
-        with open(path, "a") as f:
+        with open(path, "a", encoding="utf-8", newline="\n") as f:
             f.write("".join(x + "\n" for x in new))
             f.flush()
             os.fsync(f.fileno())
+
+
+def lock(f) -> None:
+    """Lock f's first byte for this open file: fcntl.flock on macOS and Linux, msvcrt.locking on Windows. OSError if
+    another open file holds it. The OS drops the lock when the process ends, so a crash never leaves the folder stuck."""
+    if WINDOWS:
+        import msvcrt
+
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def unlock(f) -> None:
+    """Release and close. Windows may free a closed handle's lock late, so it is unlocked first; a reopen right after
+    then works. Idempotent."""
+    if f.closed:
+        return
+    if WINDOWS:
+        import msvcrt
+
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+    f.close()
 
 
 class Store:
@@ -100,10 +136,10 @@ class Store:
     def __init__(self, folder: str | Path, **adapter):
         self.folder = Path(folder)
         self.folder.mkdir(parents=True, exist_ok=True)
-        self._lockfile = open(self.folder / "lock", "w")
+        self._lockfile = open(self.folder / "lock", "ab")  # never truncated: another process may hold its lock
         try:
-            fcntl.flock(self._lockfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            lock(self._lockfile)
+        except OSError:
             self._lockfile.close()
             raise RuntimeError(f"{self.folder} is open in another process (one server per memory folder)") from None
         self.adapter, self.lock, self._post = adapter, threading.RLock(), None
@@ -115,7 +151,7 @@ class Store:
             self.mem.settle()
             self._flush()  # a full sleep may judge items left pending: those judgements are records too
         except BaseException:
-            self._lockfile.close()
+            unlock(self._lockfile)
             raise
 
     @contextmanager
@@ -242,4 +278,4 @@ class Store:
                 self._post[1].close()
                 self._post = None
             self.mem.close()
-            self._lockfile.close()  # releases the flock
+            unlock(self._lockfile)

@@ -80,3 +80,45 @@ def test_a_bad_timestamp_is_refused_before_it_reaches_the_log(open_store):
     assert s.mem.log.events == []
     fill(s, HISTORY[:1])  # the memory still works
     assert len(s.mem.log.events) == 4
+
+
+def test_a_line_separator_inside_a_turn_survives_a_reopen_and_an_archive(open_store, tmp_path):
+    from spookling_memory.portability import read_archive
+
+    text = "Line one line two\u0085three, café — \U0001F47B"  # JSON keeps U+2028 and U+0085 raw
+    s = open_store()
+    s.ingest("s1", turns([text]), "2024-05-22T10:00:00Z")
+    s.export(tmp_path / "a.spookling")
+    s.close()
+    assert b"\r\n" not in (tmp_path / "m" / "log.jsonl").read_bytes()  # \n line ends on every OS
+    assert open_store().mem.log.events[0].text == text
+    assert read_archive(tmp_path / "a.spookling")[0][0]["text"] == text
+
+
+def test_the_windows_lock_refuses_a_second_open_and_frees_on_close(monkeypatch, tmp_path):
+    """msvcrt exists only on Windows. A stand-in with its contract (LK_NBLCK raises PermissionError while another open
+    file holds the byte; LK_UNLCK frees it) runs the Windows branch here; the real one runs on Windows itself."""
+    import os
+    import sys
+    import types
+
+    from spookling_memory import store as store_mod
+
+    held = {}
+
+    def locking(fd, mode, n):
+        key = os.fstat(fd).st_ino
+        if mode == 0:
+            assert held.pop(key) == fd, "unlocked by a handle that did not lock"
+        elif held.setdefault(key, fd) != fd:
+            raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setitem(sys.modules, "msvcrt", types.SimpleNamespace(LK_UNLCK=0, LK_NBLCK=2, locking=locking))
+    monkeypatch.setattr(store_mod, "WINDOWS", True)
+    a = Store(tmp_path / "w", triage=Stub(TAGS))
+    with pytest.raises(RuntimeError, match="open in another process"):
+        Store(tmp_path / "w", triage=Stub(TAGS))
+    a.close()
+    a.close()  # idempotent
+    assert held == {}  # unlocked before the handle closed
+    Store(tmp_path / "w", triage=Stub(TAGS)).close()  # free at once
