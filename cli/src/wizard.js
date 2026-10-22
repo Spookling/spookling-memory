@@ -1,4 +1,5 @@
 // init, status and uninstall. Every file write is shown first and can be skipped with n.
+// demo is init with dry: the same steps and prompts, answered on screen by a script, and nothing written or run.
 import process from 'node:process';
 import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
@@ -6,9 +7,10 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rm
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { C, ask, askHidden, confirm, paint, sleep } from './term.js';
+import { C, DOWN, MODE, UP, askHidden, bail, choose, confirm, paint, press, setFeed, setRaw, sleep, write as emit } from './term.js';
 import { play } from './cutscene.js';
 import { flyOnce } from './ghost.js';
+import { fits, stage } from './stage.js';
 import {
   HOOK_FILES, MCP_NAME, addHooks, addMcp, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
   showHandler, wiring, wslShare,
@@ -21,19 +23,102 @@ export const SERVER_DIR = join(ROOT, 'server'), HOOKS_DIR = join(ROOT, 'hooks');
 export const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`, STATS = `${SERVER_URL}/v1/stats`;
 const STEPS = ['Checks', 'Harness', 'Keys', 'Server', 'Wire Claude Code', 'Smoke test', 'Done'];
 const WIN = process.platform === 'win32';
+export const DEMO_LABEL = 'demo, nothing is written';
 
-const out = (s) => process.stdout.write(s);
+// What the ghost says, one line per step and one when something goes wrong. Plain words, no hype, no em dashes;
+// at most 52 characters so the bubble fits beside the ghost at 80 columns (test/ui.test.js checks all of it).
+export const SAY = {
+  1: 'Hello. First I check what this machine has.',
+  2: 'Pick the tool you talk to. I will sit beside it.',
+  3: 'Your keys go in one file, out of git, never shown.',
+  4: 'Moving in. Everything I remember goes in .memory/',
+  5: 'I will remind Claude of what you told it before.',
+  codex: 'Nothing to wire for Codex yet. I will wait.',
+  6: 'A quick knock, to check I am home.',
+  7: 'That is all. Carry on as you always do.',
+  fail: 'Sorry, that failed. The line marked ! says why.',
+};
+
+const out = (s) => emit(s);
 const ok = (s) => out(`   ${paint(C.MINT, '✓')} ${s}\n`);
 const warn = (s) => out(`   ${paint(C.LILAC, '!')} ${s}\n`);
 const info = (s) => out(`   ${paint(C.GREY, s)}\n`);
+// A problem for the summary, and the ghost's line for it.
+const fail = (ctx, problem) => { ctx.problems.push(problem); return ctx.say(SAY.fail); };
 
-function step(n) {
+async function step(ctx, n, line = SAY[n]) {
   const w = 28, fill = Math.round((w * n) / STEPS.length);
   out(`\n${paint(C.LILAC, '━'.repeat(fill))}${paint(C.GREY, '─'.repeat(w - fill))}  ${paint(C.GREY, `step ${n} of ${STEPS.length}`)}\n`);
   out(`${paint(C.GHOST, `${n}  ${STEPS[n - 1]}`, true)}\n`);
+  if (line) { await ctx.say(line); await ctx.beat(2600); }
 }
 
-const newCtx = (project, scope = 'project') => ({ project, scope, mem: join(project, '.memory'), written: [], skipped: [], problems: [], keys: {} });
+// A line that ticks while work runs (keep label short: a wrapped line cannot be redrawn), then done is printed in
+// its place. The ticks are not kept in the log.
+async function progress(label, work, done = label) {
+  const tty = process.stdout.isTTY && MODE !== 'none';
+  let i = 0;
+  const tick = () => process.stdout.write(`\r   ${paint(C.LILAC, ['•  ', '•• ', '•••', ' ••', '  •', '   '][i++ % 6])} ${label}\x1b[K`);
+  const timer = tty ? setInterval(tick, 120) : null;
+  if (tty) tick();
+  try { return await work; } finally {
+    clearInterval(timer);
+    out(`${tty ? '\r' : ''}   ${paint(C.GREY, done)}${tty ? '\x1b[K' : ''}\n`);
+  }
+}
+
+// Run a command with its output collected, not shown live (the stage owns the screen). No shell, stdin closed.
+const run = (cmd, args, { cwd, timeout }) => new Promise((res) => {
+  let text = '';
+  const child = spawn(cmd, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const timer = setTimeout(() => child.kill(), timeout);
+  child.stdout.on('data', (d) => { text += d; });
+  child.stderr.on('data', (d) => { text += d; });
+  child.on('error', (error) => { clearTimeout(timer); res({ status: null, error, text }); });
+  child.on('close', (status) => { clearTimeout(timer); res({ status, text }); });
+});
+
+// The JSON that gets merged, laid out to read at 80 columns. Still valid JSON, every value exact (tested).
+export const hooksJson = (handlers) => ['{', '  "hooks": {', Object.entries(handlers).map(([ev, h]) => [
+  `    ${JSON.stringify(ev)}: [{ "hooks": [{`,
+  `      "type": ${JSON.stringify(h.type)}, "command": ${JSON.stringify(h.command)},`,
+  `      "args": ${JSON.stringify(h.args)}`,
+  '    }] }]',
+].join('\n')).join(',\n'), '  }', '}'].join('\n');
+export const mcpJson = (entry) => ['{', '  "mcpServers": {', `    ${JSON.stringify(MCP_NAME)}: {`,
+  ...Object.entries(entry).map(([k, v], i, all) => `      ${JSON.stringify(k)}: ${JSON.stringify(v)}${i < all.length - 1 ? ',' : ''}`),
+  '    }', '  }', '}'].join('\n');
+
+// What a fresh server answers on /v1/stats, for the demo's smoke test.
+const SAMPLE = { n_events: 0, n_facts: 0, n_rows: 0, folder: '.memory', reset: null };
+
+// demo: the answers are typed on screen by a script, into the same reader a user types into, so the demo walks the
+// real prompts. Any key cuts the current pause short; fast drops the pauses. Ctrl-C still quits.
+function demoInput(fast) {
+  const { stdin } = process;
+  let skip = null;
+  const beat = (ms) => (fast ? Promise.resolve() : new Promise((r) => {
+    const t = setTimeout(go, ms);
+    function go() { clearTimeout(t); skip = null; r(); }
+    skip = go;
+  }));
+  const onKey = (k) => (String(k)[0] === '\x03' ? bail() : skip?.()); // raw mode: Ctrl-C arrives as a key
+  if (stdin.isTTY) { setRaw(true); stdin.on('data', onKey); stdin.resume(); }
+  const fake = (prefix) => [...`${prefix}${'x'.repeat(24 - prefix.length)}`]; // shown only as bullets
+  setFeed(async ({ kind, q }) => {
+    const keys = kind === 'menu' ? [DOWN, UP, '\r'] // look at the next option, come back to Claude Code, Enter
+      : kind === 'hidden' ? [...fake(/OpenRouter/.test(q) ? 'sk-or-v1-' : 'sk-ant-api03-'), '\r']
+      : kind === 'confirm' ? ['y', '\r'] : ['\r'];
+    await beat(kind === 'confirm' ? 3600 : 1400); // time to read what is about to be written
+    for (const k of keys) { press(k); if (k !== '\r') await beat(kind === 'hidden' ? 45 : 800); }
+  });
+  return { beat, stop() { setFeed(null); if (stdin.isTTY) { stdin.off('data', onKey); stdin.pause(); setRaw(false); } } };
+}
+
+const newCtx = (project, scope = 'project') => ({
+  project, scope, mem: join(project, '.memory'), written: [], skipped: [], problems: [], keys: {},
+  dry: false, say: async () => {}, beat: async () => {},
+});
 // Inside the project: relative. Elsewhere (the user files): from ~, or absolute.
 const rel = (ctx, p) => {
   const r = relative(ctx.project, p), h = relative(homedir(), p);
@@ -80,21 +165,22 @@ async function write(ctx, path, content, { what, preview = content, mode } = {})
     info('skipped');
     return false;
   }
+  ctx.written.push([name, what]);
+  if (ctx.dry) return info('demo: not written'), true;
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content, mode ? { mode } : undefined);
   if (mode) chmodSync(path, mode);
-  ctx.written.push([name, what]);
   ok(`wrote ${name}`);
   return true;
 }
 
 // Read JSON, apply fn, and write only if something changed. A file we cannot parse is left alone.
+// demo: starts from an empty file, as a fresh project would, and reads nothing.
 async function mergeFile(ctx, path, fn, { what, preview, same }) {
   let before, after;
-  try { before = readJson(path); after = fn(before); } catch (e) {
+  try { before = ctx.dry ? {} : readJson(path); after = fn(before); } catch (e) {
     warn(e.message);
-    ctx.problems.push(`${rel(ctx, path)} left untouched: fix it by hand, then run again`);
-    return;
+    return fail(ctx, `${rel(ctx, path)} left untouched: fix it by hand, then run again`);
   }
   if (JSON.stringify(before) === JSON.stringify(after)) return ok(same);
   await write(ctx, path, JSON.stringify(after, null, 2) + '\n', { what, preview });
@@ -108,6 +194,7 @@ async function runCmd(ctx, cmd, args, { what, show }) {
     info('skipped');
     return null;
   }
+  if (ctx.dry) { ctx.written.push([cmd, what]); info('demo: not run'); return { status: 0 }; }
   const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 60_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   for (const l of `${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n').filter(Boolean)) info(l);
   if (r.status === 0) { ctx.written.push([cmd, what]); ok('done'); } else warn(r.error ? `${cmd}: ${r.error.code ?? r.error.message}` : `${cmd} exited ${r.status}`);
@@ -119,16 +206,16 @@ const shq = (s) => (/^[\w./:@=-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'
 // and changes it through `claude mcp` (add-json refuses a name that exists, hence remove first).
 const userEntry = (project) => { try { return readJson(mcpPath(project, 'user')).mcpServers?.[MCP_NAME]; } catch { return undefined; } };
 async function userMcp(ctx, entry) {
-  const have = userEntry(ctx.project), json = JSON.stringify(entry);
+  const have = ctx.dry ? undefined : userEntry(ctx.project), json = JSON.stringify(entry);
   if (JSON.stringify(have) === json) return ok(`${rel(ctx, mcpPath(ctx.project, 'user'))} already has the MCP entry`);
   const add = ['mcp', 'add-json', MCP_NAME, json, '--scope', 'user'];
   if (have) {
     const r = await runCmd(ctx, 'claude', ['mcp', 'remove', MCP_NAME, '--scope', 'user'],
       { what: `the old ${MCP_NAME} entry removed`, show: `claude mcp remove ${MCP_NAME} --scope user` });
-    if (r?.status !== 0) return void ctx.problems.push(`MCP entry not replaced: run claude mcp remove ${MCP_NAME} --scope user, then init again`);
+    if (r?.status !== 0) return fail(ctx, `MCP entry not replaced: run claude mcp remove ${MCP_NAME} --scope user, then init again`);
   }
   const r = await runCmd(ctx, 'claude', add, { what: `MCP server ${MCP_NAME}, user scope`, show: `claude ${add.map(shq).join(' ')}` });
-  if (r && r.status !== 0) ctx.problems.push(`MCP entry not added: run the claude mcp add-json line above in your shell`);
+  if (r && r.status !== 0) await fail(ctx, 'MCP entry not added: run the claude mcp add-json line above in your shell');
 }
 
 // Keys: replace our lines, keep anything else in the file.
@@ -175,21 +262,40 @@ async function waitForStats(ctx) {
   return null;
 }
 
-export async function init({ anim = true, project = process.cwd(), scope = 'project' } = {}) {
-  await play({ anim });
+// dry (the demo): every step and prompt as a user sees them, answered by a script; nothing is written, started or
+// run, and nothing in the project is read. The checks are real (they only read). fast: no pauses.
+export async function init({ anim = true, project = process.cwd(), scope = 'project', dry = false, fast = false } = {}) {
+  const label = dry ? DEMO_LABEL : '';
+  await play({ anim: anim && !fast, keep: fits(anim), label });
   const ctx = newCtx(project, scope);
+  const demo = dry ? demoInput(fast) : null;
+  const st = stage({ anim, label, hold: fast ? 0 : 1200 });
+  Object.assign(ctx, { dry, say: st.say, beat: demo?.beat ?? ctx.beat });
+  try {
+    return await steps(ctx, { anim, st });
+  } finally {
+    st.close();
+    demo?.stop();
+  }
+}
+
+async function steps(ctx, { anim, st }) {
+  const { project, scope } = ctx;
+  if (ctx.dry && !st.live) info(DEMO_LABEL);
   out(`   Setting up Spookling Memory in ${paint(C.GHOST, project)}${scope === 'user' ? paint(C.GREY, ' (hooks and MCP for all your projects)') : ''}\n`);
   info('Every file is shown before it is written. Answer n to skip it.');
 
-  // 1. Checks
-  step(1);
+  // 1. Checks (real in the demo too: they only read)
+  await step(ctx, 1);
   if (Number(process.versions.node.split('.')[0]) < 18) {
     warn(`Node ${process.version} is too old. Spookling Memory needs Node 18 or newer.`);
+    await ctx.say(SAY.fail);
     return 1;
   }
   ok(`node ${process.version}`);
   let uv = version('uv');
-  if (!uv) {
+  if (!uv && ctx.dry) info('uv is not on your PATH. demo: init would offer to install it here.');
+  else if (!uv) {
     const cmd = process.platform === 'win32'
       ? 'powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"'
       : 'curl -LsSf https://astral.sh/uv/install.sh | sh';
@@ -200,17 +306,17 @@ export async function init({ anim = true, project = process.cwd(), scope = 'proj
       process.env.PATH = `${join(homedir(), '.local', 'bin')}${delimiter}${process.env.PATH}`;
       uv = version('uv');
     }
-    if (!uv) { warn('Install uv, then run init again.'); return 1; }
+    if (!uv) { warn('Install uv, then run init again.'); await ctx.say(SAY.fail); return 1; }
   }
-  ok(uv);
+  if (uv) ok(uv);
   const git = version('git');
   if (git) ok(git); else warn('git not found. That is fine; .memory/ is just easier to back up inside a repo.');
+  await ctx.beat(1200);
 
   // 2. Harness
-  step(2);
-  out('   1  Claude Code\n   2  Codex (wiring comes later)\n   3  Spookling app\n');
-  const pick = await ask('   Which one?', '1');
-  ctx.harness = { 1: 'claude', 2: 'codex', 3: 'app' }[pick] ?? (/codex/i.test(pick) ? 'codex' : /app/i.test(pick) ? 'app' : 'claude');
+  await step(ctx, 2);
+  const pick = await choose('   Which one?', ['Claude Code', 'Codex (wiring comes later)', 'Spookling app']);
+  ctx.harness = ['claude', 'codex', 'app'][pick];
   if (ctx.harness === 'app') {
     ok('Spookling Memory ships with the app. Nothing to install here.');
     return 0;
@@ -225,22 +331,23 @@ export async function init({ anim = true, project = process.cwd(), scope = 'proj
     ].join('\n'), { what: 'Codex TODO note' });
   }
 
-  // 3. Keys
-  step(3);
+  // 3. Keys. The demo reads neither your environment nor .memory/keys.env, so both prompts show.
+  await step(ctx, 3);
   const envPath = join(ctx.mem, 'keys.env');
-  const envText = existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
+  const envText = !ctx.dry && existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
+  const env = ctx.dry ? {} : process.env;
   const fresh = {};
   for (const [name, label, optional] of [
     ['ANTHROPIC_API_KEY', 'Anthropic API key (tagger and reader):', false],
-    ['OPENROUTER_API_KEY', 'OpenRouter API key for the Jev tagger (optional, Enter skips):', true],
+    ['OPENROUTER_API_KEY', 'OpenRouter API key for Jev (optional, Enter skips):', true],
   ]) {
     const have = envValue(envText, name);
-    let v = process.env[name];
+    let v = env[name];
     if (v) ok(`${name} found in your environment`);
     else if (have) { ok(`${name} already in .memory/keys.env`); ctx.keys[name] = have; continue; }
     else v = await askHidden(`   ${label}`);
     if (v) {
-      if (v !== process.env[name]) ok(`${name} received`);
+      if (v !== env[name]) ok(`${name} received`);
       ctx.keys[name] = v;
       if (v !== have) fresh[name] = v;
       if (name === 'ANTHROPIC_API_KEY' && !v.startsWith('sk-ant-')) warn('That key does not start with sk-ant-. Kept as given.');
@@ -263,11 +370,11 @@ export async function init({ anim = true, project = process.cwd(), scope = 'proj
       ok('no OPENROUTER_API_KEY: fine, Haiku tags through Anthropic');
     } else {
       warn(`${name} not set. Put it in .memory/keys.env later; the server needs a key to tag.`);
-      ctx.problems.push(`no ${name}`);
+      await fail(ctx, `no ${name}`);
     }
   }
   const giPath = join(ctx.mem, '.gitignore');
-  const gi = existsSync(giPath) ? readFileSync(giPath, 'utf8') : '';
+  const gi = !ctx.dry && existsSync(giPath) ? readFileSync(giPath, 'utf8') : '';
   if (!/^keys\.env$/m.test(gi)) {
     await write(ctx, giPath, gi + (gi && !gi.endsWith('\n') ? '\n' : '') + 'keys.env\nserver.pid\nserver.log\n', {
       what: 'keeps your keys out of git',
@@ -275,7 +382,7 @@ export async function init({ anim = true, project = process.cwd(), scope = 'proj
   }
 
   // 4. Server
-  step(4);
+  await step(ctx, 4);
   const share = WIN && wslShare(SERVER_DIR);
   if (share) {
     // Run from PowerShell against a clone inside WSL: one server, in WSL, serves both sides on 127.0.0.1.
@@ -285,81 +392,101 @@ export async function init({ anim = true, project = process.cwd(), scope = 'proj
     ctx.skipped.push('the server install (it runs in WSL)');
   } else if (!existsSync(join(SERVER_DIR, 'pyproject.toml'))) {
     warn(`No memory server found at ${SERVER_DIR}.`);
-    ctx.problems.push('memory server not found');
+    await fail(ctx, 'memory server not found');
   } else {
-    info(`uv sync in ${SERVER_DIR}`);
-    const r = spawnSync('uv', ['sync'], { cwd: SERVER_DIR, stdio: ['ignore', 'inherit', 'inherit'], timeout: 10 * 60_000, windowsHide: true });
-    if (r.status !== 0) {
-      warn('uv sync failed (output above).');
-      ctx.problems.push('uv sync failed');
+    const label = 'installing the server (uv sync)', done = `uv sync in ${rel(ctx, SERVER_DIR)}`;
+    const r = ctx.dry ? (await progress(label, ctx.beat(3000), done), null)
+      : await progress(label, run('uv', ['sync'], { cwd: SERVER_DIR, timeout: 10 * 60_000 }), done);
+    if (ctx.dry) info('demo: skipped');
+    else {
+      // uv's own summary; the per-package lines only when it failed
+      for (const l of r.text.split(/\r?\n/)) if (l.trim() && (r.status !== 0 || !/^\s*[-+~] /.test(l))) info(l.trim());
+    }
+    if (r && r.status !== 0) {
+      warn(r.error ? `uv sync: ${r.error.code ?? r.error.message}` : 'uv sync failed (output above).');
+      await fail(ctx, 'uv sync failed');
     } else {
-      ok('server installed');
-      if (await stats()) ok(`a server already answers on 127.0.0.1:${PORT}`);
+      if (!ctx.dry) ok('server installed');
+      if (!ctx.dry && await stats()) ok(`a server already answers on 127.0.0.1:${PORT}`);
       else if (await confirm('   Start it in the background? (pid in .memory/server.pid, log in .memory/server.log)')) {
-        ctx.pid = startServer(ctx);
-        if (ctx.pid) {
-          ok(`started, pid ${ctx.pid}`);
-          ctx.written.push(['memory server', `127.0.0.1:${PORT}, pid ${ctx.pid}`]);
-        } else { warn('could not start uv'); ctx.problems.push('server did not start'); }
+        if (ctx.dry) {
+          info('demo: not started');
+          ctx.written.push(['memory server', `127.0.0.1:${PORT}`]);
+        } else {
+          ctx.pid = startServer(ctx);
+          if (ctx.pid) {
+            ok(`started, pid ${ctx.pid}`);
+            ctx.written.push(['memory server', `127.0.0.1:${PORT}, pid ${ctx.pid}`]);
+          } else { warn('could not start uv'); await fail(ctx, 'server did not start'); }
+        }
       } else ctx.skipped.push('starting the server');
     }
   }
 
   // 5. Wire Claude Code
-  step(5);
+  await step(ctx, 5, ctx.harness === 'claude' ? SAY[5] : SAY.codex);
   if (ctx.harness !== 'claude') info('Codex: nothing to wire yet (see .memory/CODEX-TODO.md).');
   else {
     const handlers = hookHandlers(HOOKS_DIR);
     for (const f of Object.values(HOOK_FILES)) {
       if (!existsSync(join(HOOKS_DIR, f))) {
         warn(`${join(HOOKS_DIR, f)} is missing; Claude Code will report it on each event.`);
-        ctx.problems.push(`hook script ${f} missing`);
+        await fail(ctx, `hook script ${f} missing`);
       }
     }
     if (!version('node')) warn('`node` is not on your PATH here. The hooks run `node`, so Claude Code needs it on its PATH.');
     const sp = settingsPath(project, scope);
     await mergeFile(ctx, sp, (s) => addHooks(s, handlers), {
       what: 'hooks: PreCompact, UserPromptSubmit, Stop',
-      preview: Object.entries(handlers).map(([ev, h]) => `+ hooks.${ev.padEnd(17)} ${showHandler(h)}`).join('\n')
-        + '\n  merged in; nothing else in the file changes',
+      preview: `${hooksJson(handlers)}\n  merged in; nothing else in the file changes`,
       same: `${rel(ctx, sp)} already has the hooks`,
     });
     const entry = mcpEntry(SERVER_DIR, SERVER_URL);
     if (scope === 'project') {
       await mergeFile(ctx, mcpPath(project), (c) => addMcp(c, entry), {
         what: `MCP server ${MCP_NAME}`,
-        preview: `+ mcpServers.${MCP_NAME}  (stdio) ${showHandler(entry)}\n    env SPOOKLING_MEMORY_URL=${SERVER_URL}\n  other servers stay`,
+        preview: `${mcpJson(entry)}\n  merged in; other servers stay`,
         same: '.mcp.json already has the MCP entry',
       });
     } else await userMcp(ctx, entry);
   }
 
   // 6. Smoke test
-  step(6);
+  await step(ctx, 6);
   out(`   ${paint(C.GREY, `GET ${STATS} `)}`);
-  const res = await waitForStats(ctx);
+  let res;
+  if (ctx.dry) {
+    for (let i = 0; i < 3; i++) { await ctx.beat(500); out(paint(C.GREY, '.')); }
+    res = SAMPLE;
+  } else res = await waitForStats(ctx);
   out('\n');
-  if (res) ok(`the server answered: ${JSON.stringify(res).slice(0, 72)}`);
-  else {
+  const short = (j) => (j.length > 50 ? `${j.slice(0, 49)}…` : j);
+  if (res) {
+    ok(`the server answered: ${short(JSON.stringify(res))}`);
+    if (ctx.dry) info('demo: a sample reply');
+  } else {
     warn(`nothing answered on 127.0.0.1:${PORT}. ${share ? 'Start the server in WSL (the command in step 4).' : 'Look in .memory/server.log.'}`);
-    ctx.problems.push('smoke test failed');
+    await fail(ctx, 'smoke test failed');
   }
 
-  // 7. Done
-  step(7);
-  await flyOnce(process.stdout, { anim });
-  for (const [name, what] of ctx.written) out(`   ${paint(C.MINT, `✓ ${name.padEnd(24)}`)} ${paint(C.GREY, what)}\n`);
-  for (const s of ctx.skipped) out(`   ${paint(C.GREY, `- skipped ${s}`)}\n`);
-  for (const p of ctx.problems) out(`   ${paint(C.LILAC, '!')} ${p}\n`);
+  // 7. Done: back to the normal screen with the log, then the ghost's last pass, the checklist and the verdict.
+  await step(ctx, 7, null);
+  await ctx.beat(1000);
   let wired = true;
-  if (ctx.harness === 'claude') {
+  if (ctx.harness === 'claude' && !ctx.dry) {
     try {
       const w = wiring(readJson(settingsPath(project, scope)), readJson(mcpPath(project, scope)));
       wired = w.events.length === 3 && w.mcp;
     } catch { wired = false; }
   }
+  st.close();
+  await flyOnce(wired && !ctx.problems.length ? SAY[7] : SAY.fail, { anim });
+  for (const [name, what] of ctx.written) out(`   ${paint(C.MINT, `✓ ${name.padEnd(24)}`)} ${paint(C.GREY, what)}\n`);
+  for (const s of ctx.skipped) out(`   ${paint(C.GREY, `- skipped ${s}`)}\n`);
+  for (const p of ctx.problems) out(`   ${paint(C.LILAC, '!')} ${p}\n`);
   if (wired && !ctx.problems.length) {
-    out(`\n   ${paint(C.MINT, 'Spookling Memory is in.', true)}\n\n`);
+    out(`\n   ${paint(C.MINT, 'Spookling Memory is in.', true)}\n`);
+    out(ctx.dry ? `   ${paint(C.GREY, 'demo: nothing was written, started or run.')}\n\n` : '\n');
     return 0;
   }
   out(`\n   Not quite in yet. Fix the lines marked ! (or the skipped writes) and run init again.\n\n`);

@@ -15,7 +15,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/hooks.test.js"
+    "test": "node --test test/hooks.test.js test/ui.test.js"
   },
   "license": "UNLICENSED",
   "private": true

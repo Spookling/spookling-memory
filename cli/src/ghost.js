@@ -1,83 +1,62 @@
-// The Spookling ghost: 26 x 14 pixels, drawn as 7 text rows of half blocks.
-// K hat and eyes, M hat band, G body, L tail streaks, . transparent.
-import { C, MODE, canvas, cursor, dot, mix, render, size, sleep } from './term.js';
+// The Spookling ghost, generated from brand/logos/ghost-mark.png by tools/make-ghost.py (see src/ghost-sprite.js).
+// BIG is 38 x 40 pixels (20 text rows), SMALL is the same ghost pooled by 3, 13 x 14 (7 text rows).
+// The mark is cropped at its left and bottom edges, as the brand mark is; it is drawn as it is, never mirrored.
+import { C, MODE, canvas, cursor, dot, render, size, sleep, write } from './term.js';
+import { FRAMES, H, PALETTE, SMALL, SMALL_H, SMALL_W, W } from './ghost-sprite.js';
 
-const PAL = { K: C.BLACK, M: C.PURPLE_MID, G: C.GHOST, L: C.LILAC };
+const grid = (f) => f.map((row) => [...row].map((p) => PALETTE[p]));
+export const BIG = { w: W, h: H, frames: FRAMES.map(grid) };
+export const LITTLE = { w: SMALL_W, h: SMALL_H, frames: SMALL.map(grid) };
+export const TAIL = 0.18; // seconds per tail frame
 
-const HEAD = [
-  '.......KKKK...............',
-  '.....KK..KKKKK............',
-  '..........MMMMMMM.........',
-  '......KKKKKKKKKKKKKKKKKKKK',
-  '.KKKKKKKKKKKKKKKKKKKKKK...',
-  '.......GGGGGGGGGGGGGGGG...',
-  '......GGGGGGGGKKGGGKKGGG..',
-  '......GGGGGGGGKKGGGKKGGG..',
-  '.....GGGGGGGGGKKGGGKKGGG..',
-];
-// Rows 9 to 13: the body, and the tail tip (first five columns) that waves.
-const BODY = [
-  'GGGGGGGGGGGGGGGGGGG..',
-  'GGLGGGGGGGKKKKGGGGG..',
-  'GLGGGLGGGGGKKGGGGG...',
-  'LGGGLGGGGGGGGGGGG....',
-  '.GGLGGGGGGGGGGGG.....',
-];
-// One tail tip every 0.15 s: high, middle, low, middle.
-const TIPS = [
-  ['..GGG', 'LGGGG', '.LGGG', '...GG', '.....'],
-  ['.....', '..GGG', 'LLGGG', '..GGG', '.....'],
-  ['.....', '....G', '..GGG', 'LLGGG', '.....'],
-  ['.....', '..GGG', 'LLGGG', '..GGG', '.....'],
-];
-const TAILS = TIPS.map((tip) => tip.map((t, i) => t + BODY[i]));
-
-export const FRAMES = TAILS.map((t) => [...HEAD, ...t].map((row) => [...row].map((p) => PAL[p] ?? null)));
-export const W = 26, H = 14;
-
-// Draw the ghost on cv at time s (seconds) of a pass across the canvas.
-// y is the pixel row of the flight line; flip flies right to left.
-// A few LILAC sparks trail behind the tail. Returns false once the ghost has left.
-export function fly(cv, s, { dur = 1.7, y = 0, flip = false, stopAt = null } = {}) {
-  const p = Math.min(s / dur, 1);
-  const end = stopAt ?? cv.w;
-  const at = (t) => Math.round(-W + Math.min(t / dur, 1) * (end + W));
-  const bob = (t) => y + Math.round(2 * Math.sin(t * 8));
-  const X = (x, w = 1) => (flip ? cv.w - x - w : x);
-  const frame = FRAMES[Math.floor(s / 0.15) % FRAMES.length];
-  for (let i = 1; i <= 5; i++) {
-    const t = s - i * 0.03;
-    if (t < 0) break;
-    const bg = cv.px[bob(t) * cv.w] ?? C.FIELD;
-    dot(cv, X(at(t) - i), bob(t) + 11 + (i & 1), mix(C.LILAC, bg, i / 6));
-  }
-  const x0 = at(s), y0 = bob(s);
-  frame.forEach((row, r) => row.forEach((c, x) => c && dot(cv, X(x0 + x), y0 + r, c)));
-  return p < 1;
+// The ghost at pixel (x, y) at time s: only the tail streaks change between frames.
+export function draw(cv, g, x, y, s) {
+  const f = g.frames[Math.floor(s / TAIL) % g.frames.length];
+  f.forEach((row, r) => row.forEach((c, i) => c && dot(cv, x + i, y + r, c)));
 }
 
-// The done screen: the ghost flies across once in the normal screen and parks on the right.
-export async function flyOnce(out = process.stdout, { anim = true } = {}) {
-  const { cols, rows: tall } = size();
-  const cv = () => canvas(Math.min(cols, 100), H + 4, C.FIELD); // the hat needs the purple behind it
-  if (!anim || MODE === 'none' || !out.isTTY || cols < 40 || tall < 12) {
-    if (MODE !== 'none') {
-      const c = cv();
-      fly(c, 1.7, { y: 2, stopAt: c.w - W - 2 });
-      out.write(render(c).join('\n') + '\n');
-    }
-    return;
+// Fly g left to right across cv over dur seconds at flight line y, bobbing; stopAt parks it there (pixel x).
+// Returns false once it has left (or parked).
+export function fly(cv, g, s, { dur = 1.7, y = 0, stopAt = null } = {}) {
+  const end = stopAt ?? cv.w;
+  const t = Math.min(s / dur, 1), ease = stopAt == null ? t : 1 - (1 - t) ** 2; // a parked ghost slows to a stop
+  draw(cv, g, Math.round(-g.w + ease * (end + g.w)), y + Math.round(Math.sin(s * 5)), s);
+  return t < 1;
+}
+
+// A speech bubble on cv: GHOST fill, BLACK text on text row `row`, one pixel of padding above and below, rounded
+// corners, and a tail from a bottom corner down toward the ghost (side: where the ghost is). x is the first text
+// column. Returns the text overlay for render().
+export function bubble(cv, text, x, row, side = 'left') {
+  const y0 = row * 2 - 1, y1 = row * 2 + 2, x0 = x - 2, x1 = x + text.length + 1; // pixel box
+  for (let y = y0; y <= y1; y++) {
+    for (let i = x0; i <= x1; i++) if (!((y === y0 || y === y1) && (i === x0 || i === x1))) dot(cv, i, y, C.GHOST);
   }
-  const rows = (H + 4) / 2;
-  out.write('\n'.repeat(rows) + `\x1b[${rows}A`);
+  const d = side === 'left' ? -1 : 1, cx = side === 'left' ? x0 : x1;
+  [[0, 0], [1, 1], [2, 1], [3, 2]].forEach(([i, j]) => dot(cv, cx + d * i, y1 + j, C.GHOST));
+  return { [row]: [[x, text, C.BLACK]] };
+}
+
+// The done screen: on a band of FIELD, the small ghost flies in and parks on the right with its last line beside it.
+// Printed into the normal screen, so the last frame stays in scrollback. No colour: just the line.
+export async function flyOnce(line, { anim = true } = {}) {
+  const { cols } = size();
+  const w = Math.min(cols, 100), rows = 8, g = LITTLE, stopAt = w - g.w - 3, y = 1;
+  const frame = (s) => {
+    const cv = canvas(w, rows * 2, C.FIELD);
+    const moving = fly(cv, g, s, { dur: 1.6, y, stopAt });
+    const text = !moving && line.length + 8 < stopAt ? bubble(cv, line, stopAt - line.length - 5, 3, 'right') : {};
+    return { lines: render(cv, text), moving };
+  };
+  if (MODE === 'none') return write(`   spookling: ${line}\n`);
+  const lines = (s) => frame(s).lines.map((l) => `\r${l}\x1b[K`).join('\n');
+  if (!anim || !process.stdout.isTTY) return write(lines(10) + '\n');
+  write('\n'.repeat(rows) + `\x1b[${rows}A`);
   cursor(false);
-  for (let s = 0; ; s += 0.05) {
-    const c = cv();
-    const more = fly(c, s, { y: 2, stopAt: c.w - W - 2 });
-    out.write(render(c).map((l) => `\r${l}\x1b[K`).join('\n') + `\x1b[${rows - 1}A`);
-    if (!more) break;
-    await sleep(50);
+  for (let s = 0; frame(s).moving; s += 1 / 12) {
+    process.stdout.write(lines(s) + `\x1b[${rows - 1}A`); // frames are not kept in the log; the last one is
+    await sleep(83);
   }
-  out.write(`\x1b[${rows - 1}B\n`);
+  write(lines(10) + '\n');
   cursor(true);
 }

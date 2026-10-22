@@ -1,13 +1,14 @@
-// The intro: field fades in, the ghost crosses twice, SPOOKLING builds letter by letter,
-// the tagline types out, then the MINT line. About 7.5 s at 20 fps, any key skips.
+// The intro: the field fades in, the big ghost crosses, the small ghost flies in and parks above SPOOKLING, which
+// builds letter by letter, the tagline types out, then the MINT line. About 7 s at 20 fps; any key skips.
+// The tagline is shown once in the whole flow: here, or in the still when there is no animation.
 import process from 'node:process';
-import { C, MODE, bail, canvas, dot, enterScreen, mix, paint, render, restore, setRaw, size } from './term.js';
-import { fly } from './ghost.js';
+import { C, LEGACY, MODE, bail, canvas, dot, enterScreen, mix, paint, render, restore, setRaw, size, write } from './term.js';
+import { BIG, LITTLE, draw, fly } from './ghost.js';
 
 export const TAGLINE = 'An AI assistant that works for you while you sleep';
 export const PROMISE = 'Memory that stays right for years.';
 
-// Block letters, 7 px tall, drawn GHOST on a PURPLE band.
+// Block letters, 7 px tall, GHOST.
 const FONT = {
   S: ['.XXXX.', 'XX..XX', 'XX....', '.XXXX.', '....XX', 'XX..XX', '.XXXX.'],
   P: ['XXXXX.', 'XX..XX', 'XX..XX', 'XXXXX.', 'XX....', 'XX....', 'XX....'],
@@ -22,9 +23,8 @@ const WORD = 'SPOOKLING', GAP = 2, PAD = 4;
 const TEXT_W = [...WORD].reduce((n, ch) => n + FONT[ch][0].length, 0) + GAP * (WORD.length - 1);
 export const BAND_W = TEXT_W + PAD * 2, BAND_H = 12; // pixels; 6 text rows
 
-// Draw the band at pixel (x, y) with the first n letters; fade 0..1 blends the band in.
-function wordmark(cv, x, y, n, fade = 1, field = C.FIELD) {
-  const band = field === null ? null : mix(field, C.PURPLE, fade);
+// The first n letters at pixel (x, y), on a band of colour band (null: no band).
+function wordmark(cv, x, y, n, band) {
   if (band) for (let j = 0; j < BAND_H; j++) for (let i = 0; i < BAND_W; i++) dot(cv, x + i, y + j, band);
   let cx = x + PAD;
   [...WORD].slice(0, n).forEach((ch) => {
@@ -34,64 +34,68 @@ function wordmark(cv, x, y, n, fade = 1, field = C.FIELD) {
 }
 
 // When things happen, in seconds.
-const T = { fade: 0.7, pass1: 0.3, pass2: 2.0, mark: 3.6, type: 5.1, promise: 6.6, end: 7.6 };
+const T = { fade: 0.7, pass: 0.3, park: 2.4, mark: 3.2, type: 4.6, promise: 6.0, end: 7.0 };
 
-// One frame at time s for a cols x rows screen, as a single string.
-export function frame(s, cols, rows) {
-  // No colour: no field. 256 colours: one step, since a blend would pass through navy.
+// One frame at time s for a cols x rows screen, as a single string. label: a quiet note in the top right corner.
+export function frame(s, cols, rows, label = '') {
+  // No colour: no field. 256 colours: one step, since a blend would pass through the wrong colours.
   const field = MODE === 'none' ? null : MODE === '256' ? (s < T.fade / 2 ? C.BLACK : C.FIELD) : mix(C.BLACK, C.FIELD, s / T.fade);
   const cv = canvas(cols, rows * 2, field);
-  const top = Math.max(0, (rows >> 1) - 5); // text row of the band
-  const big = cols >= BAND_W + 2;
-  const bx = Math.max(0, (cols - (big ? BAND_W : 21)) >> 1);
-  if (s >= T.mark) {
-    const fade = (s - T.mark) / 0.3, n = Math.floor((s - T.mark) / 0.15);
-    if (big) wordmark(cv, bx, top * 2, n, fade, field);
-    else if (field) for (let j = 0; j < 6; j++) for (let i = 0; i < 21; i++) dot(cv, bx + i, top * 2 + 3 + j, mix(field, C.PURPLE, fade));
-  }
-  if (s >= T.pass1 && s < T.pass2 + 1.7) {
-    if (s < T.pass2) fly(cv, s - T.pass1, { y: Math.round(rows * 0.3) });
-    else fly(cv, s - T.pass2, { y: Math.round(rows * 1.1), flip: true });
+  const big = cols >= BAND_W + 2, perched = rows >= 19; // room for the band, and for the small ghost above it
+  const top = Math.max(0, (rows - (perched ? 18 : 10)) >> 1); // text row the lockup starts on
+  const band = top + (perched ? 8 : 0), bx = Math.max(0, (cols - (big ? BAND_W : 21)) >> 1);
+  // The pass: the big ghost when it fits (20 rows), else the small one.
+  const g = rows >= 22 && cols >= 60 ? BIG : LITTLE;
+  if (s >= T.pass && s < T.park) fly(cv, g, s - T.pass, { dur: T.park - T.pass, y: Math.max(1, rows - (g.h >> 1)) - 1 });
+  if (perched && s >= T.park) {
+    const x = (cols - LITTLE.w) >> 1;
+    if (s < T.mark) fly(cv, LITTLE, s - T.park, { dur: T.mark - T.park, y: top * 2 + 1, stopAt: x });
+    else draw(cv, LITTLE, x, top * 2 + 1 + Math.round(Math.sin((s - T.park) * 5)), s);
   }
   const text = {};
-  const put = (row, str, c) => (text[row] ??= []).push([Math.max(0, (cols - str.length) >> 1), str, c]);
-  if (!big && s >= T.mark) {
+  const put = (row, str, c, col = Math.max(0, (cols - str.length) >> 1)) => (text[row] ??= []).push([col, str, c]);
+  if (s >= T.mark) {
     const n = Math.floor((s - T.mark) / 0.15);
-    text[top + 3] = [[bx + 2, [...WORD].slice(0, n).join(' '), C.GHOST]];
+    if (big) wordmark(cv, bx, band * 2, n, null);
+    else put(band + 3, [...WORD].slice(0, n).join(' ').padEnd(17), C.GHOST, bx + 2);
   }
   if (s >= T.type) {
     const n = Math.floor((s - T.type) * 38), line = TAGLINE.slice(0, n);
-    put(top + 8, (line + (n < TAGLINE.length ? '▌' : ' ')).padEnd(TAGLINE.length + 1), C.GHOST);
+    put(band + 7, (line + (n < TAGLINE.length ? '▌' : ' ')).padEnd(TAGLINE.length + 1), C.GHOST);
   }
-  if (s >= T.promise) put(top + 10, PROMISE.slice(0, Math.floor((s - T.promise) * 60)).padEnd(PROMISE.length), C.MINT);
+  if (s >= T.promise) put(band + 9, PROMISE.slice(0, Math.floor((s - T.promise) * 60)).padEnd(PROMISE.length), C.MINT);
+  if (label && cols >= label.length + 4) put(0, label, mix(C.FIELD, C.GHOST, 0.55), cols - label.length - 2);
   return render(cv, text).join('\r\n');
 }
 
-// The last frame, printed into the normal screen so it stays in scrollback.
-export function still() {
+// The last frame as a still, for the normal screen. tagline: false after the animation, which already showed it.
+export function still({ tagline = true } = {}) {
   const { cols } = size();
   const out = [''];
   if (cols >= BAND_W + 2) {
     const cv = canvas(BAND_W, BAND_H);
-    wordmark(cv, 0, 0, WORD.length, 1, MODE === 'none' ? null : C.PURPLE);
+    wordmark(cv, 0, 0, WORD.length, MODE === 'none' ? null : C.PURPLE);
     out.push(...render(cv).filter((l) => l.trim()).map((l) => '  ' + l));
   } else {
     out.push('  ' + paint(C.GHOST, [...WORD].join(' '), true));
   }
-  out.push('', '  ' + paint(C.GHOST, TAGLINE), '  ' + paint(C.MINT, PROMISE), '');
+  out.push('');
+  if (tagline) out.push('  ' + paint(C.GHOST, TAGLINE));
+  out.push('  ' + paint(C.MINT, PROMISE), '');
   return out.join('\n') + '\n';
 }
 
 export const canAnimate = (anim) => {
   const { cols, rows } = size();
-  return anim && MODE !== 'none' && process.stdout.isTTY && cols >= 40 && rows >= 16;
+  return anim && MODE !== 'none' && !LEGACY && process.stdout.isTTY && cols >= 40 && rows >= 16;
 };
 
-// Play the cutscene, then leave the still behind. Resolves when done or skipped.
-export function play({ anim = true } = {}) {
+// Play the intro. keep: stay in the alternate screen afterwards (the install stage follows); otherwise leave it and
+// print the still without the tagline. No animation: print the still with it. Resolves to true if it animated.
+export function play({ anim = true, keep = false, label = '' } = {}) {
   if (!canAnimate(anim)) {
-    process.stdout.write(still());
-    return Promise.resolve();
+    write(still());
+    return Promise.resolve(false);
   }
   return new Promise((resolve) => {
     const { stdin, stdout } = process;
@@ -101,10 +105,10 @@ export function play({ anim = true } = {}) {
       if (done) return;
       done = true;
       clearInterval(timer);
-      if (stdin.isTTY) { stdin.off('data', onKey); stdin.pause(); }
-      restore();
-      stdout.write(still());
-      resolve();
+      if (stdin.isTTY) { stdin.off('data', onKey); stdin.pause(); setRaw(false); }
+      if (keep) stdout.write('\x1b[0m\x1b[2J\x1b[H');
+      else { restore(); write(still({ tagline: false })); }
+      resolve(true);
     };
     const onKey = (k) => (k[0] === 3 ? bail() : finish());
     enterScreen();
@@ -113,7 +117,7 @@ export function play({ anim = true } = {}) {
       const { cols, rows } = size();
       if (cols < 40 || rows < 16) return finish();
       const dims = `${cols}x${rows}`, s = (Date.now() - t0) / 1000; // wall clock, so a slow terminal drops frames, not time
-      stdout.write((dims !== last ? '\x1b[2J' : '') + '\x1b[H' + frame(s, cols, rows));
+      stdout.write((dims !== last ? '\x1b[2J' : '') + '\x1b[H' + frame(s, cols, rows, label));
       last = dims;
       if (s > T.end) finish();
     }, 50);
