@@ -154,7 +154,7 @@ EYE = ['.XX', 'XXX', 'XXX', 'XX.']
 FIXES = {
     (38, 40): [
         (K, 18, 20, ['.' * 13] * 12),  # repaint the face area to body, then stamp
-        (K, 19, 22, EYE), (K, 26, 22, EYE), (K, 22, 28, ['XX..', 'XXXX', '.XX.']),
+        (K, 19, 22, EYE), (K, 26, 22, EYE), (K, 22, 28, ['X...X', '.XXX.']),  # a U smile, same shape at every size
     ],
 }
 
@@ -162,7 +162,7 @@ FIXES = {
 # Laid out from the big sprite's own rows and columns (divided by 2.9 for 13 x 14, by 2 for 19 x 20). Same letters
 # as the printouts: . transparent, K BLACK, M PURPLE_MID (the band), L LILAC (the streaks), # GHOST.
 # 13 x 14 (7 text rows): band of 2; single-pixel eyes on one row with 3 columns between them (columns 5 and 9); a
-# 3-pixel smile (X.X over .X.) two rows below, centred on column 7; one 3-pixel streak lower left. The logo's hook is
+# U smile (X.X over XXX) two rows below, centred on column 7; one 3-pixel streak lower left. The logo's hook is
 # filled in: at this size its notch reads as a hole in the hat.
 SMALL_ART = [
     '....KK.......',
@@ -176,7 +176,7 @@ SMALL_ART = [
     '...##K###K#..',
     '..#########..',
     '###L##K#K##..',
-    '##L####K###..',
+    '##L###KKK##..',
     '#L#########..',
     '##########...',
 ]

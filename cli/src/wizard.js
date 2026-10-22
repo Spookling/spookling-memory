@@ -35,7 +35,7 @@ export const SAY = {
   5: 'I will remind Claude of what you told it before.',
   codex: 'Nothing to wire for Codex yet. I will wait.',
   6: 'A quick knock, to check I am home.',
-  7: 'All set. I will keep the little things for you.',
+  7: 'That is all. Carry on as you always do.',
   fail: 'Sorry, that failed. The line marked ! says why.',
 };
 
