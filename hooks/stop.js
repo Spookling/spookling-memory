@@ -6,6 +6,7 @@
 // A connect gets 1 s (a dead port on WSL's mirrored network is never refused, only dropped), the reply
 // 15 s. Settings run it in exec form, {"command": "node", "args": ["<this file>"]}, so no shell ever parses the path.
 // Same contract as stop.sh; the logic lives in the server (server/spookling_memory/hooks.py).
+if (process.env.SPOOKLING_TAGGING) process.exit(0); // a tagging call the server started: nothing to log or recall
 const http = require('node:http');
 const url = (process.env.SPOOKLING_MEMORY_URL || 'http://127.0.0.1:7447').replace(/\/+$/, '') + '/v1/hook/stop';
 const done = () => process.exit(0);

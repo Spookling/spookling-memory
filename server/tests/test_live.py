@@ -48,11 +48,11 @@ def nobody() -> str:
         return f"http://127.0.0.1:{s.getsockname()[1]}"
 
 
-def hook(runner, name, payload, url):
+def hook(runner, name, payload, url, **env):
     """Run one hook script as Claude Code's exec form does: the interpreter, the script path as one argument."""
     exe, ext = runner
     return subprocess.run([exe, str(HOOKS / (name + ext))], input=json.dumps(payload), capture_output=True,
-                          text=True, encoding="utf-8", env={**os.environ, "SPOOKLING_MEMORY_URL": url}, timeout=90)
+                          text=True, encoding="utf-8", env={**os.environ, "SPOOKLING_MEMORY_URL": url, **env}, timeout=90)
 
 
 def test_mcp_tools(live, tmp_path, monkeypatch):
@@ -99,6 +99,20 @@ def test_hook_scripts(live, tmp_path, runner):
     assert out.returncode == 0
     ctx = json.loads(out.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "Toyota Corolla" in ctx and "Postgres 16" in ctx  # the decision leads every context
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_hook_scripts_do_nothing_inside_a_tagging_call(live, tmp_path, runner):
+    """A subscription tagger runs a CLI that may fire these same hooks; SPOOKLING_TAGGING (set by the server for that
+    call) makes every script exit at once, so tagging never logs or tags itself."""
+    url, store = live
+    path = tmp_path / "t.jsonl"
+    path.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "I drive a Toyota Corolla."}}) + "\n")
+    payload = {"session_id": "t", "transcript_path": str(path), "prompt": "What car do I drive?"}
+    for name in ("stop", "pre-compact", "user-prompt-submit"):
+        out = hook(runner, name, payload, url, SPOOKLING_TAGGING="1")
+        assert (out.returncode, out.stdout, out.stderr) == (0, "", "")
+    assert store.mem.log.events == []
 
 
 @pytest.mark.parametrize("runner", RUNNERS)
