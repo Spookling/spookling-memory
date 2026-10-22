@@ -274,7 +274,8 @@ class Store:
             r = R.latest(self.mem.log.decisions)
             return self.mem.stats() | {"folder": str(self.folder), "before_reset": len(R.before_reset(self.mem)),
                                        "reset": {k: r[k] for k in ("id", "at", "note", "upto")} if r else None,
-                                       "tagger": {"model": self.mem.model, "via": backend(self.mem.model)}}
+                                       "tagger": {"model": self.mem.model, "via": backend(self.mem.model),
+                                                  "decider": getattr(self.mem, "decider", None)}}
 
     def close(self) -> None:
         with self._busy():

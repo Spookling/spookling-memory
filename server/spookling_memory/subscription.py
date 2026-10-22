@@ -120,12 +120,15 @@ def backend(model: str) -> str:
     return "anthropic" if model.startswith("anthropic/") and os.environ.get("ANTHROPIC_API_KEY") else "openrouter"
 
 
-def adapter(model: str | None = None) -> dict:
-    """SpooklingMemory kwargs for `serve --model` (default: the adapter's writer, Haiku 4.5). For the API backends it
-    sets memory-bench's routing, a process-wide switch: without it an anthropic/ id goes to OpenRouter."""
+def adapter(model: str | None = None, decider: str | None = None, decide_threshold: float = 0.8) -> dict:
+    """SpooklingMemory kwargs for `serve --model [--decider]` (default: the adapter's writer, Haiku 4.5, no decider).
+    For the API backends it sets memory-bench's routing, a process-wide switch: without it an anthropic/ id goes to
+    OpenRouter. A decider (Jev) answers every gate as a typed question through the Decisions API on the OpenRouter key."""
     model = model or WRITER
     b = backend(model)
-    if b in BACKENDS:
-        return {"model": model, "triage": Subscription(model)}
-    models.BACKEND = b
-    return {"model": model}
+    out = {"model": model, "triage": Subscription(model)} if b in BACKENDS else {"model": model}
+    if b not in BACKENDS:
+        models.BACKEND = b
+    if decider:
+        out |= {"decider": decider, "decide_threshold": decide_threshold}
+    return out

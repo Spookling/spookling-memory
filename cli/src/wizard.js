@@ -40,15 +40,16 @@ export const SAY = {
 };
 
 // The tagger: what the menu says, the --model the server starts with, and the key it needs (none for a subscription).
-// Jev's price is measured, not listed: OpenRouter bills the router per call (199 chats cost $0.30 on 19 Oct 2026).
+// Jev option = a cheap router model picks the words (typesafe/jev-router, billed per call) and Jev itself (typesafe/jev-1.14,
+// $0.042 per million input tokens) decides every gate. Measured: 199 chats of router calls cost $0.30 on 19 Oct 2026.
 export const TAGGERS = [
-  { label: 'Jev through an OpenRouter key (cheapest, about $0.0015 a chat)', model: 'typesafe/jev-router', key: 'OPENROUTER_API_KEY', ask: 'OpenRouter API key for Jev:' },
+  { label: 'Jev through an OpenRouter key (cheapest, about $0.002 a chat)', model: 'typesafe/jev-router', decider: 'typesafe/jev-1.14', key: 'OPENROUTER_API_KEY', ask: 'OpenRouter API key for Jev:' },
   { label: 'Anthropic API key (Haiku 4.5)', model: 'anthropic/claude-haiku-4.5', key: 'ANTHROPIC_API_KEY', ask: 'Anthropic API key:' },
   { label: 'Your Codex subscription (the codex CLI, logged in)', model: 'codex', key: null },
 ];
 // What /v1/stats says is tagging, in words.
 export const taggerText = (t) => (t.via === 'codex' ? 'your Codex subscription (codex exec)'
-  : `${t.model} through ${t.via === 'anthropic' ? 'the Anthropic API' : 'OpenRouter'}`);
+  : `${t.model} through ${t.via === 'anthropic' ? 'the Anthropic API' : 'OpenRouter'}`) + (t.decider ? `, decisions by ${t.decider}` : '');
 
 // `codex login status` exits 0 and names the login mode when credentials are saved. It does not check that they still
 // work (a dead refresh token passes, seen 23 Oct 2026); the first tag does. Through a shell, a fixed string: an npm
@@ -255,6 +256,7 @@ function startServer(ctx) {
   const log = openSync(join(ctx.mem, 'server.log'), 'a');
   const args = ['run', '--project', SERVER_DIR, 'spookling-memory', 'serve', '--folder', '.memory', '--port', String(PORT)];
   if (ctx.model) args.push('--model', ctx.model); // the tagger picked in step 3
+  if (ctx.decider) args.push('--decider', ctx.decider); // Jev answers every gate as a typed question, gated on its probability
   // detached: its own process group (POSIX) or console (Windows), so it outlives this wizard; windowsHide keeps that
   // console from opening a window. PYTHONUTF8: memory-bench reads its data files in the locale encoding (cp1252 on
   // Windows); UTF-8 mode makes that UTF-8 everywhere.
@@ -355,6 +357,7 @@ async function steps(ctx, { anim, st }) {
   // 3. Tagger, and its key. The demo reads neither your environment nor .memory/keys.env, so the key prompt shows.
   await step(ctx, 3);
   const t = TAGGERS[await choose('   How should the tagger run?', TAGGERS.map((x) => x.label))];
+  ctx.decider = t.decider || null;
   ctx.model = t.model;
   ok(t.label);
   const envPath = join(ctx.mem, 'keys.env');

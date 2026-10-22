@@ -85,7 +85,7 @@ def test_codex_tags_a_chat_through_the_store(fake, codex_store, tmp_path):
         assert r["files"] == [] and not os.path.exists(r["cwd"])  # an empty temp folder, removed after
         assert r["env"] == {"SPOOKLING_TAGGING": "1", "OPENAI_API_KEY": None, "CODEX_API_KEY": None}
     assert runs[0]["prompt"].startswith(SYSTEM) and "[user]\nSession date:" in runs[0]["prompt"]
-    assert s.stats()["tagger"] == {"model": "codex", "via": "codex"}  # what `status` shows
+    assert s.stats()["tagger"] == {"model": "codex", "via": "codex", "decider": None}  # what `status` shows
     judged = [d for d in s.mem.log.decisions if d["step"] == "triage"]
     assert judged and all(d["version"].startswith("codex|") and d["writer"].startswith("codex/") for d in judged)
     s.close()

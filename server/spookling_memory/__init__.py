@@ -1,6 +1,6 @@
 """Spookling Memory: the local memory server over memory-bench's spookling adapter. See README.md.
 
-    spookling-memory serve  [--folder .memory] [--port 7447] [--model M]   HTTP API on 127.0.0.1 (M: a model id, or codex)
+    spookling-memory serve  [--folder .memory] [--port 7447] [--model M] [--decider D]   HTTP API on 127.0.0.1 (M: a model id, or codex; D: typesafe/jev-1.14)
     spookling-memory mcp                                                    stdio MCP tools (client of serve)
     spookling-memory export [--folder .memory] FILE                         the two records, one archive
     spookling-memory import [--folder .memory] FILE                         restore into an empty folder
@@ -23,6 +23,9 @@ def main(argv: list[str] | None = None) -> None:
             s.add_argument("--port", type=int, default=7447)
             s.add_argument("--model", help="tagger for tagging and the slow path: an OpenRouter model id, or codex for "
                                            "your Codex subscription (default: the adapter's, Haiku 4.5)")
+            s.add_argument("--decider", help="decision model for every gate (typesafe/jev-1.14 on OpenRouter): typed "
+                                             "Choice and Noul questions, each gated on its probability (default: off)")
+            s.add_argument("--decide-threshold", type=float, default=0.8, help="Noul probability a gate needs (default 0.8)")
         else:
             s.add_argument("file")
     a = p.parse_args(argv)
@@ -30,7 +33,7 @@ def main(argv: list[str] | None = None) -> None:
         from .api import serve as run
         from .subscription import adapter
 
-        run(a.folder, a.port, **adapter(a.model))
+        run(a.folder, a.port, **adapter(a.model, a.decider, a.decide_threshold))
     elif a.cmd == "mcp":
         from .mcp import main as run
 

@@ -78,7 +78,7 @@ test('demo walks every step, writes nothing, and shows the tagline once', () => 
 test('the tagger menu: Jev, Haiku or Codex, each started with its --model and asking only its own key', () => {
   assert.deepEqual(TAGGERS.map((t) => [t.model, t.key]), [
     ['typesafe/jev-router', 'OPENROUTER_API_KEY'], ['anthropic/claude-haiku-4.5', 'ANTHROPIC_API_KEY'], ['codex', null]]);
-  assert.match(TAGGERS[0].label, /\$0\.0015 a chat/);
+  assert.match(TAGGERS[0].label, /\$0\.002 a chat/);
   for (const t of TAGGERS) assert.ok(`   › ${t.label}`.length <= 80, `${t.label}: wraps at 80 columns`);
 });
 
