@@ -10,15 +10,27 @@ cd server
 uv sync
 uv run spookling-memory serve --folder .memory          # http://127.0.0.1:7447, 127.0.0.1 only
 uv run spookling-memory serve --folder .memory --port 8800 --model anthropic/claude-haiku-4.5
+uv run spookling-memory serve --folder .memory --model codex       # tag through your Codex subscription
 uv run spookling-memory mcp                             # stdio MCP; talks to serve at SPOOKLING_MEMORY_URL
 uv run spookling-memory export --folder .memory memory.spookling   # server stopped
 uv run spookling-memory import --folder .memory memory.spookling   # into an empty folder
 uv run pytest                                           # offline: stub triage, no model calls
 ```
 
-Tagging and the slow path call the writer model through memory-bench's `bench.models`: `OPENROUTER_API_KEY` (or
-`~/spookling-rig/openrouter.env`). Without a key, a call that needs the model answers 503 with the reason and the
-server keeps running. One process owns a folder (an OS lock on `lock`: `fcntl.flock` on macOS and Linux,
+Tagging and the slow path call the tagger `--model` picks. `subscription.backend()` is the one place a model id is
+mapped to a backend:
+
+| `--model` | backend | needs |
+|---|---|---|
+| `typesafe/jev-router` (Jev), or any OpenRouter id | memory-bench's `bench.models`, OpenRouter | `OPENROUTER_API_KEY` (or `~/spookling-rig/openrouter.env`) |
+| `anthropic/claude-haiku-4.5` (the default), any `anthropic/` id | the Anthropic API when `ANTHROPIC_API_KEY` is set (memory-bench's `BACKEND = "anthropic"`), else OpenRouter | `ANTHROPIC_API_KEY` |
+| `codex` | your Codex subscription: `codex exec` per call, `gpt-6-luna`, read-only, from an empty temp folder | the `codex` CLI on PATH, logged in with ChatGPT (Plus or higher); check with `codex login status` |
+
+`codex` is a subprocess per call with the prompt on stdin, so it is slower (several seconds per chat), its replies are
+not cached, and it runs under your own plan's limits and terms. The server removes `OPENAI_API_KEY` and `CODEX_API_KEY`
+from its environment (so the bill stays on the plan), sets `SPOOKLING_TAGGING=1` (the hooks exit at once under it), and
+kills its process tree after 90 s. Flags and sources: `../docs/subscription-taggers.md`. Without a key, or with the CLI
+missing, failing or timing out, a call that needs the model answers 503 with the reason and the server keeps running. One process owns a folder (an OS lock on `lock`: `fcntl.flock` on macOS and Linux,
 `msvcrt.locking` on Windows, released if the process dies); run `serve` once and point the hooks and MCP at it.
 
 ## Platforms
@@ -51,7 +63,7 @@ run on macOS.
 | `POST /v1/reset/undo` | `{}` | the undo ruling |
 | `GET /v1/export` | | the archive (`application/gzip`) |
 | `POST /v1/import` | the archive, `application/octet-stream` | `{events, judgements}`; the memory must be empty |
-| `GET /v1/stats` | | store counts, `reset`, `before_reset` |
+| `GET /v1/stats` | | store counts, `reset`, `before_reset`, `tagger` (`{model, via}`, via `openrouter`, `anthropic` or `codex`) |
 | `POST /v1/hook/{user-prompt-submit,pre-compact,stop}` | the Claude Code hook's stdin JSON | what the hook prints |
 
 `ts` is ISO 8601, default now. A refused change (a reset that predates the log, an import into a memory that is not
@@ -63,7 +75,7 @@ cannot drive the server. The MCP tools are `memory_retrieve`, `memory_ingest`, `
 ## Hooks
 
 `../hooks/*.js` (node, any OS) and `../hooks/*.sh` (bash and curl, macOS and Linux) pipe the hook's JSON to
-`/v1/hook/<event>` and always exit 0, so a stopped server never blocks Claude; they give a connect 1 second. Stop logs
+`/v1/hook/<event>` and always exit 0 (at once, sending nothing, when `SPOOKLING_TAGGING` is set), so a stopped server never blocks Claude; they give a connect 1 second. Stop logs
 the turns not yet logged (the server reads `transcript_path`, and adds `last_assistant_message` when the file has not
 caught up), PreCompact does the same and then keeps the session's rules, decisions, values, dates, paths and names,
 and UserPromptSubmit adds the recalled block as `additionalContext`, cut at 10,000 characters, Claude Code's cap. A

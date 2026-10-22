@@ -6,7 +6,7 @@ The install wizard for Spookling Memory. Node 18 or newer, no dependencies. Work
 npx @spookling/memory init                 # the intro, then the step-by-step install, for this project
 npx @spookling/memory init --scope user    # the same, wired for every project you open in Claude Code
 npx @spookling/memory demo                 # the whole install as you would see it, answered for you; writes nothing
-npx @spookling/memory status               # is the server up, what is wired (project and user files); exit 0 when all is well
+npx @spookling/memory status               # is the server up, what is wired (project and user files), which tagger; exit 0 when all is well
 npx @spookling/memory uninstall            # remove the hooks and the MCP entry (add --scope user for the user files), keep .memory/
 ```
 
@@ -77,11 +77,27 @@ Windows sessions then log into the WSL project's `.memory/`; the server reads th
 
 The intro animates at 40 x 16 or larger. During `init` the ghost then stays at the top of the screen: it drifts and bobs on a purple band and says one line per step in a speech bubble, while the steps scroll below it. That stage needs 80 x 24 and takes the top 9 rows; from 30 rows it shows a larger ghost and takes 11. It redraws at 12 fps while a step runs and holds still while a prompt waits, so typing is never disturbed. It uses the alternate screen; when it closes, the whole log of the steps is printed again in the normal screen, so it stays in your scrollback (also on Ctrl-C). With `NO_COLOR`, output that is not a terminal, `--no-anim`, a smaller terminal, or a Windows console older than Windows 10 (no escape sequences), there is no animation and the ghost's lines print as `spookling: ...` among the steps. Colour is 24-bit when `COLORTERM` is `truecolor` or `24bit`, or in Windows Terminal (`WT_SESSION`), 256 colours otherwise. `FORCE_COLOR=1` keeps colour in piped output. Any key skips the intro; Ctrl-C restores the terminal and exits.
 
-At a terminal, the harness is picked from a menu (arrows, then Enter) and keys show as bullets while you type or paste them; the key itself is never printed.
+At a terminal, the harness and the tagger are picked from menus (arrows, then Enter) and a key shows as bullets while you type or paste it; the key itself is never printed.
+
+## The tagger
+
+Step 3 asks how the tagger runs: the small model that reads each chat once, after it ends, and tags the facts in it. Retrieval never calls it.
+
+| Choice | Server started with | Needs | Checked by |
+| --- | --- | --- | --- |
+| 1 Jev through an OpenRouter key (the default) | `--model typesafe/jev-router` | `OPENROUTER_API_KEY` | the first tag. About $0.0015 a chat: OpenRouter bills the router per call, and 199 chats cost $0.30 on 19 Oct 2026 |
+| 2 Anthropic API key | `--model anthropic/claude-haiku-4.5` | `ANTHROPIC_API_KEY` (starts `sk-ant-`) | the first tag. Haiku 4.5 at Anthropic's API price |
+| 3 Your Codex subscription | `--model codex` | the `codex` CLI on the server's PATH, logged in with ChatGPT (Plus or higher) | `codex login status`, run by the wizard, its line shown |
+
+`codex login status` only checks that a login is saved: on 23 Oct 2026 it said `Logged in using ChatGPT` here while every call failed with an expired refresh token. The first tag is the real check; a failed one leaves its reason in `.memory/server.log` and the chat untagged until the next try. Fix it with `codex logout`, then `codex login`.
+
+A subscription tagger is slower: several seconds per chat (it starts the CLI each time), against about a second over an API. The Stop hook does not wait for it, but the server tags one chat at a time, so a prompt sent while a chat is being tagged waits, and recall for that prompt is dropped if the wait passes 15 s. Each tagged chat uses a little of your plan's allowance, and your own subscription terms apply. How the server runs `codex exec`, and the docs behind each flag: [docs/subscription-taggers.md](../docs/subscription-taggers.md).
+
+To switch the tagger, stop the server (`uninstall`, or kill the pid in `.memory/server.pid`) and run `init` again; `init` reports a running server that tags with something else. `status` shows which tagger the running server uses.
 
 ## demo
 
-`demo` runs the same steps and prompts as `init`, with the answers typed on screen for you: the menu moves to Claude Code, both keys are typed as bullets, each write is answered y. The checks run for real (they only read). Nothing is written, started or run, and nothing in the folder is read: each write shows exactly what `init` would write (the JSON merged into `settings.json` and `.mcp.json` included) and then `demo: not written`; the server install shows its progress line and `demo: skipped`; the smoke test shows the request and a sample reply. A quiet `demo, nothing is written` sits in the top right corner throughout. It is `init` with a dry-run flag, not a copy, so it cannot drift from the real wizard.
+`demo` runs the same steps and prompts as `init`, with the answers typed on screen for you: the harness menu moves to Claude Code, the tagger menu moves down to Codex and back to Jev, the OpenRouter key is typed as bullets, each write is answered y. The checks run for real (they only read). Nothing is written, started or run, and nothing in the folder is read: each write shows exactly what `init` would write (the JSON merged into `settings.json` and `.mcp.json` included) and then `demo: not written`; the server install shows its progress line and `demo: skipped`; the smoke test shows the request and a sample reply. A quiet `demo, nothing is written` sits in the top right corner throughout. It is `init` with a dry-run flag, not a copy, so it cannot drift from the real wizard.
 
 Without a terminal (an assistant's shell, a pipe), answers are read from stdin. When stdin ends, or stays open and says nothing for 20 seconds, every prompt takes its default. Every write is still printed before it happens, so the log shows exactly what a default wrote.
 
@@ -91,9 +107,9 @@ Every write is shown before it happens; answer `n` to skip it. Every command it 
 
 | Where | What |
 | --- | --- |
-| `.memory/keys.env` | `ANTHROPIC_API_KEY`, plus `OPENROUTER_API_KEY` if you give one. Taken from your environment, or typed at a hidden prompt; never printed. Mode 600 on macOS and Linux; on Windows it has the folder's own access rules. |
+| `.memory/keys.env` | the tagger's key: `OPENROUTER_API_KEY` for Jev or `ANTHROPIC_API_KEY` for Haiku; nothing for Codex. Taken from your environment, or typed at a hidden prompt; never printed. Mode 600 on macOS and Linux; on Windows it has the folder's own access rules. |
 | `.memory/.gitignore` | `keys.env`, `server.pid`, `server.log` |
-| `.memory/server.pid`, `.memory/server.log` | the background server: `uv run --project <server> spookling-memory serve --folder .memory --port 7447` |
+| `.memory/server.pid`, `.memory/server.log` | the background server: `uv run --project <server> spookling-memory serve --folder .memory --port 7447 --model <tagger>` |
 | `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | three hooks merged in, `PreCompact`, `UserPromptSubmit` and `Stop`, each `{"type": "command", "command": "node", "args": ["<hooks>/<event>.js"]}` |
 | `.mcp.json` (project) | `mcpServers.spookling-memory`: stdio, `uv run --project <server> spookling-memory mcp`, with `SPOOKLING_MEMORY_URL` in its `env` |
 | user MCP list (user scope) | the same entry, added with `claude mcp add-json spookling-memory '<entry>' --scope user`. Claude Code keeps it in `~/.claude.json`, a file it writes itself, so the wizard only reads that file. |
