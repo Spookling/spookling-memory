@@ -1,7 +1,8 @@
 """The tagger behind `serve --model`: the one place a model id is mapped to its backend, and the subscription backend.
 
     codex           your Codex subscription: the `codex` CLI, logged in with ChatGPT, run once per call (`codex exec`)
-    anything else   memory-bench's own client (bench.models), OpenRouter with OPENROUTER_API_KEY
+    anthropic/...   the Anthropic API when ANTHROPIC_API_KEY is set (memory-bench's "anthropic" backend)
+    anything else   OpenRouter with OPENROUTER_API_KEY (memory-bench's default)
 
 A subscription backend is a function (messages) -> reply text. Subscription is the adapter's ModelTriage with its one
 model call swapped for that function, so judge, resolve, events and resolve_class all go through it with the same
@@ -15,6 +16,7 @@ import signal
 import subprocess
 import tempfile
 
+from bench import models
 from bench.adapters.spookling.triage import FIX, WRITER, ModelTriage, Spent
 
 TIMEOUT = 90  # seconds per call; the whole process tree is killed after it
@@ -111,11 +113,19 @@ class Subscription(ModelTriage):
 
 
 def backend(model: str) -> str:
-    """Where a model id's tagging calls go: a subscription backend by name, else "openrouter"."""
-    return model if model in BACKENDS else "openrouter"
+    """Where a model id's tagging calls go: a subscription backend by name; "anthropic" for an anthropic/ id when
+    ANTHROPIC_API_KEY is set; else "openrouter"."""
+    if model in BACKENDS:
+        return model
+    return "anthropic" if model.startswith("anthropic/") and os.environ.get("ANTHROPIC_API_KEY") else "openrouter"
 
 
 def adapter(model: str | None = None) -> dict:
-    """SpooklingMemory kwargs for `serve --model` (default: the adapter's writer, Haiku 4.5)."""
+    """SpooklingMemory kwargs for `serve --model` (default: the adapter's writer, Haiku 4.5). For the API backends it
+    sets memory-bench's routing, a process-wide switch: without it an anthropic/ id goes to OpenRouter."""
     model = model or WRITER
-    return {"model": model, "triage": Subscription(model)} if backend(model) in BACKENDS else {"model": model}
+    b = backend(model)
+    if b in BACKENDS:
+        return {"model": model, "triage": Subscription(model)}
+    models.BACKEND = b
+    return {"model": model}

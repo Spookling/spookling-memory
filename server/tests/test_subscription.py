@@ -6,6 +6,7 @@ import sys
 import time
 
 import pytest
+from bench import models
 from bench.adapters.spookling.triage import SYSTEM, WRITER
 from conftest import turns
 from fastapi.testclient import TestClient
@@ -116,13 +117,19 @@ def test_a_hung_codex_is_killed_with_its_children(fake, monkeypatch):
     assert time.monotonic() - t < 10  # a child left holding stdout would keep communicate() waiting 30 s
 
 
-def test_the_model_id_picks_the_backend():
+def test_the_model_id_picks_the_backend(monkeypatch):
+    monkeypatch.setattr(models, "BACKEND", "openrouter")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert S.backend("codex") == "codex"
     assert S.backend("typesafe/jev-router") == "openrouter"
     a = S.adapter("codex")
     assert a["model"] == "codex" and isinstance(a["triage"], S.Subscription) and a["triage"].ask is S.codex
     assert S.adapter("typesafe/jev-router") == {"model": "typesafe/jev-router"}
-    assert S.adapter(None) == {"model": WRITER}
+    assert S.adapter(None) == {"model": WRITER} and models.route(WRITER) == "openrouter"  # no Anthropic key
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    assert S.backend(WRITER) == "anthropic" and S.backend("typesafe/jev-router") == "openrouter"
+    assert S.adapter(WRITER) == {"model": WRITER} and models.route(WRITER) == "anthropic"  # the wizard's choice 2
+    assert models.route("typesafe/jev-router") == "openrouter"
 
 
 def test_one_prompt_from_chat_messages():
