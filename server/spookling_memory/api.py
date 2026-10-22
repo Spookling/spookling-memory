@@ -7,21 +7,24 @@ page can only send after a CORS preflight this server never grants. No CORS is c
 from __future__ import annotations
 
 import io
+import threading
 from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from pydantic_core import PydanticSerializationError
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import hooks
 from .portability import read_archive
-from .store import Store
+from .store import Busy, Store
 
 HOST, PORT = "127.0.0.1", 7447
 POST_TYPES = ("application/json", "application/octet-stream")
+WAIT = 10  # seconds a request waits for the store before a 503: under the hooks' 15 s, so they hear back
 
 
 class TurnIn(BaseModel):
@@ -62,11 +65,14 @@ def create_app(store: Store) -> FastAPI:
 
     @app.exception_handler(ValueError)
     async def refused(request: Request, e: ValueError):
+        if isinstance(e, PydanticSerializationError):  # a ValueError too, but our bug, not a refusal: a 500, never a 409
+            raise e
         return JSONResponse({"detail": str(e)}, 409)
 
     @app.exception_handler(RuntimeError)
-    async def unavailable(request: Request, e: RuntimeError):  # the writer model (no key, provider down): try again later
-        return JSONResponse({"detail": str(e)}, 503)
+    async def unavailable(request: Request, e: RuntimeError):  # the writer model (no key, provider down), or Busy
+        busy = {"Retry-After": str(Busy.retry_after)} if isinstance(e, Busy) else None
+        return JSONResponse({"detail": str(e)}, 503, headers=busy)
 
     @app.post("/v1/ingest")
     def ingest(s: SessionIn) -> dict:
@@ -104,22 +110,47 @@ def create_app(store: Store) -> FastAPI:
     def stats() -> dict:
         return store.stats()
 
+    said: set[str] = set()  # each kind of refused hook body is logged once
+
     @app.post("/v1/hook/{event}")
-    def hook(event: str, payload: dict, tasks: BackgroundTasks) -> dict:
+    async def hook(event: str, request: Request, tasks: BackgroundTasks):
+        """The body is read here, not declared as `payload: dict`: FastAPI answered 422 to an empty or unreadable body
+        and nothing said why. Now an empty body is {} and only a body that is not one JSON object is refused (400)."""
         if event not in hooks.EVENTS:
             raise HTTPException(404, f"hook events: {', '.join(hooks.EVENTS)}")
+        body = await request.body()
+        try:
+            payload = hooks.payload(body)
+        except ValueError as e:
+            kind = str(e).split(" at character")[0]
+            if (event, kind) not in said:
+                said.add((event, kind))
+                hooks.LOG.warning("hook %s: %d-byte body refused, logged once per kind: %s; it starts %r", event,
+                                  len(body), e, body[:80])
+            return JSONResponse({"detail": str(e)}, 400)
         if event == "stop":  # reply at once; the tagging call runs after the response, so Claude is not held
-            tasks.add_task(hooks.handle, store, event, payload)
+            tasks.add_task(quietly, store, event, payload)
             return {}
-        return hooks.handle(store, event, payload)
+        return await run_in_threadpool(hooks.handle, store, event, payload)
 
     return app
 
 
+def quietly(store, event: str, payload: dict) -> None:
+    """The Stop hook's work after its reply: an error can no longer reach Claude, so it is one log line. The turns
+    stay in the transcript, and the next Stop of the session logs them."""
+    try:
+        hooks.handle(store, event, payload)
+    except Exception as e:  # noqa: BLE001
+        hooks.LOG.warning("hook %s: the turns were not logged this time (%s: %s)", event, type(e).__name__, e)
+
+
 def serve(folder: str, port: int = PORT, **adapter) -> None:
+    """Listens at once; the folder opens in the background (503 with Retry-After until it is open). A failed open
+    stops the server with the reason, as before."""
     import uvicorn
 
-    store = Store(folder, **adapter)
+    store = Store(folder, background=True, wait=WAIT, **adapter)
     app = create_app(store)
 
     @asynccontextmanager
@@ -130,7 +161,18 @@ def serve(folder: str, port: int = PORT, **adapter) -> None:
         store.close()
 
     app.router.lifespan_context = lifespan
+    server = uvicorn.Server(uvicorn.Config(app, host=HOST, port=port))
+
+    def opened():
+        store.ready.wait()
+        if store.failed is not None:
+            hooks.LOG.error("%s could not be opened: %r", folder, store.failed)
+            server.should_exit = True
+
+    threading.Thread(target=opened, daemon=True).start()
     try:
-        uvicorn.run(app, host=HOST, port=port)
+        server.run()
     finally:
         store.close()  # idempotent; covers a failed start
+    if store.failed is not None:
+        raise store.failed

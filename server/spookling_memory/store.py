@@ -3,6 +3,7 @@
     log.jsonl         the LOG: every turn, verbatim, once (the adapter's Log.lines() format)
     judgements.jsonl  the judgement log: every adapter decision, plus this server's rulings (compact, reset, reset_undo)
     lock              locked while the folder is open, so one process writes it (an OS lock: a crash never leaves it held)
+    vectors.sqlite    the local embedder's cache, when the vectors extra is installed (a cache, not a record: not archived)
 
 The adapter keeps its SQLite in a temp dir that close() removes, so these two files are the only durable copy.
 Each change appends the new lines and fsyncs. The files are UTF-8 with \n line ends on every OS, so a folder copied
@@ -15,6 +16,7 @@ import json
 import os
 import re
 import threading
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -22,14 +24,22 @@ from pathlib import Path
 
 from bench.adapters.spookling import SpooklingMemory
 from bench.adapters.spookling import compact as keep
+from bench.adapters.spookling import vectors
 from bench.adapters.spookling.sleep import tx_of
 from bench.schema import Session, Turn
 
 from . import reset as R
 from .subscription import backend
 
-LOG, JUDGEMENTS = "log.jsonl", "judgements.jsonl"
+LOG, JUDGEMENTS, VECTORS = "log.jsonl", "judgements.jsonl", "vectors.sqlite"
 WINDOWS = os.name == "nt"
+PART = re.compile(r"#(\d+)(?:-(\d+))?")  # a tail part's place in its conversation: "#<from>" or "#<from>-<to>"
+
+
+class Busy(RuntimeError):
+    """The store cannot take this call yet: it is opening, or a rebuild holds its lock. The API's 503 with Retry-After."""
+
+    retry_after = 5  # seconds
 
 
 def now() -> str:
@@ -132,9 +142,13 @@ def unlock(f) -> None:
 
 class Store:
     """An open memory folder. Every call holds one lock (ponytail: one writer, one reader at a time; a per-view
-    read lock if retrieval latency under load matters). `adapter` kwargs go to SpooklingMemory (model, triage, ...)."""
+    read lock if retrieval latency under load matters). `adapter` kwargs go to SpooklingMemory (model, triage, ...).
 
-    def __init__(self, folder: str | Path, **adapter):
+    background: the folder is locked at once, but the replay and the rebuild run in a thread, so a server answers
+    (Busy, 503) while it opens. wait: seconds a call waits for the open or the lock before Busy (None: as long as it
+    takes), so a long rebuild answers 503 instead of piling up requests behind the lock."""
+
+    def __init__(self, folder: str | Path, background: bool = False, wait: float | None = None, **adapter):
         self.folder = Path(folder)
         self.folder.mkdir(parents=True, exist_ok=True)
         self._lockfile = open(self.folder / "lock", "ab")  # never truncated: another process may hold its lock
@@ -144,28 +158,50 @@ class Store:
             self._lockfile.close()
             raise RuntimeError(f"{self.folder} is open in another process (one server per memory folder)") from None
         self.adapter, self.lock, self._post, self.mem = adapter, threading.RLock(), None, None
+        self.wait, self.ready, self.failed = wait, threading.Event(), None
+        vectors.CACHE = self.folder / VECTORS  # ponytail: process-wide, fine for one folder per server process
+        if background:
+            threading.Thread(target=self._open, name="spookling-open", daemon=True).start()
+        else:
+            self._open()
+            if self.failed is not None:
+                raise self.failed
+
+    def _open(self) -> None:
+        """Replay the records and rebuild the views; on failure, release the folder and keep the reason."""
         try:
-            events, decisions = read_jsonl(self.folder / LOG), read_jsonl(self.folder / JUDGEMENTS)
-            self.mem = SpooklingMemory(**adapter)
-            load(self.mem, events, decisions)
-            self.written = (len(events), len(decisions))
-            self.mem.settle()
-            self._flush()  # a full sleep may judge items left pending: those judgements are records too
-        except BaseException:
+            with self.lock:
+                events, decisions = read_jsonl(self.folder / LOG), read_jsonl(self.folder / JUDGEMENTS)
+                self.mem = SpooklingMemory(**self.adapter)
+                load(self.mem, events, decisions)
+                self.written = (len(events), len(decisions))
+                self.mem.settle()
+                self._flush()  # a full sleep may judge items left pending: those judgements are records too
+        except BaseException as e:
             if self.mem is not None:  # its LOG is an open SQLite file in a temp dir, which Windows cannot delete open
                 self.mem.close()
             unlock(self._lockfile)
-            raise
+            self.failed = e
+        finally:
+            self.ready.set()
 
     @contextmanager
-    def _busy(self):
-        """The store's one lock, and a model layer that cannot stop the server: bench.models calls sys.exit() when a
-        provider key is missing, which in a server thread kills the process."""
-        with self.lock:
-            try:
-                yield
-            except SystemExit as e:
-                raise RuntimeError(f"the writer model could not be called: {e}") from None
+    def _busy(self, wait: float | None = None):
+        """The store's one lock, waited for at most `wait` seconds (None: as long as it takes), else Busy; and a model
+        layer that cannot stop the server: bench.models calls sys.exit() when a provider key is missing, which in a
+        server thread kills the process."""
+        if not self.ready.wait(wait):
+            raise Busy(f"{self.folder} is still opening: replaying its records and rebuilding the views")
+        if self.failed is not None:
+            raise RuntimeError(f"{self.folder} could not be opened: {self.failed}")
+        if not self.lock.acquire(timeout=-1 if wait is None else wait):
+            raise Busy("the memory is busy: a tagging call or a rebuild of its views holds it")
+        try:
+            yield
+        except SystemExit as e:
+            raise RuntimeError(f"the writer model could not be called: {e}") from None
+        finally:
+            self.lock.release()
 
     def _flush(self) -> None:
         log, dec = lines(self.mem, self.written)
@@ -176,18 +212,33 @@ class Store:
     def records(self) -> tuple[list[dict], list[dict]]:
         return [asdict(e) for e in self.mem.log.events], list(self.mem.log.decisions)
 
+    def _logged(self, session_id: str) -> int:
+        """How many turns of session_id's conversation the LOG is past: a part "<id>#<a>" covers turns a.. (one LOG
+        turn each), "<id>#<a>-<b>" turns a to b (its empty turns were not logged), the session sent whole its turns."""
+        parts = Counter(e.session_id for e in self.mem.log.events
+                        if e.session_id == session_id or e.session_id.startswith(session_id + "#"))
+        upto = 0
+        for part, n in parts.items():
+            m = PART.fullmatch(part[len(session_id):])
+            upto = max(upto, int(m[2]) if m and m[2] else int(m[1]) + n if m else n)
+        return upto
+
     def ingest(self, session_id: str, turns: list[dict], ts: str | None = None, agent: str = "user",
-               tail: bool = False) -> int:
+               tail: bool = False, patient: bool = False) -> int:
         """Log one session's turns; returns how many were new. tail=True: `turns` is the whole conversation so far;
         only the turns past those already logged for session_id are logged, as session "<id>#<n>" stamped now (so
-        the LOG's time order follows arrival, which the fold needs, and a retried call adds nothing)."""
-        with self._busy():
+        the LOG's time order follows arrival, which the fold needs, and a retried call adds nothing). An empty tail
+        turn holds its place but is not logged; the part is then "<id>#<n>-<end>". patient: wait for the store as
+        long as it takes (a hook's background call, which nobody waits on)."""
+        with self._busy(None if patient else self.wait):
             m = self.mem
             if tail:
-                have = sum(1 for e in m.log.events if e.session_id == session_id or e.session_id.startswith(session_id + "#"))
-                if have >= len(turns):
+                have = self._logged(session_id)
+                new = [t for t in turns[have:] if t["content"].strip()]
+                if not new:
                     return 0
-                turns, session_id, ts = turns[have:], f"{session_id}#{have}", None
+                part = f"{session_id}#{have}" if len(new) == len(turns) - have else f"{session_id}#{have}-{len(turns)}"
+                turns, session_id, ts = new, part, None
             ts = ts or now()
             tx_of(ts, 0, 0)  # a bad timestamp is refused here: in the LOG it would fail every later sleep
             if not R.admits(m.log.decisions, ts):
@@ -201,7 +252,7 @@ class Store:
     def retrieve(self, question: str, ts: str | None = None) -> dict:
         """{context, digest, strong}. After a reset, a question about now is answered from the after-reset view."""
         ts = ts or now()
-        with self._busy():
+        with self._busy(self.wait):
             self.mem.settle()
             self._flush()
             r = R.latest(self.mem.log.decisions)
@@ -228,7 +279,7 @@ class Store:
         """Before the harness summarises a session: keep its rules, decisions, values, dates, paths and names verbatim
         (the adapter's compact(), with session_id also matching its "<id>#<n>" tail parts), log what was kept as a
         "compact" ruling, and return the survivor block: the <invariant> every later context leads with."""
-        with self._busy():
+        with self._busy(self.wait):
             m = self.mem
             evs = [e for e in m.log.events if e.session_id == session_id or e.session_id.startswith(session_id + "#")]
             have = {k.text for k in m.staging}
@@ -242,20 +293,20 @@ class Store:
                 return {"block": m.invariant_block(), "kept": len(new)}
 
     def reset(self, note: str = "", at: str | None = None) -> dict:
-        with self._busy():
+        with self._busy(self.wait):
             out = R.reset(self.mem, at or now(), note)
             self._flush()
             return out
 
     def undo_reset(self) -> dict:
-        with self._busy():
+        with self._busy(self.wait):
             out = R.undo_reset(self.mem)
             self._flush()
             return out
 
     def restore(self, events: list[dict], decisions: list[dict]) -> dict:
         """Load an archive's records into this (empty) memory and rebuild every view."""
-        with self._busy():
+        with self._busy(self.wait):
             if self.mem.log.events or self.mem.log.decisions:
                 raise ValueError("this memory is not empty: import into an empty folder")
             load(self.mem, events, decisions)
@@ -266,18 +317,22 @@ class Store:
     def export(self, path) -> dict:
         from .portability import export
 
-        with self._busy():
+        with self._busy(self.wait):
             return export(self.mem, path)
 
     def stats(self) -> dict:
-        with self._busy():
+        with self._busy(self.wait):
             r = R.latest(self.mem.log.decisions)
             return self.mem.stats() | {"folder": str(self.folder), "before_reset": len(R.before_reset(self.mem)),
                                        "reset": {k: r[k] for k in ("id", "at", "note", "upto")} if r else None,
                                        "tagger": {"model": self.mem.model, "via": backend(self.mem.model),
-                                                  "decider": getattr(self.mem, "decider", None)}}
+                                                  "decider": self.mem.decider and self.mem.decider.model}}
 
     def close(self) -> None:
+        """Waits for an open or a call in progress. Idempotent; after a failed open there is nothing left to close."""
+        self.ready.wait()
+        if self.failed is not None:
+            return
         with self._busy():
             if self._post is not None:
                 self._post[1].close()

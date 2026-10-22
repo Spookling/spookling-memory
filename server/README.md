@@ -32,6 +32,10 @@ from its environment (so the bill stays on the plan), sets `SPOOKLING_TAGGING=1`
 kills its process tree after 90 s. Flags and sources: `../docs/subscription-taggers.md`. Without a key, or with the CLI
 missing, failing or timing out, a call that needs the model answers 503 with the reason and the server keeps running. One process owns a folder (an OS lock on `lock`: `fcntl.flock` on macOS and Linux,
 `msvcrt.locking` on Windows, released if the process dies); run `serve` once and point the hooks and MCP at it.
+`serve` listens at once and opens the folder in the background (6 s for 3,201 turns and 1,152 judgements). A call
+waits up to 10 s for the open, or for a rebuild that holds the store, then answers 503 with `Retry-After: 5`; a
+failed open stops the server with the reason in its log. With the vectors extra, the embedder's cache is
+`vectors.sqlite` in the memory folder (a cache: not archived; keep it out of git).
 
 ## Platforms
 
@@ -67,7 +71,9 @@ run on macOS.
 | `POST /v1/hook/{user-prompt-submit,pre-compact,stop}` | the Claude Code hook's stdin JSON | what the hook prints |
 
 `ts` is ISO 8601, default now. A refused change (a reset that predates the log, an import into a memory that is not
-empty, nothing to undo, a bad timestamp) is 409 with the reason. Every POST must be `application/json` (or
+empty, nothing to undo, a bad timestamp) is 409 with the reason; a store still opening or rebuilding is 503 with
+`Retry-After`. A hook body is read as sent: empty is `{}`, and only a body that is not one JSON object is 400 with the
+reason (logged once per kind). Every POST must be `application/json` (or
 `application/octet-stream` for import) and the Host must be 127.0.0.1 or localhost; with no CORS configured, a web page
 cannot drive the server. The MCP tools are `memory_retrieve`, `memory_ingest`, `memory_compact`, `memory_reset`
 (`undo: true` reverses), `memory_export`, `memory_import`, `memory_stats`.
@@ -79,7 +85,12 @@ cannot drive the server. The MCP tools are `memory_retrieve`, `memory_ingest`, `
 the turns not yet logged (the server reads `transcript_path`, and adds `last_assistant_message` when the file has not
 caught up), PreCompact does the same and then keeps the session's rules, decisions, values, dates, paths and names,
 and UserPromptSubmit adds the recalled block as `additionalContext`, cut at 10,000 characters, Claude Code's cap. A
-`C:\...` transcript path from a Windows Claude Code is read through `/mnt/c` when the server runs in WSL. In
+`C:\...` transcript path from a Windows Claude Code is read through `/mnt/c` when the server runs in WSL. What is
+logged is the user's own words and the assistant's final prose (its text after the turn's last tool call), cleaned by
+`hooks.clean()`: no `<x-y>` wrapper blocks (system reminders, task notifications, pastes, our own blocks), no fenced
+code, no line that looks like JSON, a log, a stack trace, a shell or diff line or a terminal table, no line that is
+mostly not letters, API keys and `*_TOKEN=`-style values masked, at most 4,000 characters a turn. A turn that cleans
+to nothing (a task notification) keeps its place but is not logged; its tail part is then `<id>#<from>-<to>`. In
 `.claude/settings.json` (exec form: no shell, so no path needs quoting; Claude Code v2.1.139 or later):
 
 ```json

@@ -86,7 +86,7 @@ def test_hooks_log_the_transcript_and_recall_for_the_prompt(open_store, tmp_path
     write_transcript(path, TRANSCRIPT)
     assert hooks.turns(path) == [
         {"role": "user", "content": "I drive a Toyota Corolla, nothing fancy."},
-        {"role": "assistant", "content": "Noted.\n\nAnything else?"},
+        {"role": "assistant", "content": "Anything else?"},  # the final prose: the text after the last tool call
         {"role": "user", "content": "From now on, always answer in metric units."}]  # our own recalled block stripped
     base = {"session_id": "abc", "transcript_path": str(path), "cwd": str(tmp_path)}
     prompt = {**base, "hook_event_name": "UserPromptSubmit", "prompt": "What car do I drive?"}
@@ -170,3 +170,133 @@ def test_a_windows_transcript_path_is_read_through_the_wsl_mount(monkeypatch, tm
     assert hooks.local_path("c:/Users/Jane Doe/.claude/s.jsonl") == want
     assert hooks.local_path("D:\\nope\\s.jsonl") == hooks.Path("D:\\nope\\s.jsonl")  # no such mount: as given
     assert hooks.local_path("/home/a/s.jsonl") == hooks.Path("/home/a/s.jsonl")
+
+
+# ---------------------------------------------------------------- hook bodies: the 422s (one test per shape)
+
+STOP = {"session_id": "s", "cwd": "/home/a", "hook_event_name": "Stop", "stop_hook_active": False,
+        "background_tasks": [], "session_crons": []}
+
+
+def post_stop(c, body: bytes):
+    return c.post("/v1/hook/stop", content=body, headers={"content-type": "application/json"})
+
+
+def test_hook_empty_body_is_200(open_store):
+    c = client(open_store())
+    assert (post_stop(c, b"").status_code, post_stop(c, b"").json()) == (200, {})  # was 422 "Field required"
+    assert post_stop(c, b"\n").json() == {}  # was 422 "JSON decode error"
+
+
+def test_hook_subagent_body_is_200_and_logs_no_sidechain(open_store, tmp_path):
+    store = open_store()
+    path = tmp_path / "agent-a1.jsonl"
+    write_transcript(path, [{"type": "user", "isSidechain": True, "agentId": "a1", "message": {"role": "user", "content": "Do X."}},
+                            {"type": "assistant", "isSidechain": True, "agentId": "a1",
+                             "message": {"role": "assistant", "content": [{"type": "text", "text": "Done."}]}}])
+    body = {**STOP, "agent_id": "a1", "agent_type": "general-purpose", "transcript_path": str(path),
+            "last_assistant_message": "Done."}
+    assert post_stop(client(store), json.dumps(body).encode()).json() == {}
+    assert store.mem.log.events == []  # a subagent's work is not the user's conversation
+
+
+def test_hook_non_jsonl_transcript_is_200(open_store, tmp_path):
+    store = open_store()
+    (tmp_path / "t.txt").write_text("I drive a Toyota Corolla.")
+    assert post_stop(client(store), json.dumps({**STOP, "transcript_path": str(tmp_path / "t.txt")}).encode()).json() == {}
+    assert store.mem.log.events == []
+
+
+def test_hook_large_last_message_is_200_and_capped(open_store, tmp_path):
+    store = open_store()
+    path = tmp_path / "big.jsonl"
+    write_transcript(path, [{"type": "user", "message": {"role": "user", "content": "Summarise the report."}}])
+    big = {**STOP, "transcript_path": str(path), "last_assistant_message": "The report says a lot. " * 250_000}  # 5.7 MB
+    r = post_stop(client(store), json.dumps(big).encode())
+    assert (r.status_code, r.json()) == (200, {})
+    reply = store.mem.log.events[-1]
+    assert reply.role == "assistant" and len(reply.text) <= hooks.TURN_CAP + 2 and reply.text.endswith(" …")
+
+
+def test_hook_raw_control_character_is_200(open_store):
+    body = json.dumps({**STOP, "transcript_path": "/nope.jsonl"})[:-1] + ', "last_assistant_message": "a\tb"}'
+    assert post_stop(client(open_store()), body.encode()).status_code == 200  # strict JSON refuses a raw tab
+
+
+@pytest.mark.parametrize("body,why", [
+    (b"hello", "not JSON"), (json.dumps({**STOP, "last_assistant_message": "x" * 9000}).encode()[:4096], "not JSON"),
+    (b"[]", "JSON list, not an object"), (b"null", "JSON NoneType, not an object")])
+def test_hook_garbage_is_400_with_the_reason_logged_once(open_store, caplog, body, why):
+    c = client(open_store())
+    for _ in range(2):
+        r = post_stop(c, body)
+        assert r.status_code == 400 and why in r.json()["detail"]
+    assert sum("refused" in m for m in caplog.messages) == 1  # once per kind, not once per request
+
+
+def test_busy_is_a_503_with_retry_after(open_store):
+    store = open_store()
+    store.wait = 0.05
+    with store.lock:  # a rebuild in progress elsewhere
+        r = client(store).get("/v1/stats")
+    assert r.status_code == 503 and r.headers["retry-after"] == "5" and "busy" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------- what the tagger is sent (turns() and clean())
+
+DEV = [  # a developer's session: a prompt with a paste, tool calls and narration, a task notification, a reminder
+    {"type": "user", "message": {"role": "user", "content": "Why is the deploy failing? Here is the log:\n"
+        "<pasted_content id=\"a1\">\nexport AWS_SECRET_ACCESS_KEY=\"abc\"\n</pasted_content id=\"a1\">\n"
+        "2026-10-22T21:55:45Z ERROR deploy failed\n{\"status\": 500,\n  \"error\": \"boom\"\n}\n[Image #3] see this"}},
+    {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": "Let me read the workflow."}, {"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}},
+    {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "yaml"}]}},
+    {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text":
+        "The deploy needs a new Haiku spend.\n```yaml\nruns-on: ubuntu\n```\nTraceback (most recent call last):\n"
+        "I moved the job to the dev runner, key sk-or-v1-0123456789abcdef0123456789."}]}},
+    {"type": "user", "message": {"role": "user", "content": "<task-notification>\n<task-id>b1</task-id>\n"
+        "<result>Agent report: finishing needs new Haiku spend</result>\n</task-notification>"}},
+    {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The agent is done."}]}},
+    {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text":
+        "<system-reminder>Tool list changed.</system-reminder>\nGreat, ship it to dev."}]}},
+]
+
+
+def test_turns_keep_the_users_words_and_the_assistants_final_prose(tmp_path):
+    path = tmp_path / "dev.jsonl"
+    write_transcript(path, DEV)
+    assert hooks.turns(path) == [
+        {"role": "user", "content": "Why is the deploy failing? Here is the log:\n\nsee this"},
+        {"role": "assistant", "content": "The deploy needs a new Haiku spend.\n\n"
+                                         "I moved the job to the dev runner, key [secret]."},
+        {"role": "user", "content": ""},  # a task notification holds its place, empty
+        {"role": "assistant", "content": "The agent is done."},
+        {"role": "user", "content": "Great, ship it to dev."}]
+
+
+def test_clean_drops_code_logs_json_and_caps():
+    assert hooks.clean("ok\n```\nprint(1)\n") == "ok"  # an unclosed fence runs to the end
+    assert hooks.clean("$ uv run pytest\n>>> 1 + 1\n@@ -1,2 +1,2 @@\nINFO:     started\nreal words") == "real words"
+    assert hooks.clean("Sep 24 │ Layla │ cancelled\ne26bd2f7787b3e769676d1ad8c1c11eb1da6153954ae73\nwhy?") == "why?"
+    assert hooks.clean("[a link](http://x) stays") == "[a link](http://x) stays"
+    long = hooks.clean("word " * 2000)
+    assert len(long) <= hooks.TURN_CAP + 2 and long.endswith("word …")
+
+
+def test_empty_turns_hold_their_place_and_old_parts_still_line_up(open_store, tmp_path):
+    store = open_store()
+    c = client(store)
+    path = tmp_path / "dev.jsonl"
+    write_transcript(path, DEV)
+    c.post("/v1/hook/stop", json={**STOP, "session_id": "dev", "transcript_path": str(path)})
+    assert [e.session_id for e in store.mem.log.events] == ["dev#0-5"] * 4  # 5 places, the empty one not logged
+    write_transcript(path, DEV + [
+        {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Shipped."}]}}])
+    c.post("/v1/hook/stop", json={**STOP, "session_id": "dev", "transcript_path": str(path)})
+    assert [(e.session_id, e.text) for e in store.mem.log.events][4:] == [("dev#5", "Shipped.")]
+    # a session logged before this change: "old#0" holds every place, the notification's too
+    store.ingest("old", [{"role": "user", "content": "x"}] * 5, tail=True)
+    write_transcript(path, DEV + [
+        {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Shipped."}]}}])
+    c.post("/v1/hook/stop", json={**STOP, "session_id": "old", "transcript_path": str(path)})
+    assert [(e.session_id, e.text) for e in store.mem.log.events if e.session_id.startswith("old#")][5:] == [("old#5", "Shipped.")]

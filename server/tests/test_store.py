@@ -122,3 +122,75 @@ def test_the_windows_lock_refuses_a_second_open_and_frees_on_close(monkeypatch, 
     a.close()  # idempotent
     assert held == {}  # unlocked before the handle closed
     Store(tmp_path / "w", triage=Stub(TAGS)).close()  # free at once
+
+
+# ---------------------------------------------------------------- opening without blocking (the 25-minute hang)
+
+def test_a_background_open_answers_busy_until_it_is_open(open_store, tmp_path, monkeypatch):
+    """serve opens the folder in a thread: until the replay and the rebuild are done, a call gets Busy (the API's 503
+    with Retry-After), not a wait behind the lock; a rebuild that holds the lock past `wait` gets Busy too."""
+    import threading
+
+    from bench.adapters.spookling import vectors
+
+    from spookling_memory import store as store_mod
+
+    s = open_store()
+    fill(s, HISTORY[:1])
+    s.close()
+    go = threading.Event()
+    real = store_mod.load
+    monkeypatch.setattr(store_mod, "load", lambda *a: (go.wait(10), real(*a)))
+    b = Store(tmp_path / "m", background=True, wait=0.05, triage=Stub(TAGS))
+    with pytest.raises(store_mod.Busy, match="still opening"):
+        b.stats()
+    go.set()
+    assert b.ready.wait(10) and b.stats()["n_events"] == 4
+    assert vectors.CACHE == tmp_path / "m" / "vectors.sqlite"  # embeddings are cached in the memory folder
+    got = []
+    with b.lock:  # a rebuild in progress on another thread
+        t = threading.Thread(target=lambda: got.append(pytest.raises(store_mod.Busy, b.retrieve, "What car?", NOW)))
+        t.start()
+        t.join(5)
+    assert got and "rebuild" in str(got[0].value)
+    b.close()
+
+
+def test_a_failed_background_open_says_why_and_frees_the_folder(open_store, tmp_path):
+    s = open_store()
+    fill(s, HISTORY[:1])
+    s.close()
+    (tmp_path / "m" / "log.jsonl").write_text("not json\n")
+    b = Store(tmp_path / "m", background=True, wait=1, triage=Stub(TAGS))
+    assert b.ready.wait(10)
+    with pytest.raises(RuntimeError, match="could not be opened.*not JSON"):
+        b.stats()
+    b.close()  # nothing to close
+    Store(tmp_path / "m2", triage=Stub(TAGS)).close()
+
+
+def test_a_reopen_with_the_decider_asks_jev_nothing_already_judged(tmp_path, monkeypatch):
+    """The decider's same-event answers are judgements on disk: a second open reads them, it does not ask again."""
+    from bench import decisions
+
+    asked = []
+
+    def ask(model, state, questions):
+        asked.append(len(questions))
+        return {q: {"noul": 0.9} if v["type"] == "noul" else
+                {"choice": next(iter(v["criteria"])), "confidence": 0.9, "probabilities": {next(iter(v["criteria"])): 0.95}}
+                for q, v in questions.items()}
+
+    monkeypatch.setattr(decisions, "ask", ask)
+    concert = "I went to a Billie Eilish concert at the Wells Fargo Center"
+    a = Store(tmp_path / "j", triage=Stub({}), decider="typesafe/jev-1.14")
+    a.ingest("s1", turns([concert + " last Saturday."]), "2025-05-10T10:00:00Z")
+    a.ingest("s2", turns([concert + " with my sister."]), "2025-05-20T10:00:00Z")
+    a.retrieve("When did I see Billie Eilish?", "2025-06-01T10:00:00Z")  # settles: the same-event question is asked
+    assert asked and any(d["step"] == "same_event" for d in a.mem.log.decisions)
+    assert a.stats()["tagger"]["decider"] == "typesafe/jev-1.14"  # a string: the Decider object made /v1/stats a 409
+    a.close()
+    n = len(asked)
+    b = Store(tmp_path / "j", triage=Stub({}), decider="typesafe/jev-1.14")
+    assert len(asked) == n and b.mem.events_store.rows()  # reopened and rebuilt, nothing asked
+    b.close()
