@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FRAMES, MID, SMALL } from '../src/ghost-sprite.js';
 import { TAGLINE } from '../src/cutscene.js';
-import { DEMO_LABEL, SAY, hooksJson, mcpJson } from '../src/wizard.js';
+import { DEMO_LABEL, SAY, TAGGERS, codexLogin, hooksJson, mcpJson, status, taggerText } from '../src/wizard.js';
 import { hookHandlers, mcpEntry, MCP_NAME } from '../src/hooks.js';
 
 const BIN = fileURLToPath(new URL('../bin/spookling-memory.js', import.meta.url));
@@ -59,6 +59,12 @@ test('demo walks every step, writes nothing, and shows the tagline once', () => 
   for (const k of [1, 2, 3, 4, 5, 6, 7]) assert.ok(o.includes(`spookling: ${SAY[k]}`), `line ${k}`);
   assert.equal(o.split(TAGLINE).length - 1, 1, 'the tagline once');
   assert.equal(o.match(/demo: not written/g)?.length, 4); // keys.env, .gitignore, settings.json, .mcp.json
+  // step 3: the three taggers listed, the default (Jev) taken, so only its key is asked for
+  for (const [i, t] of TAGGERS.entries()) assert.ok(o.includes(`${i + 1}  ${t.label}`), t.label);
+  assert.match(o, /How should the tagger run\? \[1\]/);
+  assert.match(o, /OpenRouter API key for Jev: •+/);
+  assert.doesNotMatch(o, /Anthropic API key:/);
+  assert.match(o, /OPENROUTER_API_KEY=\*{8}/);
   // Step 4: a clone reached through \\wsl.localhost from Windows runs its server in WSL, so there is nothing to install.
   if (/so the server runs there/.test(o)) assert.doesNotMatch(o, /uv sync in/);
   else { assert.match(o, /uv sync in .*\n.*demo: skipped/); assert.match(o, /demo: not started/); }
@@ -67,4 +73,54 @@ test('demo walks every step, writes nothing, and shows the tagline once', () => 
   assert.match(o, /demo: a sample reply/);
   assert.ok(o.includes(DEMO_LABEL));
   assert.match(o, /Spookling Memory is in\./);
+});
+
+test('the tagger menu: Jev, Haiku or Codex, each started with its --model and asking only its own key', () => {
+  assert.deepEqual(TAGGERS.map((t) => [t.model, t.key]), [
+    ['typesafe/jev-router', 'OPENROUTER_API_KEY'], ['anthropic/claude-haiku-4.5', 'ANTHROPIC_API_KEY'], ['codex', null]]);
+  assert.match(TAGGERS[0].label, /\$0\.0015 a chat/);
+  for (const t of TAGGERS) assert.ok(`   › ${t.label}`.length <= 80, `${t.label}: wraps at 80 columns`);
+});
+
+test('codex login status: its line when logged in, a failure when not, or when codex is missing', { skip: process.platform === 'win32' && 'a POSIX fake codex' }, () => {
+  const bin = mkdtempSync(join(tmpdir(), 'spk-codex-'));
+  const fake = (body) => { writeFileSync(join(bin, 'codex'), `#!/bin/sh\n${body}\n`); chmodSync(join(bin, 'codex'), 0o755); };
+  const env = { ...process.env, PATH: `${bin}:/usr/bin:/bin` };
+  fake('[ "$1 $2" = "login status" ] && echo "Logged in using ChatGPT" && exit 0; exit 9');
+  assert.deepEqual(codexLogin(env), { ok: true, line: 'Logged in using ChatGPT' });
+  fake('echo "Logged in using an API key - sk-proj-abc123XYZ"');
+  assert.deepEqual(codexLogin(env), { ok: true, line: 'Logged in using an API key - sk-…' });
+  fake('echo "Not logged in" >&2; exit 1');
+  assert.deepEqual(codexLogin(env), { ok: false, line: 'Not logged in' });
+  const none = codexLogin({ ...process.env, PATH: mkdtempSync(join(tmpdir(), 'spk-empty-')) });
+  assert.equal(none.ok, false);
+  assert.match(none.line, /not found/);
+});
+
+test('status names the wired tagger, and the key it needs', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'spk-status-'));
+  const said = [], write = process.stdout.write, cfg = process.env.CLAUDE_CONFIG_DIR;
+  const run = async (tagger) => {
+    said.length = 0;
+    process.env.CLAUDE_CONFIG_DIR = join(dir, 'cfg');
+    process.stdout.write = (s) => { said.push(String(s)); return true; };
+    try { await status(dir, async () => (tagger ? { n_events: 0, tagger } : null)); } finally {
+      process.stdout.write = write;
+      if (cfg === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = cfg;
+    }
+    const text = said.join('').replace(/\x1b\[[0-9;]*m/g, '');
+    return (label) => text.split('\n').find((l) => l.includes(` ${label.padEnd(8)} `))?.trim();
+  };
+  let line = await run({ model: 'codex', via: 'codex' });
+  assert.equal(line('tagger'), '✓ tagger   your Codex subscription (codex exec)');
+  assert.equal(line('keys'), '✓ keys     no .memory/keys.env');
+  line = await run({ model: 'typesafe/jev-router', via: 'openrouter' });
+  assert.equal(line('tagger'), '✓ tagger   typesafe/jev-router through OpenRouter');
+  assert.equal(line('keys'), '! keys     no .memory/keys.env (the tagger needs OPENROUTER_API_KEY)');
+  mkdirSync(join(dir, '.memory'));
+  writeFileSync(join(dir, '.memory', 'keys.env'), 'OPENROUTER_API_KEY=sk-or-v1-x\n', { mode: 0o600 });
+  assert.equal((await run({ model: 'typesafe/jev-router', via: 'openrouter' }))('keys'), '✓ keys     OPENROUTER_API_KEY in .memory/keys.env');
+  assert.match((await run({ model: 'anthropic/claude-haiku-4.5', via: 'anthropic' }))('keys'), /^! keys/);
+  assert.equal(taggerText({ model: 'anthropic/claude-haiku-4.5', via: 'anthropic' }), 'anthropic/claude-haiku-4.5 through the Anthropic API');
+  assert.equal((await run(null))('tagger'), '! tagger   unknown (the server is down, or older than this wizard)');
 });

@@ -21,7 +21,7 @@ const PKG = fileURLToPath(new URL('..', import.meta.url));
 const ROOT = existsSync(join(PKG, 'server')) ? PKG : resolve(PKG, '..');
 export const SERVER_DIR = join(ROOT, 'server'), HOOKS_DIR = join(ROOT, 'hooks');
 export const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`, STATS = `${SERVER_URL}/v1/stats`;
-const STEPS = ['Checks', 'Harness', 'Keys', 'Server', 'Wire Claude Code', 'Smoke test', 'Done'];
+const STEPS = ['Checks', 'Harness', 'Tagger', 'Server', 'Wire Claude Code', 'Smoke test', 'Done'];
 const WIN = process.platform === 'win32';
 export const DEMO_LABEL = 'demo, nothing is written';
 
@@ -30,7 +30,7 @@ export const DEMO_LABEL = 'demo, nothing is written';
 export const SAY = {
   1: 'Hello. First I check what this machine has.',
   2: 'Pick the tool you talk to. I will sit beside it.',
-  3: 'Your keys go in one file, out of git, never shown.',
+  3: 'A small model tags each chat for me. Pick one.',
   4: 'Moving in. Everything I remember goes in .memory/',
   5: 'I will remind Claude of what you told it before.',
   codex: 'Nothing to wire for Codex yet. I will wait.',
@@ -38,6 +38,26 @@ export const SAY = {
   7: 'That is all. Carry on as you always do.',
   fail: 'Sorry, that failed. The line marked ! says why.',
 };
+
+// The tagger: what the menu says, the --model the server starts with, and the key it needs (none for a subscription).
+// Jev's price is measured, not listed: OpenRouter bills the router per call (199 chats cost $0.30 on 19 Oct 2026).
+export const TAGGERS = [
+  { label: 'Jev through an OpenRouter key (cheapest, about $0.0015 a chat)', model: 'typesafe/jev-router', key: 'OPENROUTER_API_KEY', ask: 'OpenRouter API key for Jev:' },
+  { label: 'Anthropic API key (Haiku 4.5)', model: 'anthropic/claude-haiku-4.5', key: 'ANTHROPIC_API_KEY', ask: 'Anthropic API key:' },
+  { label: 'Your Codex subscription (the codex CLI, logged in)', model: 'codex', key: null },
+];
+// What /v1/stats says is tagging, in words.
+export const taggerText = (t) => (t.via === 'codex' ? 'your Codex subscription (codex exec)'
+  : `${t.model} through ${t.via === 'anthropic' ? 'the Anthropic API' : 'OpenRouter'}`);
+
+// `codex login status` exits 0 and names the login mode when credentials are saved. It does not check that they still
+// work (a dead refresh token passes, seen 23 Oct 2026); the first tag does. Through a shell, a fixed string: an npm
+// install on Windows is codex.cmd, which Node runs only through one. An API key in the line is masked.
+export function codexLogin(env = process.env) {
+  const r = spawnSync('codex login status', { shell: true, env, encoding: 'utf8', timeout: 15_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const line = (r.stdout?.trim().split('\n')[0] || r.stderr?.trim().split('\n').at(-1) || r.error?.message || '').trim();
+  return { ok: r.status === 0, line: line.replace(/sk-[\w-]+/g, 'sk-…') };
+}
 
 const out = (s) => emit(s);
 const ok = (s) => out(`   ${paint(C.MINT, '✓')} ${s}\n`);
@@ -106,7 +126,8 @@ function demoInput(fast) {
   if (stdin.isTTY) { setRaw(true); stdin.on('data', onKey); stdin.resume(); }
   const fake = (prefix) => [...`${prefix}${'x'.repeat(24 - prefix.length)}`]; // shown only as bullets
   setFeed(async ({ kind, q }) => {
-    const keys = kind === 'menu' ? [DOWN, UP, '\r'] // look at the next option, come back to Claude Code, Enter
+    const keys = kind === 'menu' && /tagger/.test(q) ? [DOWN, DOWN, UP, UP, '\r'] // down to Codex, back to Jev, Enter
+      : kind === 'menu' ? [DOWN, UP, '\r'] // look at the next option, come back to Claude Code, Enter
       : kind === 'hidden' ? [...fake(/OpenRouter/.test(q) ? 'sk-or-v1-' : 'sk-ant-api03-'), '\r']
       : kind === 'confirm' ? ['y', '\r'] : ['\r'];
     await beat(kind === 'confirm' ? 4000 : 1400); // time to read what is about to be written
@@ -233,7 +254,7 @@ function startServer(ctx) {
   mkdirSync(ctx.mem, { recursive: true });
   const log = openSync(join(ctx.mem, 'server.log'), 'a');
   const args = ['run', '--project', SERVER_DIR, 'spookling-memory', 'serve', '--folder', '.memory', '--port', String(PORT)];
-  if (ctx.keys.OPENROUTER_API_KEY) args.push('--model', 'typesafe/jev-router'); // Jev tags when an OpenRouter key was given
+  if (ctx.model) args.push('--model', ctx.model); // the tagger picked in step 3
   // detached: its own process group (POSIX) or console (Windows), so it outlives this wizard; windowsHide keeps that
   // console from opening a window. PYTHONUTF8: memory-bench reads its data files in the locale encoding (cp1252 on
   // Windows); UTF-8 mode makes that UTF-8 everywhere.
@@ -331,46 +352,45 @@ async function steps(ctx, { anim, st }) {
     ].join('\n'), { what: 'Codex TODO note' });
   }
 
-  // 3. Keys. The demo reads neither your environment nor .memory/keys.env, so both prompts show.
+  // 3. Tagger, and its key. The demo reads neither your environment nor .memory/keys.env, so the key prompt shows.
   await step(ctx, 3);
+  const t = TAGGERS[await choose('   How should the tagger run?', TAGGERS.map((x) => x.label))];
+  ctx.model = t.model;
+  ok(t.label);
   const envPath = join(ctx.mem, 'keys.env');
-  const envText = !ctx.dry && existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
-  const env = ctx.dry ? {} : process.env;
-  const fresh = {};
-  for (const [name, label, optional] of [
-    ['ANTHROPIC_API_KEY', 'Anthropic API key (tagger and reader):', false],
-    ['OPENROUTER_API_KEY', 'OpenRouter API key for Jev (optional, Enter skips):', true],
-  ]) {
-    const have = envValue(envText, name);
-    let v = env[name];
+  if (t.key) {
+    const envText = !ctx.dry && existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
+    const name = t.key, have = envValue(envText, name);
+    let v = ctx.dry ? undefined : process.env[name];
     if (v) ok(`${name} found in your environment`);
-    else if (have) { ok(`${name} already in .memory/keys.env`); ctx.keys[name] = have; continue; }
-    else v = await askHidden(`   ${label}`);
-    if (v) {
-      if (v !== env[name]) ok(`${name} received`);
-      ctx.keys[name] = v;
-      if (v !== have) fresh[name] = v;
-      if (name === 'ANTHROPIC_API_KEY' && !v.startsWith('sk-ant-')) warn('That key does not start with sk-ant-. Kept as given.');
-    } else if (optional) info(`${name} skipped`);
-    else {
-      // decided after both keys are read: without ANTHROPIC_API_KEY, Jev (OpenRouter) can still tag
-      ctx.missingKeys = [...(ctx.missingKeys || []), name];
-    }
-  }
-  if (Object.keys(fresh).length) {
-    await write(ctx, envPath, keysFile(envText, fresh), {
-      what: WIN ? 'your keys (kept out of git; mind who can read this folder)' : 'your keys, readable only by you', mode: 0o600,
-      preview: Object.keys(fresh).map((k) => `${k}=********`).join('\n'),
-    });
-  } else if (Object.keys(ctx.keys).length) ok('.memory/keys.env already up to date');
-  for (const name of ctx.missingKeys || []) {
-    if (name === 'ANTHROPIC_API_KEY' && ctx.keys.OPENROUTER_API_KEY) {
-      ok('no ANTHROPIC_API_KEY: fine, Jev tags through OpenRouter and your harness is the reader');
-    } else if (name === 'OPENROUTER_API_KEY' && ctx.keys.ANTHROPIC_API_KEY) {
-      ok('no OPENROUTER_API_KEY: fine, Haiku tags through Anthropic');
-    } else {
-      warn(`${name} not set. Put it in .memory/keys.env later; the server needs a key to tag.`);
+    else if (have) { ok(`${name} already in .memory/keys.env`); v = have; }
+    else if ((v = await askHidden(`   ${t.ask}`))) ok(`${name} received`);
+    if (!v) {
+      warn(`${name} not set. Put it in .memory/keys.env later; the server needs it to tag.`);
       await fail(ctx, `no ${name}`);
+    } else {
+      ctx.keys[name] = v;
+      if (name === 'ANTHROPIC_API_KEY' && !v.startsWith('sk-ant-')) warn('That key does not start with sk-ant-. Kept as given.');
+      if (v === have) ok('.memory/keys.env already up to date');
+      else {
+        await write(ctx, envPath, keysFile(envText, { [name]: v }), {
+          what: WIN ? 'your key (kept out of git; mind who can read this folder)' : 'your key, readable only by you', mode: 0o600,
+          preview: `${name}=********`,
+        });
+      }
+    }
+  } else {
+    const c = codexLogin();
+    out(`   ${paint(C.GREY, 'codex login status')}\n`);
+    if (c.ok) {
+      ok(c.line || 'logged in');
+      if (/api key/i.test(c.line)) warn('That login is an API key, so tagging bills the API, not your plan. codex login switches it.');
+      info('That checks a login is saved, not that it still works; the first tag does (errors go to .memory/server.log).');
+      info('Each chat then takes several seconds to tag and uses a little of your plan (Plus or higher); its terms apply.');
+    } else {
+      warn(c.line || 'codex did not answer');
+      info('Install the codex CLI (npm install -g @openai/codex), run codex login, then run init again.');
+      await fail(ctx, 'codex is not installed or not logged in');
     }
   }
   const giPath = join(ctx.mem, '.gitignore');
@@ -407,7 +427,13 @@ async function steps(ctx, { anim, st }) {
       await fail(ctx, 'uv sync failed');
     } else {
       if (!ctx.dry) ok('server installed');
-      if (!ctx.dry && await stats()) ok(`a server already answers on 127.0.0.1:${PORT}`);
+      const up = !ctx.dry && await stats();
+      if (up?.tagger && up.tagger.model !== ctx.model) {
+        const p = readPid(ctx.project);
+        warn(`a server already answers on 127.0.0.1:${PORT}, tagging with ${taggerText(up.tagger)}.`);
+        info(`Stop it${p?.alive ? ` (pid ${p.pid})` : ''}, then run init again to switch the tagger.`);
+        await fail(ctx, 'the running server has another tagger');
+      } else if (up) ok(`a server already answers on 127.0.0.1:${PORT}`);
       else if (await confirm('   Start it in the background? (pid in .memory/server.pid, log in .memory/server.log)')) {
         if (ctx.dry) {
           info('demo: not started');
@@ -493,11 +519,11 @@ async function steps(ctx, { anim, st }) {
   return 1;
 }
 
-export async function status(project = process.cwd()) {
+export async function status(project = process.cwd(), get = stats) {
   const line = (label, text, good) => out(`   ${good ? paint(C.MINT, '✓') : paint(C.LILAC, '!')} ${label.padEnd(8)} ${text}\n`);
   const ctx = newCtx(project);
   out(`${paint(C.GHOST, 'Spookling Memory', true)}  ${paint(C.GREY, project)}\n`);
-  const s = await stats(), p = readPid(project);
+  const s = await get(), p = readPid(project);
   line('server', s ? `up on 127.0.0.1:${PORT}${p?.alive ? `, pid ${p.pid}` : ''}`
     : `down${p && !p.alive ? ` (stale .memory/server.pid: pid ${p.pid} is not running)` : ''}`, !!s);
   // Both scopes count: project files, or the user files that reach every project.
@@ -518,13 +544,15 @@ export async function status(project = process.cwd()) {
   const codex = existsSync(join(project, '.memory', 'CODEX-TODO.md'));
   const claude = events.length === 3 && where.mcp.length > 0;
   line('harness', claude ? 'Claude Code' : codex ? 'Codex (TODO note only, no wiring yet)' : 'none wired', claude || codex);
+  line('tagger', s?.tagger ? taggerText(s.tagger) : 'unknown (the server is down, or older than this wizard)', !!s?.tagger);
+  const need = { openrouter: 'OPENROUTER_API_KEY', anthropic: 'ANTHROPIC_API_KEY' }[s?.tagger?.via];
   const envPath = join(project, '.memory', 'keys.env');
   if (existsSync(envPath)) {
     const names = [...readFileSync(envPath, 'utf8').matchAll(/^([A-Z_][A-Z0-9_]*)=./gm)].map((m) => m[1]);
     const mode = WIN ? null : statSync(envPath).mode & 0o777;
     line('keys', `${names.join(', ') || 'none'} in .memory/keys.env${mode && mode !== 0o600 ? ` (mode ${mode.toString(8)}, should be 600)` : ''}`,
-      names.includes('ANTHROPIC_API_KEY') && (!mode || mode === 0o600));
-  } else line('keys', 'no .memory/keys.env', !!process.env.ANTHROPIC_API_KEY);
+      (!need || names.includes(need)) && (!mode || mode === 0o600));
+  } else line('keys', need ? `no .memory/keys.env (the tagger needs ${need})` : 'no .memory/keys.env', !need);
   return s && (claude || codex) && !missing.length ? 0 : 1;
 }
 
