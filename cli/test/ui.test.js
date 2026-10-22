@@ -59,8 +59,9 @@ test('demo walks every step, writes nothing, and shows the tagline once', () => 
   for (const k of [1, 2, 3, 4, 5, 6, 7]) assert.ok(o.includes(`spookling: ${SAY[k]}`), `line ${k}`);
   assert.equal(o.split(TAGLINE).length - 1, 1, 'the tagline once');
   assert.equal(o.match(/demo: not written/g)?.length, 4); // keys.env, .gitignore, settings.json, .mcp.json
-  assert.match(o, /demo: skipped/);
-  assert.match(o, /demo: not started/);
+  // Step 4: a clone reached through \\wsl.localhost from Windows runs its server in WSL, so there is nothing to install.
+  if (/so the server runs there/.test(o)) assert.doesNotMatch(o, /uv sync in/);
+  else { assert.match(o, /uv sync in .*\n.*demo: skipped/); assert.match(o, /demo: not started/); }
   assert.match(o, /"hooks": \{/);
   assert.match(o, /"mcpServers": \{/);
   assert.match(o, /demo: a sample reply/);

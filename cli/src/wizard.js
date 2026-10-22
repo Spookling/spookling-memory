@@ -50,7 +50,7 @@ async function step(ctx, n, line = SAY[n]) {
   const w = 28, fill = Math.round((w * n) / STEPS.length);
   out(`\n${paint(C.LILAC, '━'.repeat(fill))}${paint(C.GREY, '─'.repeat(w - fill))}  ${paint(C.GREY, `step ${n} of ${STEPS.length}`)}\n`);
   out(`${paint(C.GHOST, `${n}  ${STEPS[n - 1]}`, true)}\n`);
-  if (line) { await ctx.say(line); await ctx.beat(2600); }
+  if (line) { await ctx.say(line); await ctx.beat(3000); }
 }
 
 // A line that ticks while work runs (keep label short: a wrapped line cannot be redrawn), then done is printed in
@@ -90,7 +90,7 @@ export const mcpJson = (entry) => ['{', '  "mcpServers": {', `    ${JSON.stringi
   '    }', '  }', '}'].join('\n');
 
 // What a fresh server answers on /v1/stats, for the demo's smoke test.
-const SAMPLE = { n_events: 0, n_facts: 0, n_rows: 0, folder: '.memory', reset: null };
+const SAMPLE = { n_events: 0, n_facts: 0, n_rows: 0, reset: null };
 
 // demo: the answers are typed on screen by a script, into the same reader a user types into, so the demo walks the
 // real prompts. Any key cuts the current pause short; fast drops the pauses. Ctrl-C still quits.
@@ -109,7 +109,7 @@ function demoInput(fast) {
     const keys = kind === 'menu' ? [DOWN, UP, '\r'] // look at the next option, come back to Claude Code, Enter
       : kind === 'hidden' ? [...fake(/OpenRouter/.test(q) ? 'sk-or-v1-' : 'sk-ant-api03-'), '\r']
       : kind === 'confirm' ? ['y', '\r'] : ['\r'];
-    await beat(kind === 'confirm' ? 3600 : 1400); // time to read what is about to be written
+    await beat(kind === 'confirm' ? 4000 : 1400); // time to read what is about to be written
     for (const k of keys) { press(k); if (k !== '\r') await beat(kind === 'hidden' ? 45 : 800); }
   });
   return { beat, stop() { setFeed(null); if (stdin.isTTY) { stdin.off('data', onKey); stdin.pause(); setRaw(false); } } };
