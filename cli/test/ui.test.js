@@ -5,7 +5,7 @@ import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FRAMES, SMALL } from '../src/ghost-sprite.js';
+import { FRAMES, MID, SMALL } from '../src/ghost-sprite.js';
 import { TAGLINE } from '../src/cutscene.js';
 import { DEMO_LABEL, SAY, hooksJson, mcpJson } from '../src/wizard.js';
 import { hookHandlers, mcpEntry, MCP_NAME } from '../src/hooks.js';
@@ -24,7 +24,7 @@ test('the ghost says one plain line per step, and one for trouble', () => {
 });
 
 test('sprite: every frame keeps the hat, eyes and smile; only the tail streaks move', () => {
-  for (const frames of [FRAMES, SMALL]) {
+  for (const frames of [FRAMES, SMALL, MID]) {
     assert.ok(frames.length >= 3);
     const [rest] = frames;
     for (const f of frames) {

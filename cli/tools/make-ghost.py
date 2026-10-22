@@ -113,22 +113,6 @@ def tail_frames(grid, shifts):
     return frames
 
 
-def pool(grid, k, weight):
-    """Integer downscale by k: each k x k block votes, with the same feature weights."""
-    H, W = len(grid), len(grid[0])
-    out = []
-    for y in range(0, H, k):
-        row = []
-        for x in range(0, W, k):
-            n = [0] * 5
-            for yy in range(y, min(y + k, H)):
-                for xx in range(x, min(x + k, W)):
-                    n[grid[yy][xx]] += 1
-            row.append(max(range(5), key=lambda c: n[c] * weight[c]))
-        out.append(row)
-    return out
-
-
 def to_image(grid, scale, field=PURPLE):
     H, W = len(grid), len(grid[0])
     im = Image.new('RGB', (W * scale, H * scale), rgb(field))
@@ -160,26 +144,65 @@ WEIGHT = [1.0, 1.15, 1.6, 1.8, 1.0]  # transparent, BLACK, PURPLE_MID, LILAC, GH
 
 # Hand fixes, per sprite size, placed from the SVG's own coordinates (ghost-mark.svg, 46 units = 1104 px).
 # Each fix: (colour, x, y, rows) stamped on the grid; 'X' paints the colour, '.' paints GHOST, ' ' leaves the pixel.
-# 38 x 40 (27.1 px per pixel): the right eye sits half a pixel off the grid and comes out as a cross. In the SVG the
-# right eye is the left eye moved by (7.081, 1.643) units = (6.27, 1.46) pixels, so it is stamped as the left eye's
-# shape at (+6, +1). The smile's flat top slopes down to the right, (21.4, 28.2) to (24.7, 29.1), over a bowl that
-# bottoms out at (23.1, 30.8).
-EYE = ['.XX.', 'XXXX', 'XXXX', 'XXX.', '.XX.']
+# 38 x 40 (27.1 px per pixel): the downsample leaves the eyes uneven (a light pixel in one, a blob for the other), so
+# both are stamped as the same solid oval, 3 wide by 4 tall, leaning right like the logo's. In the SVG the right eye
+# is the left one moved by (7.081, 1.643) units = (6.27, 1.46) pixels: here 6 columns right and one row lower. The
+# smile's flat top slopes down to the right, (21.4, 28.2) to (24.7, 29.1), over a bowl that bottoms out at (23.1, 30.8).
+EYE = ['.XX', 'XXX', 'XXX', 'XX.']
 FIXES = {
     (38, 40): [
         (K, 18, 20, ['.' * 13] * 12),  # repaint the face area to body, then stamp
-        (K, 19, 21, EYE), (K, 25, 22, EYE), (K, 21, 28, ['XX..', 'XXXX', '.XX.']),
+        (K, 20, 22, EYE), (K, 26, 23, EYE), (K, 21, 28, ['XX..', 'XXXX', '.XX.']),
     ],
 }
-# The small ghost is the big one pooled by 3. At that size the eyes, the smile and the two streaks fall into
-# neighbouring pixels and merge, so they are stamped: the eyes as 1 x 2 ovals two pixels apart, the right one a pixel
-# lower (as in the logo), a two-pixel smile under them, and two one-pixel streaks.
-SMALL_K = 3
-SMALL_FIXES = [
-    (K, 5, 7, ['.....'] * 4), (L, 0, 9, ['  ..'] + ['....'] * 4),  # repaint face and tail to body (all inside it)
-    (K, 6, 7, ['X', 'X']), (K, 9, 8, ['X', 'X']), (K, 7, 10, ['XX']),  # eyes three apart, right one lower; smile
-    (L, 0, 9, ['   X', '  X ', ' X  ', 'X   ']), (L, 2, 11, ['  X', ' X ', 'X  ']),  # the two streaks
+
+# The small ghosts are drawn by hand: pooled down from the big one, the face and the streaks are a smudge.
+# Laid out from the big sprite's own rows and columns (divided by 2.9 for 13 x 14, by 2 for 19 x 20). Same letters
+# as the printouts: . transparent, K BLACK, M PURPLE_MID (the band), L LILAC (the streaks), # GHOST.
+# 13 x 14 (7 text rows): band of 2, single-pixel eyes one row apart, a 2-pixel smile below and between them (a row
+# clear of the eyes, or it reads as a smirk), one 3-pixel streak lower left. The logo's hook is filled in: at this
+# size its notch reads as a hole in the hat.
+SMALL_ART = [
+    '....KK.......',
+    '...KKKK......',
+    '..KKKKKK.....',
+    '..KKKKMMKKKK.',
+    '...KKKKKKKKKK',
+    '.KKKK#####KKK',
+    'KKKK######KK.',
+    '.KKK#######..',
+    '...####K###..',
+    '..#######K#..',
+    '###L#######..',
+    '##L####KK##..',
+    '#L#########..',
+    '##########...',
 ]
+# 19 x 20 (10 text rows): band of 4, 2 x 2 eyes one row apart, a 3-pixel smile (a straight line reads as a flat
+# mouth, so it dips in the middle), two streaks.
+MID_ART = [
+    '.....KKK...........',
+    '....KKKKK..........',
+    '...KKKKKKK.........',
+    '...KKKKKKKK........',
+    '..KKKKKKKMM........',
+    '...K.KKKMMKKKKKKK..',
+    '.....KKKKKKKKKKKKKK',
+    '...KKKKK#####KKKKKK',
+    '.KKKKKK########KKK.',
+    'KKKKKK#########KK..',
+    '.KKKK###########...',
+    '..KKK#####KK####...',
+    '....######KK#KK#...',
+    '...##########KK#...',
+    '..##############...',
+    '####L######K#K##...',
+    '###L##L#####K###...',
+    '##L##L#########....',
+    '#L##L##########....',
+    '###############....',
+]
+art = lambda rows: [['.KML#'.index(ch) for ch in r] for r in rows]
 
 
 def stamp(grid, fixes):
@@ -197,29 +220,27 @@ def build(src, q, H):
     return stamp(grid, FIXES.get((W, H), []))
 
 
-def js(frames, small, W, H):
+def js(sets):
+    """One FRAMES array per sprite, with its W and H: '' is the big one (W, H, FRAMES), 'SMALL' and 'MID' prefix theirs."""
     rows = lambda g: '\n'.join(f"    '{''.join(str(c) for c in r)}'," for r in g)
-    fr = '\n'.join(f'  [\n{rows(f)}\n  ],' for f in frames)
-    sm = '\n'.join(f'  [\n{rows(f)}\n  ],' for f in small)
-    sw, sh = len(small[0][0]), len(small[0])
-    return f"""// Generated by tools/make-ghost.py from brand/logos/ghost-mark.png. Do not edit by hand; edit the script and run it.
-// Each row is a string of palette indices: 0 transparent, 1 BLACK, 2 PURPLE_MID, 3 LILAC, 4 GHOST.
-// Pixels are half-block cells: W columns, H / 2 text rows. One frame per tail position; only the LILAC streaks move.
-export const PALETTE = [null, '#020202', '#7F52EF', '#B28AFF', '#DFD4FF'];
-export const W = {W}, H = {H};
-export const FRAMES = [
-{fr}
-];
-// The same ghost pooled by {SMALL_K} (integer downscale), for the small flying ghost: {sw} x {sh}.
-export const SMALL_W = {sw}, SMALL_H = {sh};
-export const SMALL = [
-{sm}
-];
-"""
+    out = [
+        '// Generated by tools/make-ghost.py from brand/logos/ghost-mark.png. Do not edit by hand; edit the script and run it.',
+        '// Each row is a string of palette indices: 0 transparent, 1 BLACK, 2 PURPLE_MID, 3 LILAC, 4 GHOST.',
+        '// Pixels are half-block cells: W columns, H / 2 text rows. One frame per tail position; only the LILAC streaks move.',
+        '// The big ghost is downsampled from the logo with hand-placed eyes and smile; SMALL and MID are drawn by hand.',
+        "export const PALETTE = [null, '#020202', '#7F52EF', '#B28AFF', '#DFD4FF'];",
+    ]
+    for name, frames in sets.items():
+        pre = f'{name}_' if name else ''
+        out.append(f'export const {pre}W = {len(frames[0][0])}, {pre}H = {len(frames[0])};')
+        out.append(f'export const {name or "FRAMES"} = [\n' + '\n'.join(f'  [\n{rows(f)}\n  ],' for f in frames) + '\n];')
+    return '\n'.join(out) + '\n'
 
 
 # Tail frames as (rows the left streak moves, rows the right one moves): rest, left up, both up, right up.
 SHIFTS = [(0, 0), (-1, 0), (-1, -1), (0, -1)]
+SHIFTS_ONE = [(0,), (-1,), (0,), (1,)]  # one streak: rest, up, rest, down
+SHIFTS_TOGETHER = [(0, 0), (-1, -1), (0, 0), (1, 1)]  # 19 x 20: its streaks sit close, so they move as one
 
 
 def strip(frames, scale, gap=1):
@@ -247,16 +268,13 @@ def main():
     grid = build(src, q, sizes[0])
     W, H = len(grid[0]), len(grid)
     frames = tail_frames(grid, SHIFTS)
-    small = stamp(pool(grid, SMALL_K, WEIGHT), SMALL_FIXES)
-    smalls = tail_frames(small, SHIFTS)
-    sw, sh = len(small[0]), len(small)
+    smalls = tail_frames(art(SMALL_ART), SHIFTS_ONE)
+    mids = tail_frames(art(MID_ART), SHIFTS_TOGETHER)
     strip(frames, 12).save(RENDERS / f'ghost-frames-{W}x{H}.png')
-    strip(smalls, 24).save(RENDERS / f'ghost-frames-{sw}x{sh}.png')
-    OUT_JS.write_text(js(frames, smalls, W, H))
-    print(f'wrote {OUT_JS.relative_to(CLI)}: {W}x{H} and {sw}x{sh}, {len(frames)} frames each; '
-          f'renders/ghost-frames-{W}x{H}.png, renders/ghost-frames-{sw}x{sh}.png')
-    for y, r in enumerate(small):
-        print(f'{y:3d} ' + ''.join('.KML#'[c] for c in r))
+    for f in (smalls, mids):
+        strip(f, 24).save(RENDERS / f'ghost-frames-{len(f[0][0])}x{len(f[0])}.png')
+    OUT_JS.write_text(js({'': frames, 'SMALL': smalls, 'MID': mids}))
+    print(f'wrote {OUT_JS.relative_to(CLI)}: {W}x{H}, 13x14, 19x20, {len(frames)} frames each; renders/ghost-frames-*.png')
 
 
 if __name__ == '__main__':

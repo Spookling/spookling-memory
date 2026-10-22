@@ -1,13 +1,15 @@
-// The install stage: the top rows of the screen, where the small ghost drifts and bobs on a purple band and says one
+// The install stage: the top 9 rows of the screen (11 from 30 rows), where the small ghost drifts and bobs on a purple band and says one
 // line per step in a speech bubble, while the steps scroll below it (a scroll region in the alternate screen).
 // Redrawn at 12 fps while a step runs and held still while a prompt waits, so typing is never disturbed. When the
 // stage closes, the log of the steps is printed again in the normal screen. Without the room (80 x 24), colour, a
 // terminal or animation, the ghost's lines print as plain text among the steps instead.
 import process from 'node:process';
 import { C, LEGACY, MODE, canvas, cursor, enterScreen, mix, note, paint, record, render, restore, setOnPrompt, size, sleep, write } from './term.js';
-import { LITTLE, bubble, draw } from './ghost.js';
+import { LITTLE, MID, bubble, draw } from './ghost.js';
 
-export const ROWS = 9; // 8 rows of band, then a blank row
+// The 13 x 14 ghost on an 8-row band, or from 30 rows the 19 x 20 one on a 10-row band; a blank row under either.
+// talk: the text row of the bubble, level with the ghost's eyes. Picked when the stage opens and kept.
+const layout = (rows) => (rows >= 30 ? { g: MID, band: 10, talk: 5 } : { g: LITTLE, band: 8, talk: 3 });
 const said = (line) => `   ${paint(C.LILAC, 'spookling:')} ${line}\n`;
 
 export const fits = (anim = true) => {
@@ -19,17 +21,19 @@ export const fits = (anim = true) => {
 export function stage({ anim = true, label = '', hold = 1200 } = {}) {
   const plain = { live: false, async say(line) { write(said(line)); }, busy() {}, close() {} };
   if (!fits(anim)) { restore(); return plain; } // restore: leave a cutscene's alternate screen, if one was kept
-  const { stdout } = process, t0 = Date.now();
+  const { stdout } = process, t0 = Date.now(), { g, band, talk } = layout(size().rows), ROWS = band + 1;
   let text = '', shownAt = 0, timer = null, open = true;
 
   const paintStage = () => {
     const { cols } = size(), s = (Date.now() - t0) / 1000;
-    const cv = canvas(cols, (ROWS - 1) * 2, C.FIELD);
-    // Drift between the left edge and the room the bubble and the label leave; about 12 s a lap. Bob a pixel.
-    const room = Math.max(0, Math.min(cols - (text ? text.length + 4 : 0) - LITTLE.w - 8, cols - label.length - LITTLE.w - 6));
-    const gx = 2 + Math.round(room * (0.5 - 0.5 * Math.cos(s * 0.5))), gy = 1 + Math.round(Math.sin(s * 2.5));
-    draw(cv, LITTLE, gx, gy, s);
-    const over = text ? bubble(cv, text, gx + LITTLE.w + 5, 3, 'left') : {};
+    const cv = canvas(cols, band * 2, C.FIELD);
+    // Drift between the left edge and the room the bubble and the label leave; about 12 s a lap. Bob within the band
+    // (the 19 x 20 ghost fills it, so it bobs down one pixel, into the cut its body has anyway).
+    const room = Math.max(0, Math.min(cols - (text ? text.length + 4 : 0) - g.w - 8, cols - label.length - g.w - 6));
+    const gx = 2 + Math.round(room * (0.5 - 0.5 * Math.cos(s * 0.5)));
+    const gy = Math.round((Math.max(band * 2 - g.h, 1) / 2) * (1 + Math.sin(s * 2.5)));
+    draw(cv, g, gx, gy, s);
+    const over = text ? bubble(cv, text, gx + g.w + 5, talk, 'left') : {};
     if (label) (over[0] ??= []).push([cols - label.length - 2, label, mix(C.FIELD, C.GHOST, 0.55)]);
     // Save the cursor, draw at absolute rows, restore it: the steps below never see the stage move.
     stdout.write('\x1b7' + render(cv, over).map((l, i) => `\x1b[${i + 1};1H${l}`).join('') + `\x1b[${ROWS};1H\x1b[0m\x1b[K\x1b8`);

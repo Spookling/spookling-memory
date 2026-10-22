@@ -2,7 +2,8 @@
 """Render what the terminal shows to PNG, by replaying the CLI's own bytes through a small VT interpreter.
 
 Dev only, not shipped. Needs Pillow; POSIX (it runs the CLI under a pseudo-terminal).
-  python3 tools/render-frames.py                  renders/cutscene-frame.png, cutscene-end.png, wizard-frame.png
+  python3 tools/render-frames.py                  renders/cutscene-frame.png, cutscene-end.png, wizard-frame.png (80x24),
+                                                  wizard-frame-30.png (80x30)
   python3 tools/render-frames.py raw FILE OUT     any captured byte stream (for example from `script`) to OUT
   python3 tools/render-frames.py snap FILE TEXT OUT   the same, stopped at the first TEXT (and the next stage redraw)
 
@@ -216,15 +217,17 @@ def main():
         sc.feed('\x1b[H' + node_frame(s, 'demo, nothing is written'))
         print(f'renders/{name}.png', sc.png(RENDERS / f'{name}.png'), f'(t = {s} s)')
     import tempfile
-    with tempfile.TemporaryDirectory() as tmp:
-        stream = run_pty(['node', str(CLI / 'bin' / 'spookling-memory.js'), 'demo', '--fast'], env(_CWD=tmp, HOME=tmp))
-        left = os.listdir(tmp)
-    log = Path(tempfile.gettempdir()) / 'spookling-demo-fast.log'  # for `snap`
-    open(log, 'w', encoding='utf8', newline='').write(stream)
-    print('captured', log)
-    sc = Screen()
-    sc.feed(upto(stream, '.mcp.json'))
-    print('renders/wizard-frame.png', sc.png(RENDERS / 'wizard-frame.png'), '(demo, step 5)', 'files left in the demo folder:', left)
+    # 80 x 24: the 13 x 14 ghost on a 9-row stage. 80 x 30: the 19 x 20 ghost on an 11-row stage.
+    for rows, name in ((24, 'wizard-frame'), (30, 'wizard-frame-30')):
+        with tempfile.TemporaryDirectory() as tmp:
+            stream = run_pty(['node', str(CLI / 'bin' / 'spookling-memory.js'), 'demo', '--fast'], env(_CWD=tmp, HOME=tmp), rows=rows)
+            left = os.listdir(tmp)
+        log = Path(tempfile.gettempdir()) / f'spookling-{name}.log'  # for `snap`
+        open(log, 'w', encoding='utf8', newline='').write(stream)
+        sc = Screen(rows=rows)
+        sc.feed(upto(stream, '.mcp.json'))
+        print(f'renders/{name}.png', sc.png(RENDERS / f'{name}.png'), f'(demo at 80 x {rows}, step 5; log {log})',
+              'files left in the demo folder:', left)
 
 
 if __name__ == '__main__':

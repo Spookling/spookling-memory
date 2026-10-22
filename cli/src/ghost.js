@@ -1,12 +1,14 @@
 // The Spookling ghost, generated from brand/logos/ghost-mark.png by tools/make-ghost.py (see src/ghost-sprite.js).
-// BIG is 38 x 40 pixels (20 text rows), SMALL is the same ghost pooled by 3, 13 x 14 (7 text rows).
+// BIG is 38 x 40 pixels (20 text rows), downsampled from the logo. LITTLE (13 x 14, 7 rows) and MID (19 x 20, 10 rows)
+// are drawn by hand in the same script, since a downsample that small turns the face into a smudge.
 // The mark is cropped at its left and bottom edges, as the brand mark is; it is drawn as it is, never mirrored.
 import { C, MODE, canvas, cursor, dot, render, size, sleep, write } from './term.js';
-import { FRAMES, H, PALETTE, SMALL, SMALL_H, SMALL_W, W } from './ghost-sprite.js';
+import { FRAMES, H, MID as MID_FRAMES, MID_H, MID_W, PALETTE, SMALL, SMALL_H, SMALL_W, W } from './ghost-sprite.js';
 
 const grid = (f) => f.map((row) => [...row].map((p) => PALETTE[p]));
 export const BIG = { w: W, h: H, frames: FRAMES.map(grid) };
 export const LITTLE = { w: SMALL_W, h: SMALL_H, frames: SMALL.map(grid) };
+export const MID = { w: MID_W, h: MID_H, frames: MID_FRAMES.map(grid) };
 export const TAIL = 0.18; // seconds per tail frame
 
 // The ghost at pixel (x, y) at time s: only the tail streaks change between frames.
