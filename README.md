@@ -1,6 +1,6 @@
 # Spookling Memory
 
-*For Claude Code power users · algorithm v2.1 · October 2026*
+*Algorithm v2.1 · October 2026*
 
 **Your AI forgets you every session. It brings back the car you sold. It drops your rules the moment the chat gets long.**
 
