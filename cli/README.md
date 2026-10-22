@@ -5,7 +5,7 @@ The install wizard for Spookling Memory. Node 18 or newer, no dependencies. Work
 ```bash
 npx @spookling/memory init                 # the intro, then the step-by-step install, for this project
 npx @spookling/memory init --scope user    # the same, wired for every project you open in Claude Code
-npx @spookling/memory demo                 # the intro only
+npx @spookling/memory demo                 # the whole install as you would see it, answered for you; writes nothing
 npx @spookling/memory status               # is the server up, what is wired (project and user files); exit 0 when all is well
 npx @spookling/memory uninstall            # remove the hooks and the MCP entry (add --scope user for the user files), keep .memory/
 ```
@@ -71,10 +71,17 @@ Windows sessions then log into the WSL project's `.memory/`; the server reads th
 ## Flags
 
 - `--scope project` (default) or `--scope user`, for `init` and `uninstall`. See the table below.
-- `--no-anim` skips the animation and prints the wordmark as a still.
-- `--frames N` (demo only) prints N frames from across the intro, one after another. Useful for checking the drawing without a live terminal.
+- `--no-anim` skips the animation: the wordmark prints as a still and the ghost's lines print as plain text.
+- `--fast` (demo only) drops the pauses. Without it the demo takes about a minute; any key cuts the current pause short.
+- `--frames N` (demo only) prints N frames from across the intro, one after another, and stops. Useful for checking the drawing without a live terminal.
 
-The animation also skips itself when `NO_COLOR` is set, when output is not a terminal, or when the terminal is smaller than 40 x 16. Colour is 24-bit when `COLORTERM` is `truecolor` or `24bit`, 256 colours otherwise. `FORCE_COLOR=1` keeps colour in piped output. Any key skips the intro; Ctrl-C restores the terminal and exits.
+The intro animates at 40 x 16 or larger. During `init` the ghost then stays at the top of the screen: it drifts and bobs on a purple band and says one line per step in a speech bubble, while the steps scroll below it. That stage needs 80 x 24. It redraws at 12 fps while a step runs and holds still while a prompt waits, so typing is never disturbed. It uses the alternate screen; when it closes, the whole log of the steps is printed again in the normal screen, so it stays in your scrollback (also on Ctrl-C). With `NO_COLOR`, output that is not a terminal, `--no-anim`, a smaller terminal, or a Windows console older than Windows 10 (no escape sequences), there is no animation and the ghost's lines print as `spookling: ...` among the steps. Colour is 24-bit when `COLORTERM` is `truecolor` or `24bit`, or in Windows Terminal (`WT_SESSION`), 256 colours otherwise. `FORCE_COLOR=1` keeps colour in piped output. Any key skips the intro; Ctrl-C restores the terminal and exits.
+
+At a terminal, the harness is picked from a menu (arrows, then Enter) and keys show as bullets while you type or paste them; the key itself is never printed.
+
+## demo
+
+`demo` runs the same steps and prompts as `init`, with the answers typed on screen for you: the menu moves to Claude Code, both keys are typed as bullets, each write is answered y. The checks run for real (they only read). Nothing is written, started or run, and nothing in the folder is read: each write shows exactly what `init` would write (the JSON merged into `settings.json` and `.mcp.json` included) and then `demo: not written`; the server install shows its progress line and `demo: skipped`; the smoke test shows the request and a sample reply. A quiet `demo, nothing is written` sits in the top right corner throughout. It is `init` with a dry-run flag, not a copy, so it cannot drift from the real wizard.
 
 Without a terminal (an assistant's shell, a pipe), answers are read from stdin. When stdin ends, or stays open and says nothing for 20 seconds, every prompt takes its default. Every write is still printed before it happens, so the log shows exactly what a default wrote.
 
@@ -122,6 +129,8 @@ On 21 Oct 2026, on one PC: WSL2 Ubuntu 24.04 (Node 24.19, uv 0.12.5) and native 
 
 ```bash
 npm test                                   # node:test, no network
+node bin/spookling-memory.js demo --fast   # the whole install, dry
 node bin/spookling-memory.js demo --frames 3
-node bin/spookling-memory.js demo --no-anim
 ```
+
+The ghost is generated from `brand/logos/ghost-mark.png`, not drawn by hand: `python3 tools/make-ghost.py` (Pillow) writes `src/ghost-sprite.js` (38 x 40 pixels, 20 text rows, and the same ghost pooled by 3, 13 x 14, each with 4 tail frames) and renders it back to PNG in `renders/` beside the logo, to check by eye. Its hand fixes (eyes, smile, tail streaks) are placed from the SVG's own coordinates. `python3 tools/render-frames.py` (POSIX) replays the CLI's own output through a small terminal interpreter and saves `renders/cutscene-frame.png`, `renders/cutscene-end.png` and `renders/wizard-frame.png` (80 x 24, 800 x 480 px). Neither tool ships in the package.
