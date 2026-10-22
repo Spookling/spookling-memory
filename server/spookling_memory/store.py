@@ -26,6 +26,7 @@ from bench.adapters.spookling.sleep import tx_of
 from bench.schema import Session, Turn
 
 from . import reset as R
+from .subscription import backend
 
 LOG, JUDGEMENTS = "log.jsonl", "judgements.jsonl"
 WINDOWS = os.name == "nt"
@@ -272,7 +273,8 @@ class Store:
         with self._busy():
             r = R.latest(self.mem.log.decisions)
             return self.mem.stats() | {"folder": str(self.folder), "before_reset": len(R.before_reset(self.mem)),
-                                       "reset": {k: r[k] for k in ("id", "at", "note", "upto")} if r else None}
+                                       "reset": {k: r[k] for k in ("id", "at", "note", "upto")} if r else None,
+                                       "tagger": {"model": self.mem.model, "via": backend(self.mem.model)}}
 
     def close(self) -> None:
         with self._busy():
