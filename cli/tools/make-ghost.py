@@ -144,24 +144,26 @@ WEIGHT = [1.0, 1.15, 1.6, 1.8, 1.0]  # transparent, BLACK, PURPLE_MID, LILAC, GH
 
 # Hand fixes, per sprite size, placed from the SVG's own coordinates (ghost-mark.svg, 46 units = 1104 px).
 # Each fix: (colour, x, y, rows) stamped on the grid; 'X' paints the colour, '.' paints GHOST, ' ' leaves the pixel.
-# 38 x 40 (27.1 px per pixel): the downsample leaves the eyes uneven (a light pixel in one, a blob for the other), so
-# both are stamped as the same solid oval, 3 wide by 4 tall, leaning right like the logo's. In the SVG the right eye
-# is the left one moved by (7.081, 1.643) units = (6.27, 1.46) pixels: here 6 columns right and one row lower. The
-# smile's flat top slopes down to the right, (21.4, 28.2) to (24.7, 29.1), over a bowl that bottoms out at (23.1, 30.8).
+# The face is level and symmetric at every size. The logo's right eye sits lower (its head is tilted); copied at
+# pixel size that reads as a broken face, so it is not copied.
+# 38 x 40 (27.1 px per pixel): the downsample leaves the eyes uneven, so both are stamped as the same solid oval,
+# 3 wide by 4 tall, on rows 22 to 25 (the logo's eyes span 21.0 to 27.6), at columns 19 to 21 and 26 to 28: centred
+# on column 24.0, the midpoint of the logo's eyes. The logo's smile (a flat top sloping down to the right over a
+# bowl) sits centred under that midpoint, columns 22 to 25.
 EYE = ['.XX', 'XXX', 'XXX', 'XX.']
 FIXES = {
     (38, 40): [
         (K, 18, 20, ['.' * 13] * 12),  # repaint the face area to body, then stamp
-        (K, 20, 22, EYE), (K, 26, 23, EYE), (K, 21, 28, ['XX..', 'XXXX', '.XX.']),
+        (K, 19, 22, EYE), (K, 26, 22, EYE), (K, 22, 28, ['XX..', 'XXXX', '.XX.']),
     ],
 }
 
 # The small ghosts are drawn by hand: pooled down from the big one, the face and the streaks are a smudge.
 # Laid out from the big sprite's own rows and columns (divided by 2.9 for 13 x 14, by 2 for 19 x 20). Same letters
 # as the printouts: . transparent, K BLACK, M PURPLE_MID (the band), L LILAC (the streaks), # GHOST.
-# 13 x 14 (7 text rows): band of 2, single-pixel eyes one row apart, a 2-pixel smile below and between them (a row
-# clear of the eyes, or it reads as a smirk), one 3-pixel streak lower left. The logo's hook is filled in: at this
-# size its notch reads as a hole in the hat.
+# 13 x 14 (7 text rows): band of 2; single-pixel eyes on one row with 3 columns between them (columns 5 and 9); a
+# 3-pixel smile (X.X over .X.) two rows below, centred on column 7; one 3-pixel streak lower left. The logo's hook is
+# filled in: at this size its notch reads as a hole in the hat.
 SMALL_ART = [
     '....KK.......',
     '...KKKK......',
@@ -171,15 +173,15 @@ SMALL_ART = [
     '.KKKK#####KKK',
     'KKKK######KK.',
     '.KKK#######..',
-    '...####K###..',
-    '..#######K#..',
-    '###L#######..',
-    '##L####KK##..',
+    '...##K###K#..',
+    '..#########..',
+    '###L##K#K##..',
+    '##L####K###..',
     '#L#########..',
     '##########...',
 ]
-# 19 x 20 (10 text rows): band of 4, 2 x 2 eyes one row apart, a 3-pixel smile (a straight line reads as a flat
-# mouth, so it dips in the middle), two streaks.
+# 19 x 20 (10 text rows): band of 4; 2 x 2 eyes on rows 11 and 12 at columns 8-9 and 13-14, symmetric about column
+# 11; a smile (X...X over .XXX.) on rows 14 and 15 centred under them; two streaks.
 MID_ART = [
     '.....KKK...........',
     '....KKKKK..........',
@@ -192,12 +194,12 @@ MID_ART = [
     '.KKKKKK########KKK.',
     'KKKKKK#########KK..',
     '.KKKK###########...',
-    '..KKK#####KK####...',
-    '....######KK#KK#...',
-    '...##########KK#...',
-    '..##############...',
-    '####L######K#K##...',
-    '###L##L#####K###...',
+    '..KKK###KK###KK#...',
+    '....####KK###KK#...',
+    '...#############...',
+    '..#######K###K##...',
+    '####L#####KKK###...',
+    '###L##L#########...',
     '##L##L#########....',
     '#L##L##########....',
     '###############....',
