@@ -1,6 +1,4 @@
-// The intro: the field fades in, the big ghost crosses, the small ghost flies in and parks above SPOOKLING, which
-// builds letter by letter, the tagline types out, then the MINT line. About 7 s at 20 fps; any key skips.
-// The tagline is shown once in the whole flow: here, or in the still when there is no animation.
+// The intro. The tagline shows once in the whole flow: here, or in the still when there is no animation.
 import process from 'node:process';
 import { C, LEGACY, MODE, bail, canvas, dot, enterScreen, mix, paint, render, restore, setRaw, size, write } from './term.js';
 import { BIG, LITTLE, draw, fly } from './ghost.js';
@@ -8,7 +6,6 @@ import { BIG, LITTLE, draw, fly } from './ghost.js';
 export const TAGLINE = 'An AI assistant that works for you while you sleep';
 export const PROMISE = 'Memory that stays right for years.';
 
-// Block letters, 7 px tall, GHOST.
 const FONT = {
   S: ['.XXXX.', 'XX..XX', 'XX....', '.XXXX.', '....XX', 'XX..XX', '.XXXX.'],
   P: ['XXXXX.', 'XX..XX', 'XX..XX', 'XXXXX.', 'XX....', 'XX....', 'XX....'],
@@ -21,9 +18,8 @@ const FONT = {
 };
 const WORD = 'SPOOKLING', GAP = 2, PAD = 4;
 const TEXT_W = [...WORD].reduce((n, ch) => n + FONT[ch][0].length, 0) + GAP * (WORD.length - 1);
-export const BAND_W = TEXT_W + PAD * 2, BAND_H = 12; // pixels; 6 text rows
+export const BAND_W = TEXT_W + PAD * 2, BAND_H = 12;
 
-// The first n letters at pixel (x, y), on a band of colour band (null: no band).
 function wordmark(cv, x, y, n, band) {
   if (band) for (let j = 0; j < BAND_H; j++) for (let i = 0; i < BAND_W; i++) dot(cv, x + i, y + j, band);
   let cx = x + PAD;
@@ -33,18 +29,16 @@ function wordmark(cv, x, y, n, band) {
   });
 }
 
-// When things happen, in seconds.
+// seconds
 const T = { fade: 0.7, pass: 0.3, park: 2.4, mark: 3.2, type: 4.6, promise: 6.0, end: 7.0 };
 
-// One frame at time s for a cols x rows screen, as a single string. label: a quiet note in the top right corner.
 export function frame(s, cols, rows, label = '') {
-  // No colour: no field. 256 colours: one step, since a blend would pass through the wrong colours.
+  // 256 colours: one step, since a blend would pass through the wrong colours
   const field = MODE === 'none' ? null : MODE === '256' ? (s < T.fade / 2 ? C.BLACK : C.FIELD) : mix(C.BLACK, C.FIELD, s / T.fade);
   const cv = canvas(cols, rows * 2, field);
-  const big = cols >= BAND_W + 2, perched = rows >= 19; // room for the band, and for the small ghost above it
-  const top = Math.max(0, (rows - (perched ? 18 : 10)) >> 1); // text row the lockup starts on
+  const big = cols >= BAND_W + 2, perched = rows >= 19;
+  const top = Math.max(0, (rows - (perched ? 18 : 10)) >> 1);
   const band = top + (perched ? 8 : 0), bx = Math.max(0, (cols - (big ? BAND_W : 21)) >> 1);
-  // The pass: the big ghost when it fits (20 rows), else the small one.
   const g = rows >= 22 && cols >= 60 ? BIG : LITTLE;
   if (s >= T.pass && s < T.park) fly(cv, g, s - T.pass, { dur: T.park - T.pass, y: Math.max(1, rows - (g.h >> 1)) - 1 });
   if (perched && s >= T.park) {
@@ -68,7 +62,6 @@ export function frame(s, cols, rows, label = '') {
   return render(cv, text).join('\r\n');
 }
 
-// The last frame as a still, for the normal screen. tagline: false after the animation, which already showed it.
 export function still({ tagline = true } = {}) {
   const { cols } = size();
   const out = [''];
@@ -90,8 +83,7 @@ export const canAnimate = (anim) => {
   return anim && MODE !== 'none' && !LEGACY && process.stdout.isTTY && cols >= 40 && rows >= 16;
 };
 
-// Play the intro. keep: stay in the alternate screen afterwards (the install stage follows); otherwise leave it and
-// print the still without the tagline. No animation: print the still with it. Resolves to true if it animated.
+// keep: stay in the alternate screen, as the install stage follows
 export function play({ anim = true, keep = false, label = '' } = {}) {
   if (!canAnimate(anim)) {
     write(still());
@@ -124,7 +116,6 @@ export function play({ anim = true, keep = false, label = '' } = {}) {
   });
 }
 
-// For tests and docs: n frames spread across the timeline, printed one after another.
 export function frames(n, cols = size().cols, rows = size().rows) {
   for (let i = 0; i < n; i++) {
     const s = n === 1 ? T.end : (T.end * i) / (n - 1);

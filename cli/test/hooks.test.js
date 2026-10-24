@@ -38,7 +38,7 @@ test('win32: a path with spaces, quotes, $ or a WSL share goes into args verbati
       assert.equal(hs[ev].command, 'node');
       assert.ok(isOurs(hs[ev]));
     }
-    const settings = JSON.parse(JSON.stringify(addHooks({}, hs)));  // what settings.json holds, backslashes escaped
+    const settings = JSON.parse(JSON.stringify(addHooks({}, hs))); // as settings.json holds it
     assert.deepEqual(settings.hooks.Stop[0].hooks[0].args, [`${dir}\\stop.js`]);
     assert.deepEqual(removeHooks(settings), {});
   }
@@ -60,9 +60,8 @@ test('scope: project files, or the user files (CLAUDE_CONFIG_DIR moves them)', (
   assert.equal(mcpPath(p, 'user', { CLAUDE_CONFIG_DIR: '/cfg' }), join('/cfg', '.claude.json'));
 });
 
-// Run the real hook scripts the way Claude Code's exec form does: spawn node with the path as one argv element, no
-// shell, from a folder whose name has a space, a quote and a $.
-const HOOKS = fileURLToPath(new globalThis.URL('../../hooks/', import.meta.url));  // URL is the server's, above
+// the real hook scripts as exec form runs them: node and the path as one argument, no shell
+const HOOKS = fileURLToPath(new globalThis.URL('../../hooks/', import.meta.url)); // URL is shadowed above
 const spaced = () => {
   const d = join(mkdtempSync(join(tmpdir(), 'spk-')), "Jane O'Neil $pace", 'spookling-memory', 'hooks');
   mkdirSync(d, { recursive: true });
@@ -79,7 +78,7 @@ const run = (h, url, input) => new Promise((res) => {
 
 test('exec form: with no server the hooks print nothing and exit 0, within seconds even if the connect hangs', async () => {
   const hs = spaced(), t = Date.now();
-  // 10.255.255.1 is not routed: the connect is never answered, as a dead port on WSL's mirrored network behaves
+  // 10.255.255.1 is not routed: the connect hangs, as a dead port on WSL's mirrored network does
   for (const h of Object.values(hs)) assert.deepEqual(await run(h, 'http://10.255.255.1:7447', '{"prompt":"hi"}'), { code: 0, out: '' });
   assert.ok(Date.now() - t < 10000);
   assert.equal(spawnSync(hs.Stop.command, hs.Stop.args, { input: 'not json', timeout: 20000 }).status, 0);
@@ -160,7 +159,7 @@ test('malformed settings throw instead of being overwritten', () => {
 
 test('isOurs only matches our scripts under a spookling path', () => {
   assert.ok(isOurs(cmds.Stop));
-  assert.ok(isOurs('C:\\Users\\a\\spookling-memory\\hooks\\stop.sh'));  // an older shell-form install
+  assert.ok(isOurs('C:\\Users\\a\\spookling-memory\\hooks\\stop.sh')); // an older shell-form install
   assert.ok(!isOurs({ type: 'command', command: 'node', args: ['/home/a/other/hooks/stop.js'] }));
   assert.ok(!isOurs('/home/a/other/hooks/stop.sh'));
   assert.ok(!isOurs('npm run lint'));
@@ -210,7 +209,7 @@ test('a server folder inside WSL, seen from Windows, runs through wsl.exe, never
     args: ['-d', 'Ubuntu-24.04', '--', 'bash', '-lc', "exec uv run --project '/home/jane o'\\''neil/spookling-memory/server' spookling-memory mcp"],
     env: { SPOOKLING_MEMORY_URL: URL, WSLENV: 'SPOOKLING_MEMORY_URL' },
   });
-  // the quoted path survives bash: what the -lc string hands uv
+  // the quoted path survives bash
   const r = spawnSync('bash', ['-c', mcpEntry(dir, URL).args[5].replace('exec uv run --project', 'printf %s')], { encoding: 'utf8' });
   if (!r.error) assert.equal(r.stdout, "/home/jane o'neil/spookling-memory/serverspookling-memorymcp");
 });

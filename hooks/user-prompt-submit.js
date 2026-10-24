@@ -1,13 +1,6 @@
 #!/usr/bin/env node
-// Claude Code UserPromptSubmit hook, any OS (Node 18+, no dependencies): recall memory for the prompt and hand it to Claude.
-// stdout: the server's reply, {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "..."}} or {}
-// (at most 10,000 characters, Claude Code's cap). Claude Code's own timeout for this event is 30 s; this gives up at 15.
-// stdin: the hook's JSON, sent as is to the local Spookling Memory server (SPOOKLING_MEMORY_URL, default
-// http://127.0.0.1:7447). Never blocks Claude: with no server, or on any error, it prints nothing and exits 0.
-// A connect gets 1 s (a dead port on WSL's mirrored network is never refused, only dropped), the reply
-// 15 s. Settings run it in exec form, {"command": "node", "args": ["<this file>"]}, so no shell ever parses the path.
-// Same contract as user-prompt-submit.sh; the logic lives in the server (server/spookling_memory/hooks.py).
-if (process.env.SPOOKLING_TAGGING) process.exit(0); // a tagging call the server started: nothing to log or recall
+// Claude Code UserPromptSubmit hook: POST stdin to the local server, print its reply, exit 0.
+if (process.env.SPOOKLING_TAGGING) process.exit(0); // a tagging call the server started
 const http = require('node:http');
 const url = (process.env.SPOOKLING_MEMORY_URL || 'http://127.0.0.1:7447').replace(/\/+$/, '') + '/v1/hook/user-prompt-submit';
 const done = () => process.exit(0);
@@ -20,8 +13,10 @@ process.stdin.on('end', () => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (d) => { body += d; });
-      res.on('end', () => (res.statusCode === 200 && body ? process.stdout.write(body, done) : done())); // exit once stdout has flushed
+      // exit only once stdout has flushed
+      res.on('end', () => (res.statusCode === 200 && body ? process.stdout.write(body, done) : done()));
     });
+    // 1 s to connect: WSL drops a dead port instead of refusing it
     req.on('socket', (s) => s.once('connect', () => req.setTimeout(15000)));
     req.on('timeout', () => req.destroy());
     req.on('error', done);

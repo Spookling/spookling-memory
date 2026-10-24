@@ -13,14 +13,14 @@ jobs:
         node: [20, 24]
     runs-on: ${{ matrix.os }}
     env:
-      SPOOKLING_LOCAL_MODELS: "0"  # offline: no embedder or reranker; the tests stub every model call
-      PYTHONUTF8: "1"              # as the wizard starts the server, so Windows reads files as UTF-8 too
+      SPOOKLING_LOCAL_MODELS: "0"  # offline: no embedder or reranker
+      PYTHONUTF8: "1"              # or Python on Windows reads files as cp1252
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
-      - uses: astral-sh/setup-uv@v6  # uv fetches Python 3.12 itself (server/pyproject.toml)
+      - uses: astral-sh/setup-uv@v6  # uv fetches Python 3.12 itself
       - run: uv sync --project server
       - run: uv run --project server pytest -q
       - run: npm test

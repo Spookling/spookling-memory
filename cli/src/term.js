@@ -1,29 +1,24 @@
-// Terminal helpers: brand colours, a half-block pixel canvas, prompts, and state restore.
-// Built-ins only.
+// Terminal helpers: colours, a half-block pixel canvas, prompts, and state restore.
 import process from 'node:process';
 import { release } from 'node:os';
 
 const { stdin, stdout, env } = process;
 
-// FIELD is what the ghost flies on: the brand PURPLE, the app icon's background (the hat is BLACK, so it needs one).
 export const C = {
   PURPLE: '#4E19CF', PURPLE_MID: '#7F52EF', LILAC: '#B28AFF', GHOST: '#DFD4FF',
   MINT: '#42C8A7', BLACK: '#020202', GREY: '#8A8A8A', FIELD: '#4E19CF',
 };
 
-// A Windows console older than Windows 10 1511 (build 10586) has no escape sequences at all. Node 18 still runs on
-// Windows 8.1, so that is the one case left: plain text, no colour, no animation. Windows Terminal (WT_SESSION) and
-// any Windows 10 or 11 console take the sequences.
+// a Windows console before 10 build 10586 takes no escape sequences at all
 export const LEGACY = process.platform === 'win32' && Number(release().split('.')[2] ?? 0) < 10586;
 const forced = env.FORCE_COLOR && env.FORCE_COLOR !== '0';
-// 'none' (NO_COLOR, piped output, legacy console), 'true' (24-bit), or '256'. Windows Terminal does 24-bit.
 export const MODE = env.NO_COLOR || LEGACY ? 'none'
   : !stdout.isTTY && !forced ? 'none'
   : /^(truecolor|24bit)$/i.test(env.COLORTERM ?? '') || env.WT_SESSION ? 'true' : '256';
 
 const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
 const q6 = (v) => (v < 48 ? 0 : v < 115 ? 1 : Math.floor((v - 35) / 40));
-// SGR parameter for a colour; base 38 = foreground, 48 = background, null = terminal default.
+// SGR: base 38 foreground, 48 background; null is the terminal default
 const code = (hex, base) => hex == null ? `${base + 1}`
   : MODE === 'true' ? `${base};2;${rgb(hex).join(';')}`
   : `${base};5;${16 + rgb(hex).reduce((n, v) => n * 6 + q6(v), 0)}`;
@@ -38,14 +33,12 @@ export const mix = (a, b, t) => {
 
 export const size = () => ({ cols: stdout.columns || 80, rows: stdout.rows || 24 });
 
-// Pixel canvas: two pixel rows per text row, null = transparent (terminal background).
 export const canvas = (w, h, fill = null) => ({ w, h, px: new Array(w * h).fill(fill) });
 export const dot = (cv, x, y, c) => {
   if (x >= 0 && y >= 0 && x < cv.w && y < cv.h) cv.px[y * cv.w + x] = c;
 };
 
-// Canvas to text lines. Each cell is '▀' with fg = top pixel, bg = bottom pixel.
-// text: { [row]: [[col, string, colour], ...] } is painted over the pixels.
+// each cell is '▀' with fg the top pixel and bg the bottom one; text is painted over the pixels
 export function render(cv, text = {}) {
   const lines = [];
   for (let r = 0; r < cv.h >> 1; r++) {
@@ -73,14 +66,12 @@ export function render(cv, text = {}) {
   return lines;
 }
 
-// While the install stage is up, everything written below it is also kept here, to print again in the normal screen
-// when the alternate screen closes (at the end, on Ctrl-C, or on a crash), so the log of what was written survives.
+// while the stage is up, writes are kept to print again when the alternate screen closes
 let tape = null;
 export const write = (s) => { tape?.push(s); stdout.write(s); };
 export const note = (s) => { tape?.push(s); }; // kept for the log, not shown now
 export const record = (on) => { tape = on ? [] : null; };
 
-// Terminal state, restored on exit, Ctrl-C and SIGTERM.
 const state = { raw: false, cursor: false, alt: false };
 export function setRaw(on) {
   if (!stdin.isTTY) return;
@@ -97,7 +88,7 @@ export function cursor(show) {
 }
 export function restore() {
   let s = '';
-  if (state.alt) s += '\x1b[r\x1b[?1049l'; // the scroll region too, then back to the normal screen
+  if (state.alt) s += '\x1b[r\x1b[?1049l'; // reset the scroll region, then leave the alternate screen
   if (state.cursor) s += '\x1b[?25h';
   if (s) stdout.write('\x1b[0m' + s);
   state.alt = state.cursor = false;
@@ -109,24 +100,20 @@ export function bail() {
   stdout.write('\n');
   process.exit(130);
 }
-// Piped into head or a closed pager: stop quietly.
+// piped into head or a closed pager: stop quietly
 stdout.on('error', (e) => { if (e.code === 'EPIPE') process.exit(0); throw e; });
 process.on('SIGINT', bail);
 process.on('SIGTERM', bail);
 process.on('exit', restore);
 
-// One shared reader so piped answers are never lost between prompts. Raw mode for keys and hidden input (shown as
-// bullets); cooked mode for the rest, so the terminal echoes and edits. In the demo a script types into the same
-// buffer (feed), so the demo walks the real prompts and echoes what it types.
+// one shared reader, so piped answers are never lost between prompts
 let buf = '', waiter = null, ended = false, listening = false, feed = null;
 export const setFeed = (f) => { feed = f; };
 export const press = (k) => { buf += k; pump(); };
 export const UP = '\x1b[A', DOWN = '\x1b[B';
-// Called with true before a prompt waits and false after, so the stage can hold still while you type.
 let onPrompt = () => {};
 export const setOnPrompt = (f) => { onPrompt = f; };
-// No terminal and no answer (an assistant's shell can hold stdin open and never write): take the default after this
-// long, once, instead of waiting forever; later prompts then take theirs at once. Every write is still previewed first, so the log shows what a default wrote.
+// an assistant's shell can hold stdin open and never write: take the default after this long, once
 const NO_TTY_WAIT = 20_000;
 function pump() {
   while (waiter) {
@@ -154,7 +141,6 @@ function pump() {
     }
   }
 }
-// One answer: a line, or a single key (key = true). hidden lines are masked as bullets.
 function read({ hidden = false, key = false } = {}) {
   if (!listening && !feed) {
     listening = true;
@@ -178,8 +164,7 @@ function read({ hidden = false, key = false } = {}) {
         waiter = null;
         if (raw) setRaw(false);
         if (!feed) stdin.pause();
-        // End of input at a real terminal (Ctrl-D) aborts, so no write is ever confirmed by default.
-        // Piped or closed stdin takes the defaults, which is how a non-interactive run completes.
+        // Ctrl-D at a terminal aborts, so no write is confirmed by default; piped stdin takes the defaults
         if (v === null && stdin.isTTY && !feed) bail();
         resolve(v);
       },
@@ -189,21 +174,19 @@ function read({ hidden = false, key = false } = {}) {
   });
 }
 
-// Returns the trimmed answer, or def on Enter or end of input.
 export async function ask(q, def = '', kind = 'line') {
   write(`${q}${def ? paint(C.GREY, ` [${def}]`) : ''} `);
   onPrompt(true);
   feed?.({ kind, q });
   const a = await read();
   onPrompt(false);
-  // The terminal echoed a typed answer itself; keep it for the log. Piped input was not echoed, so print it.
+  // a terminal echoed the answer itself; piped input was not echoed, so print it
   if (feed) write('\n');
   else if (!stdin.isTTY) write((a ?? paint(C.GREY, '(no input)')) + '\n');
   else note(`${a ?? ''}\n`);
   return (a ?? '').trim() || def;
 }
 
-// Shown as bullets while you type or paste; the key itself is never printed.
 export async function askHidden(q) {
   write(`${q} `);
   onPrompt(true);
@@ -219,8 +202,6 @@ export async function confirm(q, yes = true) {
   return a ? a.startsWith('y') : yes;
 }
 
-// A menu: arrows (or j, k, or the number) move, Enter picks. Returns the index. Without a terminal to draw on or to
-// read keys from: a numbered list and a typed answer, a number or part of a name; anything else takes def.
 export async function choose(q, opts, def = 0) {
   if (!stdout.isTTY || (!stdin.isTTY && !feed)) {
     write(opts.map((o, i) => `   ${i + 1}  ${o}\n`).join(''));

@@ -1,5 +1,4 @@
-// init, status and uninstall. Every file write is shown first and can be skipped with n.
-// demo is init with dry: the same steps and prompts, answered on screen by a script, and nothing written or run.
+// init, status and uninstall; demo is init with dry: the same prompts, answered by a script, nothing written or run.
 import process from 'node:process';
 import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
@@ -17,12 +16,9 @@ import {
 } from './hooks.js';
 
 const WIN = process.platform === 'win32';
-// The package (a clone, or what npx unpacked): bin/, cli/, server/ and hooks/ side by side.
 const ROOT = fileURLToPath(new URL('../..', import.meta.url)).replace(/[\\/]$/, '');
 export const VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
-// init copies server/ and hooks/ to a folder per version that stays put, and wires that, so no setting points into the
-// npx cache (npm may clear it). uninstall leaves the folder. The one exception is a clone reached from Windows through
-// \\wsl.localhost: its server runs inside WSL (step 4), so the wiring points at the share, as before.
+// a folder per version, out of the npx cache (npm may clear it); a \\wsl.localhost clone is wired in place
 const SHARE = WIN && wslShare(join(ROOT, 'server'));
 export const INSTALL_DIR = SHARE ? ROOT
   : WIN ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'spookling-memory', VERSION)
@@ -31,11 +27,9 @@ export const SERVER_DIR = join(INSTALL_DIR, 'server'), HOOKS_DIR = join(INSTALL_
 export const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`, STATS = `${SERVER_URL}/v1/stats`;
 const STEPS = ['Checks', 'Harness', 'Tagger', 'Server', 'Wire Claude Code', 'Smoke test', 'Done'];
 export const DEMO_LABEL = 'demo, nothing is written';
-// .memory/.gitignore: the key, the pid and log, and the server's two caches (model replies, embeddings).
 const IGNORE = ['keys.env', 'server.pid', 'server.log', 'cache.sqlite*', 'vectors.sqlite*'];
 
-// What the ghost says, one line per step and one when something goes wrong. Plain words, no hype, no em dashes;
-// at most 52 characters so the bubble fits beside the ghost at 80 columns (test/ui.test.js checks all of it).
+// at most 52 characters each, so the bubble fits beside the ghost at 80 columns (tested)
 export const SAY = {
   1: 'Hello. First I check what this machine has.',
   2: 'Pick the tool you talk to. I will sit beside it.',
@@ -48,21 +42,15 @@ export const SAY = {
   fail: 'Sorry, that failed. The line marked ! says why.',
 };
 
-// The tagger: what the menu says, the --model the server starts with, and the key it needs (none for a subscription).
-// Jev option = a cheap router model picks the words (typesafe/jev-router, billed per call) and Jev itself (typesafe/jev-1.14,
-// $0.042 per million input tokens) decides every gate. Measured: 199 chats of router calls cost $0.30 on 19 Oct 2026.
 export const TAGGERS = [
   { label: 'Jev through an OpenRouter key (cheapest, about $0.002 a chat)', model: 'typesafe/jev-router', decider: 'typesafe/jev-1.14', key: 'OPENROUTER_API_KEY', ask: 'OpenRouter API key for Jev:' },
   { label: 'Anthropic API key (Haiku 4.5)', model: 'anthropic/claude-haiku-4.5', key: 'ANTHROPIC_API_KEY', ask: 'Anthropic API key:' },
   { label: 'Your Codex subscription (the codex CLI, logged in)', model: 'codex', key: null },
 ];
-// What /v1/stats says is tagging, in words.
 export const taggerText = (t) => (t.via === 'codex' ? 'your Codex subscription (codex exec)'
   : `${t.model} through ${t.via === 'anthropic' ? 'the Anthropic API' : 'OpenRouter'}`) + (t.decider ? `, decisions by ${t.decider}` : '');
 
-// `codex login status` exits 0 and names the login mode when credentials are saved. It does not check that they still
-// work (a dead refresh token passes, seen 23 Oct 2026); the first tag does. Through a shell, a fixed string: an npm
-// install on Windows is codex.cmd, which Node runs only through one. An API key in the line is masked.
+// through a shell: npm's codex on Windows is codex.cmd; it checks a login is saved, not that it still works
 export function codexLogin(env = process.env) {
   const r = spawnSync('codex login status', { shell: true, env, encoding: 'utf8', timeout: 15_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const line = (r.stdout?.trim().split('\n')[0] || r.stderr?.trim().split('\n').at(-1) || r.error?.message || '').trim();
@@ -72,7 +60,6 @@ export function codexLogin(env = process.env) {
 const ok = (s) => out(`   ${paint(C.MINT, '✓')} ${s}\n`);
 const warn = (s) => out(`   ${paint(C.LILAC, '!')} ${s}\n`);
 const info = (s) => out(`   ${paint(C.GREY, s)}\n`);
-// A problem for the summary, and the ghost's line for it.
 const fail = (ctx, problem) => { ctx.problems.push(problem); return ctx.say(SAY.fail); };
 
 async function step(ctx, n, line = SAY[n]) {
@@ -82,8 +69,7 @@ async function step(ctx, n, line = SAY[n]) {
   if (line) { await ctx.say(line); await ctx.beat(3000); }
 }
 
-// A line that ticks while work runs (keep label short: a wrapped line cannot be redrawn), then done is printed in
-// its place. The ticks are not kept in the log.
+// keep label short: a wrapped line cannot be redrawn
 async function progress(label, work, done = label) {
   const tty = process.stdout.isTTY && MODE !== 'none';
   let i = 0;
@@ -96,7 +82,6 @@ async function progress(label, work, done = label) {
   }
 }
 
-// Run a command with its output collected, not shown live (the stage owns the screen). No shell, stdin closed.
 const run = (cmd, args, { cwd, timeout }) => new Promise((res) => {
   let text = '';
   const child = spawn(cmd, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -107,7 +92,6 @@ const run = (cmd, args, { cwd, timeout }) => new Promise((res) => {
   child.on('close', (status) => { clearTimeout(timer); res({ status, text }); });
 });
 
-// The JSON that gets merged, laid out to read at 80 columns. Still valid JSON, every value exact (tested).
 export const hooksJson = (handlers) => ['{', '  "hooks": {', Object.entries(handlers).map(([ev, h]) => [
   `    ${JSON.stringify(ev)}: [{ "hooks": [{`,
   `      "type": ${JSON.stringify(h.type)}, "command": ${JSON.stringify(h.command)},`,
@@ -118,11 +102,9 @@ export const mcpJson = (entry) => ['{', '  "mcpServers": {', `    ${JSON.stringi
   ...Object.entries(entry).map(([k, v], i, all) => `      ${JSON.stringify(k)}: ${JSON.stringify(v)}${i < all.length - 1 ? ',' : ''}`),
   '    }', '  }', '}'].join('\n');
 
-// What a fresh server answers on /v1/stats, for the demo's smoke test.
 const SAMPLE = { n_events: 0, n_facts: 0, n_rows: 0, reset: null };
 
-// demo: the answers are typed on screen by a script, into the same reader a user types into, so the demo walks the
-// real prompts. Any key cuts the current pause short; fast drops the pauses. Ctrl-C still quits.
+// the demo's script types into the same reader a user types into, so it walks the real prompts
 function demoInput(fast) {
   const { stdin } = process;
   let skip = null;
@@ -133,13 +115,13 @@ function demoInput(fast) {
   }));
   const onKey = (k) => (String(k)[0] === '\x03' ? bail() : skip?.()); // raw mode: Ctrl-C arrives as a key
   if (stdin.isTTY) { setRaw(true); stdin.on('data', onKey); stdin.resume(); }
-  const fake = (prefix) => [...`${prefix}${'x'.repeat(24 - prefix.length)}`]; // shown only as bullets
+  const fake = (prefix) => [...`${prefix}${'x'.repeat(24 - prefix.length)}`];
   setFeed(async ({ kind, q }) => {
-    const keys = kind === 'menu' && /tagger/.test(q) ? [DOWN, DOWN, UP, UP, '\r'] // down to Codex, back to Jev, Enter
-      : kind === 'menu' ? [DOWN, UP, '\r'] // look at the next option, come back to Claude Code, Enter
+    const keys = kind === 'menu' && /tagger/.test(q) ? [DOWN, DOWN, UP, UP, '\r']
+      : kind === 'menu' ? [DOWN, UP, '\r']
       : kind === 'hidden' ? [...fake(/OpenRouter/.test(q) ? 'sk-or-v1-' : 'sk-ant-api03-'), '\r']
       : kind === 'confirm' ? ['y', '\r'] : ['\r'];
-    await beat(kind === 'confirm' ? 4000 : 1400); // time to read what is about to be written
+    await beat(kind === 'confirm' ? 4000 : 1400);
     for (const k of keys) { press(k); if (k !== '\r') await beat(kind === 'hidden' ? 45 : 800); }
   });
   return { beat, stop() { setFeed(null); if (stdin.isTTY) { stdin.off('data', onKey); stdin.pause(); setRaw(false); } } };
@@ -149,7 +131,6 @@ const newCtx = (project, scope = 'project') => ({
   project, scope, mem: join(project, '.memory'), written: [], skipped: [], problems: [], keys: {},
   dry: false, say: async () => {}, beat: async () => {},
 });
-// Inside the project: relative. Elsewhere (the user files): from ~, or absolute.
 const rel = (ctx, p) => {
   const r = relative(ctx.project, p), h = relative(homedir(), p);
   return !r ? p : !r.startsWith('..') && !isAbsolute(r) ? r : !h.startsWith('..') && !isAbsolute(h) ? join('~', h) : p;
@@ -160,7 +141,6 @@ const version = (cmd) => {
   return r.status === 0 ? r.stdout.trim().split('\n')[0] : null;
 };
 
-// GET /v1/stats; the parsed body, or null if nothing answers within 1.5 s.
 export const stats = () => new Promise((res) => {
   const req = http.get(STATS, { timeout: 1500 }, (r) => {
     let body = '';
@@ -183,8 +163,7 @@ function readPid(project) {
   } catch { return null; }
 }
 
-// Show the write, ask, then write. preview defaults to the content. mode is POSIX only: on Windows the file keeps the
-// folder's access rules (your user profile's, inside it), and chmod would change only the read-only flag.
+// mode is POSIX only: on Windows chmod would change only the read-only flag
 async function write(ctx, path, content, { what, preview = content, mode } = {}) {
   const name = rel(ctx, path);
   if (WIN) mode = undefined;
@@ -204,8 +183,6 @@ async function write(ctx, path, content, { what, preview = content, mode } = {})
   return true;
 }
 
-// Read JSON, apply fn, and write only if something changed. A file we cannot parse is left alone.
-// demo: starts from an empty file, as a fresh project would, and reads nothing.
 async function mergeFile(ctx, path, fn, { what, preview, same }) {
   let before, after;
   try { before = ctx.dry ? {} : readJson(path); after = fn(before); } catch (e) {
@@ -216,7 +193,7 @@ async function mergeFile(ctx, path, fn, { what, preview, same }) {
   await write(ctx, path, JSON.stringify(after, null, 2) + '\n', { what, preview });
 }
 
-// Show a command, ask, then run it (no shell, stdin closed: `claude mcp` waits on an open stdin). Its output is shown.
+// stdin closed: `claude mcp` waits on an open stdin
 async function runCmd(ctx, cmd, args, { what, show }) {
   out(`\n   ${paint(C.GHOST, 'run')} ${show}\n`);
   if (!(await confirm('   Run it?'))) {
@@ -232,8 +209,7 @@ async function runCmd(ctx, cmd, args, { what, show }) {
 }
 const shq = (s) => (/^[\w./:@=-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
-// User scope: Claude Code keeps user MCP servers in ~/.claude.json, a file it writes itself, so the wizard only reads it
-// and changes it through `claude mcp` (add-json refuses a name that exists, hence remove first).
+// Claude Code writes ~/.claude.json itself, so only `claude mcp` changes it; add-json refuses a name that exists
 const userEntry = (project) => { try { return readJson(mcpPath(project, 'user')).mcpServers?.[MCP_NAME]; } catch { return undefined; } };
 async function userMcp(ctx, entry) {
   const have = ctx.dry ? undefined : userEntry(ctx.project), json = JSON.stringify(entry);
@@ -248,14 +224,13 @@ async function userMcp(ctx, entry) {
   if (r && r.status !== 0) await fail(ctx, 'MCP entry not added: run the claude mcp add-json line above in your shell');
 }
 
-// Copy server/ and hooks/ from the package into dir. What a clone keeps beside its sources stays behind (a .venv belongs
-// to the folder it was made in). Files of the same name are replaced; anything else already in dir, its .venv, stays.
+// a clone's .venv and caches stay behind: a .venv belongs to the folder it was made in
 const LEAVE = new Set(['.venv', '__pycache__', '.pytest_cache', '.memory', 'node_modules']);
 export function install(from, dir) {
   for (const d of ['server', 'hooks']) cpSync(join(from, d), join(dir, d), { recursive: true, filter: (p) => !LEAVE.has(basename(p)) });
 }
 
-// Show the copy, ask, then copy. True when the server is there to install (copied now, or by an earlier init).
+// true when the server is in place, copied now or by an earlier init
 async function copyOut(ctx) {
   out(`\n   ${paint(C.GHOST, 'copy')} server/ and hooks/ to ${rel(ctx, INSTALL_DIR)}\n`);
   info(`  from ${ROOT}`);
@@ -272,7 +247,6 @@ async function copyOut(ctx) {
   return true;
 }
 
-// Keys: replace our lines, keep anything else in the file.
 function keysFile(text, keys) {
   const lines = text ? text.replace(/\n$/, '').split('\n') : [];
   for (const [k, v] of Object.entries(keys)) {
@@ -287,11 +261,9 @@ function startServer(ctx) {
   mkdirSync(ctx.mem, { recursive: true });
   const log = openSync(join(ctx.mem, 'server.log'), 'a');
   const args = ['run', '--project', SERVER_DIR, 'spookling-memory', 'serve', '--folder', '.memory', '--port', String(PORT)];
-  if (ctx.model) args.push('--model', ctx.model); // the tagger picked in step 3
-  if (ctx.decider) args.push('--decider', ctx.decider); // Jev answers every gate as a typed question, gated on its probability
-  // detached: its own process group (POSIX) or console (Windows), so it outlives this wizard; windowsHide keeps that
-  // console from opening a window. PYTHONUTF8: Python reads files in the locale encoding unless told otherwise (cp1252
-  // on Windows); UTF-8 mode makes that UTF-8 everywhere.
+  if (ctx.model) args.push('--model', ctx.model);
+  if (ctx.decider) args.push('--decider', ctx.decider);
+  // detached, so it outlives the wizard; PYTHONUTF8, or Python on Windows reads files as cp1252
   const child = spawn('uv', args, {
     cwd: ctx.project, detached: true, windowsHide: true, stdio: ['ignore', log, log],
     env: { ...process.env, PYTHONUTF8: '1', ...ctx.keys },
@@ -303,7 +275,6 @@ function startServer(ctx) {
   return child.pid;
 }
 
-// Backoff with jitter, capped at 8 tries (about 15 to 30 s); stops early if the server died.
 async function waitForStats(ctx) {
   let d = 250;
   for (let i = 0; i < 8; i++) {
@@ -317,8 +288,6 @@ async function waitForStats(ctx) {
   return null;
 }
 
-// dry (the demo): every step and prompt as a user sees them, answered by a script; nothing is written, started or
-// run, and nothing in the project is read. The checks are real (they only read). fast: no pauses.
 export async function init({ anim = true, project = process.cwd(), scope = 'project', dry = false, fast = false } = {}) {
   const label = dry ? DEMO_LABEL : '';
   await play({ anim: anim && !fast, keep: fits(anim), label });
@@ -340,7 +309,6 @@ async function steps(ctx, { anim, st }) {
   out(`   Setting up Spookling Memory in ${paint(C.GHOST, project)}${scope === 'user' ? paint(C.GREY, ' (hooks and MCP for all your projects)') : ''}\n`);
   info('Every file is shown before it is written. Answer n to skip it.');
 
-  // 1. Checks (real in the demo too: they only read)
   await step(ctx, 1);
   if (Number(process.versions.node.split('.')[0]) < 18) {
     warn(`Node ${process.version} is too old. Spookling Memory needs Node 18 or newer.`);
@@ -368,7 +336,6 @@ async function steps(ctx, { anim, st }) {
   if (git) ok(git); else warn('git not found. That is fine; .memory/ is just easier to back up inside a repo.');
   await ctx.beat(1200);
 
-  // 2. Harness
   await step(ctx, 2);
   const pick = await choose('   Which one?', ['Claude Code', 'Codex (wiring comes later)', 'Spookling app']);
   ctx.harness = ['claude', 'codex', 'app'][pick];
@@ -386,7 +353,7 @@ async function steps(ctx, { anim, st }) {
     ].join('\n'), { what: 'Codex TODO note' });
   }
 
-  // 3. Tagger, and its key. The demo reads neither your environment nor .memory/keys.env, so the key prompt shows.
+  // the demo reads neither the environment nor keys.env, so the key prompt shows
   await step(ctx, 3);
   const t = TAGGERS[await choose('   How should the tagger run?', TAGGERS.map((x) => x.label))];
   ctx.decider = t.decider || null;
@@ -437,10 +404,8 @@ async function steps(ctx, { anim, st }) {
     });
   }
 
-  // 4. Server
   await step(ctx, 4);
   if (SHARE) {
-    // Run from PowerShell against a clone inside WSL: one server, in WSL, serves both sides on 127.0.0.1.
     info(`The server folder is inside WSL (${SHARE.distro}), so the server runs there. In WSL, from your project:`);
     info(`  node '${SHARE.path.replace(/\/server$/, '')}/bin/spookling-memory.js' init`);
     info('No uv sync from Windows: it would build a Windows .venv over the one WSL uses.');
@@ -486,7 +451,6 @@ async function steps(ctx, { anim, st }) {
     }
   }
 
-  // 5. Wire Claude Code
   await step(ctx, 5, ctx.harness === 'claude' ? SAY[5] : SAY.codex);
   if (ctx.harness !== 'claude') info('Codex: nothing to wire yet (see .memory/CODEX-TODO.md).');
   else {
@@ -514,7 +478,6 @@ async function steps(ctx, { anim, st }) {
     } else await userMcp(ctx, entry);
   }
 
-  // 6. Smoke test
   await step(ctx, 6);
   out(`   ${paint(C.GREY, `GET ${STATS} `)}`);
   let res;
@@ -532,7 +495,6 @@ async function steps(ctx, { anim, st }) {
     await fail(ctx, 'smoke test failed');
   }
 
-  // 7. Done: back to the normal screen with the log, then the ghost's last pass, the checklist and the verdict.
   await step(ctx, 7, null);
   await ctx.beat(1000);
   let wired = true;
@@ -563,7 +525,6 @@ export async function status(project = process.cwd(), get = stats) {
   const s = await get(), p = readPid(project);
   line('server', s ? `up on 127.0.0.1:${PORT}${p?.alive ? `, pid ${p.pid}` : ''}`
     : `down${p && !p.alive ? ` (stale .memory/server.pid: pid ${p.pid} is not running)` : ''}`, !!s);
-  // Both scopes count: project files, or the user files that reach every project.
   const where = { events: [], mcp: [] }, got = new Set();
   for (const scope of ['project', 'user']) {
     try {
@@ -593,8 +554,7 @@ export async function status(project = process.cwd(), get = stats) {
   return s && (claude || codex) && !missing.length ? 0 : 1;
 }
 
-// Stop the server and the Python under it. POSIX: it was started detached, so its pid leads a process group.
-// Windows: process.kill would end uv.exe alone; taskkill /T ends the tree.
+// the whole tree: started detached, its pid leads a process group; on Windows taskkill /T
 function stopServer(pid) {
   if (WIN) return spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).status === 0;
   try { process.kill(-pid, 'SIGTERM'); return true; } catch { try { process.kill(pid, 'SIGTERM'); return true; } catch { return false; } }
@@ -623,7 +583,7 @@ export async function uninstall(project = process.cwd(), { scope = 'project' } =
   const p = readPid(project);
   if (p?.alive && (await confirm(`   Stop the memory server (pid ${p.pid})?`))) {
     if (stopServer(p.pid)) {
-      // SIGTERM is graceful: uvicorn closes the store first. Wait up to 10 s before claiming it is gone.
+      // SIGTERM is graceful (uvicorn closes the store first): wait up to 10 s
       const gone = () => { try { process.kill(p.pid, 0); return false; } catch (e) { return e.code !== 'EPERM'; } };
       for (let i = 0; i < 50 && !gone(); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
       rmSync(pidFile(project), { force: true });

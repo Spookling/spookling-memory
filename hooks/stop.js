@@ -1,12 +1,6 @@
 #!/usr/bin/env node
-// Claude Code Stop hook, any OS (Node 18+, no dependencies): log the turns of this session not yet logged. The server reads transcript_path itself and
-// replies at once (the tagging runs after the reply), so Claude is not held. Prints nothing: Stop output could keep Claude going.
-// stdin: the hook's JSON, sent as is to the local Spookling Memory server (SPOOKLING_MEMORY_URL, default
-// http://127.0.0.1:7447). Never blocks Claude: with no server, or on any error, it prints nothing and exits 0.
-// A connect gets 1 s (a dead port on WSL's mirrored network is never refused, only dropped), the reply
-// 15 s. Settings run it in exec form, {"command": "node", "args": ["<this file>"]}, so no shell ever parses the path.
-// Same contract as stop.sh; the logic lives in the server (server/spookling_memory/hooks.py).
-if (process.env.SPOOKLING_TAGGING) process.exit(0); // a tagging call the server started: nothing to log or recall
+// Claude Code Stop hook: POST stdin to the local server, print nothing (Stop output could keep Claude going), exit 0.
+if (process.env.SPOOKLING_TAGGING) process.exit(0); // a tagging call the server started
 const http = require('node:http');
 const url = (process.env.SPOOKLING_MEMORY_URL || 'http://127.0.0.1:7447').replace(/\/+$/, '') + '/v1/hook/stop';
 const done = () => process.exit(0);
@@ -19,6 +13,7 @@ process.stdin.on('end', () => {
       res.resume();
       res.on('end', done);
     });
+    // 1 s to connect: WSL drops a dead port instead of refusing it
     req.on('socket', (s) => s.once('connect', () => req.setTimeout(15000)));
     req.on('timeout', () => req.destroy());
     req.on('error', done);

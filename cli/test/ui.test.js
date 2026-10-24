@@ -19,7 +19,7 @@ test('the ghost says one plain line per step, and one for trouble', () => {
   for (const k of [1, 2, 3, 4, 5, 6, 7, 'codex', 'fail']) assert.ok(SAY[k], `no line for ${k}`);
   for (const [k, line] of Object.entries(SAY)) {
     assert.ok(line.length <= 52, `${k}: ${line.length} chars, the bubble fits 52 at 80 columns`);
-    assert.doesNotMatch(line, /[—–]/, `${k}: dash`);
+    assert.doesNotMatch(line, /[\u2014\u2013]/, `${k}: dash`);
     assert.doesNotMatch(line, /!!|!\s*$/, `${k}: exclamation`);
     assert.doesNotMatch(line, HYPE, `${k}: hype word`);
   }
@@ -34,7 +34,7 @@ test('sprite: every frame keeps the hat, eyes and smile; only the tail streaks m
       f.forEach((row, y) => {
         assert.equal(row.length, rest[y].length);
         assert.match(row, /^[0-4]+$/);
-        // 0 transparent, 1 BLACK, 2 PURPLE_MID never change; 3 LILAC and 4 GHOST swap where the streaks move
+        // 0, 1 and 2 never change; 3 and 4 swap where the streaks move
         [...row].forEach((p, x) => { if ('012'.includes(rest[y][x]) || '012'.includes(p)) assert.equal(p, rest[y][x], `(${x}, ${y})`); });
       });
     }
@@ -61,13 +61,12 @@ test('demo walks every step, writes nothing, and shows the tagline once', () => 
   for (const k of [1, 2, 3, 4, 5, 6, 7]) assert.ok(o.includes(`spookling: ${SAY[k]}`), `line ${k}`);
   assert.equal(o.split(TAGLINE).length - 1, 1, 'the tagline once');
   assert.equal(o.match(/demo: not written/g)?.length, 4); // keys.env, .gitignore, settings.json, .mcp.json
-  // step 3: the three taggers listed, the default (Jev) taken, so only its key is asked for
   for (const [i, t] of TAGGERS.entries()) assert.ok(o.includes(`${i + 1}  ${t.label}`), t.label);
   assert.match(o, /How should the tagger run\? \[1\]/);
   assert.match(o, /OpenRouter API key for Jev: •+/);
   assert.doesNotMatch(o, /Anthropic API key:/);
   assert.match(o, /OPENROUTER_API_KEY=\*{8}/);
-  // Step 4: a clone reached through \\wsl.localhost from Windows runs its server in WSL, so there is nothing to install.
+  // a \\wsl.localhost clone runs its server in WSL: nothing to install
   if (/so the server runs there/.test(o)) assert.doesNotMatch(o, /uv sync in/);
   else { assert.match(o, /copy server\/ and hooks\/ to .*spookling-memory/); assert.match(o, /demo: not copied/); assert.match(o, /uv sync in .*\n.*demo: skipped/); assert.match(o, /demo: not started/); }
   assert.match(o, /"hooks": \{/);
