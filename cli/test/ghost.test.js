@@ -93,6 +93,16 @@ test('the ghost line: pixels in truecolour, the emoji otherwise, no escapes unde
   assert.match(strip(line(project({ up: false }))), /^▄--▄ asleep, server off/);
 });
 
+test('look two-line: hat, eyes and hem over two rows with the words on the first; one emoji line without truecolour', () => {
+  const d = project({ event: 'prompt', facts: 3, rules: 1 }), two = ['--look', 'two-line'];
+  assert.deepEqual(strip(line(d, { args: two })).split('\n'), ['▄▀▀▀▄ 3 facts · 1 rule recalled', '▀▀▀▀▀', '']);
+  assert.match(line(d, { args: two }), /\x1b\[38;2;78;25;207;48;2;2;2;2m▀/, 'a purple hat over a dark eye');
+  assert.equal(line(d, { args: two, env: { NO_COLOR: '1' } }), '👻 3 facts · 1 rule recalled\n');
+  assert.equal(line(d, { args: two, env: { COLORTERM: '' } }).split('\n').length, 2, 'one row and the newline');
+  assert.deepEqual(strip(line(d, { args: [...two, '--then', 'printf "[Opus] app\\n"'] })).split('\n'),
+    ['[Opus] app', '▄▀▀▀▄ 3 facts · 1 rule recalled', '▀▀▀▀▀', '']);
+});
+
 test('the ghost line: your old status line first, two spaces, then the ghost', () => {
   const d = project({ event: 'stop' });
   assert.equal(line(d, { env: { NO_COLOR: '1' }, args: ['--then', 'printf "[Opus] app\\n"'] }), '[Opus] app  👻 saved\n');
@@ -102,18 +112,23 @@ test('the ghost line: your old status line first, two spaces, then the ghost', (
 test('the ghost bobs between seconds and the words stay put', async () => {
   const d = project({ event: 'prompt', facts: 1 });
   const at = () => new Promise((r) => setTimeout(r, 1100 - (Date.now() % 1000))); // just past the next second
+  const two = { args: ['--look', 'two-line'] };
   await at();
-  const a = strip(line(d));
+  const [a, ta] = [strip(line(d)), line(d, two).split('\n')];
   await at();
-  const b = strip(line(d));
+  const [b, tb] = [strip(line(d)), line(d, two).split('\n')];
   assert.notEqual(a.slice(0, 4), b.slice(0, 4));
   assert.equal(a.slice(4), b.slice(4));
+  assert.notEqual(ta[1], tb[1], 'the hem sways');
+  assert.equal(ta[0], tb[0]);
 });
 
-test('the ghost line finishes in under 50 ms', () => {
+// node's own start varies by host (19 ms to 90 ms here), so this times what the script adds to it
+test('the ghost line takes under 50 ms beyond starting node', () => {
   const d = project({ event: 'prompt', facts: 3, rules: 1 });
-  const times = Array.from({ length: 7 }, () => { const t = process.hrtime.bigint(); line(d); return Number(process.hrtime.bigint() - t) / 1e6; });
-  assert.ok(Math.min(...times) < 50, `fastest of 7 runs: ${Math.min(...times).toFixed(1)} ms`);
+  const ms = (f) => Math.min(...Array.from({ length: 7 }, () => { const t = process.hrtime.bigint(); f(); return Number(process.hrtime.bigint() - t) / 1e6; }));
+  const bare = ms(() => spawnSync(process.execPath, ['-e', '0'])), ours = ms(() => line(d)), two = ms(() => line(d, { args: ['--look', 'two-line'] }));
+  for (const t of [ours, two]) assert.ok(t - bare < 50, `fastest of 7: ${t.toFixed(1)} ms, node -e 0 ${bare.toFixed(1)} ms`);
 });
 
 test('status reports the ghost; uninstall takes it out and puts your status line back', () => {

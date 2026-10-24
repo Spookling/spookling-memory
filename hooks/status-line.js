@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Claude Code status line: a small ghost and the last thing memory did, read from .memory/pulse.json. No network.
-// --then CMD runs the status line you had before and keeps it in front; --look emoji|pixel|meter picks the ghost.
+// --then CMD runs the status line you had before and keeps it in front; --look emoji|pixel|meter|two-line picks the ghost.
 const pulse = require('./pulse.js');
 
 const STALE = 10 * 60 * 1000; // ms with nothing new before the ghost just keeps you company
@@ -23,6 +23,16 @@ function ghost(asleep, now) {
   const arm = paint(!asleep && Math.floor(now / 1000) % 2 ? '▀' : '▄', C.LILAC);
   const eye = paint(asleep ? '-' : '●', asleep ? C.PURPLE_MID : C.PURPLE, C.GHOST);
   return arm + eye + eye + arm;
+}
+
+// look two-line: five by four pixels over two rows, a purple hat, dark eyes, a lilac hem that sways each second
+const PX = { P: C.PURPLE, M: C.PURPLE_MID, L: C.LILAC, G: C.GHOST, K: '#020202' };
+function tall(asleep, now) {
+  const px = ['.PPP.', asleep ? 'GMGMG' : 'GKGKG', 'GGGGG', !asleep && Math.floor(now / 1000) % 2 ? '.L.L.' : 'L.L.L'];
+  return [0, 2].map((r) => [...px[r]].map((c, x) => {
+    const top = PX[c], bot = PX[px[r + 1][x]];
+    return top && bot ? (top === bot ? paint('█', top) : paint('▀', top, bot)) : top ? paint('▀', top) : bot ? paint('▄', bot) : ' ';
+  }).join(''));
 }
 
 // six cells of eighth blocks: how much of the hook's room the recall filled
@@ -68,9 +78,12 @@ process.stdin.on('end', () => {
   const now = Date.now();
   const all = pulse.read(s.workspace?.project_dir || s.cwd || env.CLAUDE_PROJECT_DIR);
   const p = all && !(s.session_id && all.session !== s.session_id) ? all : null; // another session's news is not ours
-  const said = words(p, now);
-  const ours = ghost(p?.up === false, now) + (look === 'meter' && said.at(-1)[0] === ' recalled' ? meter(p) : '') + ' '
-    + said.map(([t, c]) => paint(t, c)).join('');
+  const said = words(p, now), text = said.map(([t, c]) => paint(t, c)).join('');
   const then = arg('--then') ? before(arg('--then'), input) : '';
+  if (look === 'two-line' && colour && truecolor) { // yours keeps its rows above; the ghost takes two of its own
+    const [top, hem] = tall(p?.up === false, now);
+    return process.stdout.write(`${then ? `${then}\n` : ''}${top} ${text}\n${hem}\n`);
+  }
+  const ours = ghost(p?.up === false, now) + (look === 'meter' && said.at(-1)[0] === ' recalled' ? meter(p) : '') + ` ${text}`;
   process.stdout.write(`${then ? `${then}  ` : ''}${ours}\n`);
 });
