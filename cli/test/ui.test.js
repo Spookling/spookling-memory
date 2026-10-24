@@ -1,16 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FRAMES, MID, SMALL } from '../src/ghost-sprite.js';
 import { TAGLINE } from '../src/cutscene.js';
-import { DEMO_LABEL, SAY, TAGGERS, codexLogin, hooksJson, mcpJson, status, taggerText } from '../src/wizard.js';
+import {
+  DEMO_LABEL, HOOKS_DIR, INSTALL_DIR, SAY, SERVER_DIR, TAGGERS, VERSION, codexLogin, hooksJson, install, mcpJson, status, taggerText,
+} from '../src/wizard.js';
 import { hookHandlers, mcpEntry, MCP_NAME } from '../src/hooks.js';
 
-const BIN = fileURLToPath(new URL('../bin/spookling-memory.js', import.meta.url));
+const BIN = fileURLToPath(new URL('../../bin/spookling-memory.js', import.meta.url));
 const HYPE = /\b(seamless(ly)?|robust|leverag\w*|supercharg\w*|unlock\w*|empower\w*|revolutionary|effortless(ly)?|game.?chang\w*|magic(al)?)\b/i;
 
 test('the ghost says one plain line per step, and one for trouble', () => {
@@ -67,12 +69,27 @@ test('demo walks every step, writes nothing, and shows the tagline once', () => 
   assert.match(o, /OPENROUTER_API_KEY=\*{8}/);
   // Step 4: a clone reached through \\wsl.localhost from Windows runs its server in WSL, so there is nothing to install.
   if (/so the server runs there/.test(o)) assert.doesNotMatch(o, /uv sync in/);
-  else { assert.match(o, /uv sync in .*\n.*demo: skipped/); assert.match(o, /demo: not started/); }
+  else { assert.match(o, /copy server\/ and hooks\/ to .*spookling-memory/); assert.match(o, /demo: not copied/); assert.match(o, /uv sync in .*\n.*demo: skipped/); assert.match(o, /demo: not started/); }
   assert.match(o, /"hooks": \{/);
   assert.match(o, /"mcpServers": \{/);
   assert.match(o, /demo: a sample reply/);
   assert.ok(o.includes(DEMO_LABEL));
   assert.match(o, /Spookling Memory is in\./);
+});
+
+test('init wires a folder per version, and copies the package into it without a clone\'s .venv or caches', () => {
+  assert.equal(INSTALL_DIR, process.platform === 'win32' ? join(process.env.LOCALAPPDATA, 'spookling-memory', VERSION)
+    : join(homedir(), '.spookling-memory', VERSION));
+  assert.deepEqual([SERVER_DIR, HOOKS_DIR], [join(INSTALL_DIR, 'server'), join(INSTALL_DIR, 'hooks')]);
+  const from = mkdtempSync(join(tmpdir(), 'spk-pkg-')), to = join(mkdtempSync(join(tmpdir(), 'spk-home-')), VERSION);
+  const files = ['server/pyproject.toml', 'server/spookling_memory/core/classes.json', 'hooks/stop.js',
+    'server/.venv/bin/python', 'server/spookling_memory/__pycache__/x.pyc', 'server/.pytest_cache/x', 'server/.memory/log.jsonl'];
+  for (const f of files) { mkdirSync(join(from, f, '..'), { recursive: true }); writeFileSync(join(from, f), f); }
+  mkdirSync(join(to, 'server', '.venv'), { recursive: true });
+  writeFileSync(join(to, 'server', '.venv', 'made-by-uv-sync'), '');
+  install(from, to);
+  assert.deepEqual(files.map((f) => existsSync(join(to, f))), [true, true, true, false, false, false, false]);
+  assert.ok(existsSync(join(to, 'server', '.venv', 'made-by-uv-sync')), 'an earlier uv sync is kept');
 });
 
 test('the tagger menu: Jev, Haiku or Codex, each started with its --model and asking only its own key', () => {

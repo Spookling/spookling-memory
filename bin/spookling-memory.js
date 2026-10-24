@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import process from 'node:process';
-import { frames } from '../src/cutscene.js';
-import { init, status, uninstall } from '../src/wizard.js';
+import { frames } from '../cli/src/cutscene.js';
+import { init, status, uninstall } from '../cli/src/wizard.js';
 
 const HELP = `Spookling Memory
 

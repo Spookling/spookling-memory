@@ -3,8 +3,8 @@
 import process from 'node:process';
 import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { chmodSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, delimiter, dirname, isAbsolute, join, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { C, DOWN, MODE, UP, askHidden, bail, choose, confirm, paint, press, setFeed, setRaw, sleep, write as emit } from './term.js';
@@ -16,13 +16,20 @@ import {
   showHandler, wiring, wslShare,
 } from './hooks.js';
 
-// server/ and hooks/ sit beside cli/ in the repo, or inside the package once bundled.
-const PKG = fileURLToPath(new URL('..', import.meta.url));
-const ROOT = existsSync(join(PKG, 'server')) ? PKG : resolve(PKG, '..');
-export const SERVER_DIR = join(ROOT, 'server'), HOOKS_DIR = join(ROOT, 'hooks');
+const WIN = process.platform === 'win32';
+// The package (a clone, or what npx unpacked): bin/, cli/, server/ and hooks/ side by side.
+const ROOT = fileURLToPath(new URL('../..', import.meta.url)).replace(/[\\/]$/, '');
+export const VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
+// init copies server/ and hooks/ to a folder per version that stays put, and wires that, so no setting points into the
+// npx cache (npm may clear it). uninstall leaves the folder. The one exception is a clone reached from Windows through
+// \\wsl.localhost: its server runs inside WSL (step 4), so the wiring points at the share, as before.
+const SHARE = WIN && wslShare(join(ROOT, 'server'));
+export const INSTALL_DIR = SHARE ? ROOT
+  : WIN ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'spookling-memory', VERSION)
+    : join(homedir(), '.spookling-memory', VERSION);
+export const SERVER_DIR = join(INSTALL_DIR, 'server'), HOOKS_DIR = join(INSTALL_DIR, 'hooks');
 export const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`, STATS = `${SERVER_URL}/v1/stats`;
 const STEPS = ['Checks', 'Harness', 'Tagger', 'Server', 'Wire Claude Code', 'Smoke test', 'Done'];
-const WIN = process.platform === 'win32';
 export const DEMO_LABEL = 'demo, nothing is written';
 // .memory/.gitignore: the key, the pid and log, and the server's two caches (model replies, embeddings).
 const IGNORE = ['keys.env', 'server.pid', 'server.log', 'cache.sqlite*', 'vectors.sqlite*'];
@@ -242,6 +249,30 @@ async function userMcp(ctx, entry) {
   if (r && r.status !== 0) await fail(ctx, 'MCP entry not added: run the claude mcp add-json line above in your shell');
 }
 
+// Copy server/ and hooks/ from the package into dir. What a clone keeps beside its sources stays behind (a .venv belongs
+// to the folder it was made in). Files of the same name are replaced; anything else already in dir, its .venv, stays.
+const LEAVE = new Set(['.venv', '__pycache__', '.pytest_cache', '.memory', 'node_modules']);
+export function install(from, dir) {
+  for (const d of ['server', 'hooks']) cpSync(join(from, d), join(dir, d), { recursive: true, filter: (p) => !LEAVE.has(basename(p)) });
+}
+
+// Show the copy, ask, then copy. True when the server is there to install (copied now, or by an earlier init).
+async function copyOut(ctx) {
+  out(`\n   ${paint(C.GHOST, 'copy')} server/ and hooks/ to ${rel(ctx, INSTALL_DIR)}\n`);
+  info(`  from ${ROOT}`);
+  info('  a folder per version, so Claude Code never runs files from the npx cache; uninstall leaves it');
+  if (!(await confirm('   Copy them?'))) {
+    ctx.skipped.push(`copying the server to ${rel(ctx, INSTALL_DIR)}`);
+    info('skipped');
+    return ctx.dry || existsSync(join(SERVER_DIR, 'pyproject.toml'));
+  }
+  ctx.written.push([rel(ctx, INSTALL_DIR), 'the server and hooks']);
+  if (ctx.dry) return info('demo: not copied'), true;
+  try { install(ROOT, INSTALL_DIR); } catch (e) { warn(`copy failed: ${e.message}`); return false; }
+  ok(`copied to ${rel(ctx, INSTALL_DIR)}`);
+  return true;
+}
+
 // Keys: replace our lines, keep anything else in the file.
 function keysFile(text, keys) {
   const lines = text ? text.replace(/\n$/, '').split('\n') : [];
@@ -260,8 +291,8 @@ function startServer(ctx) {
   if (ctx.model) args.push('--model', ctx.model); // the tagger picked in step 3
   if (ctx.decider) args.push('--decider', ctx.decider); // Jev answers every gate as a typed question, gated on its probability
   // detached: its own process group (POSIX) or console (Windows), so it outlives this wizard; windowsHide keeps that
-  // console from opening a window. PYTHONUTF8: memory-bench reads its data files in the locale encoding (cp1252 on
-  // Windows); UTF-8 mode makes that UTF-8 everywhere.
+  // console from opening a window. PYTHONUTF8: Python reads files in the locale encoding unless told otherwise (cp1252
+  // on Windows); UTF-8 mode makes that UTF-8 everywhere.
   const child = spawn('uv', args, {
     cwd: ctx.project, detached: true, windowsHide: true, stdio: ['ignore', log, log],
     env: { ...process.env, PYTHONUTF8: '1', ...ctx.keys },
@@ -409,16 +440,18 @@ async function steps(ctx, { anim, st }) {
 
   // 4. Server
   await step(ctx, 4);
-  const share = WIN && wslShare(SERVER_DIR);
+  const share = SHARE;
   if (share) {
     // Run from PowerShell against a clone inside WSL: one server, in WSL, serves both sides on 127.0.0.1.
     info(`The server folder is inside WSL (${share.distro}), so the server runs there. In WSL, from your project:`);
-    info(`  node '${share.path.replace(/\/server$/, '')}/cli/bin/spookling-memory.js' init`);
+    info(`  node '${share.path.replace(/\/server$/, '')}/bin/spookling-memory.js' init`);
     info('No uv sync from Windows: it would build a Windows .venv over the one WSL uses.');
     ctx.skipped.push('the server install (it runs in WSL)');
-  } else if (!existsSync(join(SERVER_DIR, 'pyproject.toml'))) {
-    warn(`No memory server found at ${SERVER_DIR}.`);
+  } else if (!existsSync(join(ROOT, 'server', 'pyproject.toml'))) {
+    warn(`No memory server found at ${join(ROOT, 'server')}.`);
     await fail(ctx, 'memory server not found');
+  } else if (!(await copyOut(ctx))) {
+    await fail(ctx, `the server is not in ${rel(ctx, INSTALL_DIR)}: let init copy it there`);
   } else {
     const label = 'installing the server (uv sync)', done = `uv sync in ${rel(ctx, SERVER_DIR)}`;
     const r = ctx.dry ? (await progress(label, ctx.beat(3000), done), null)
@@ -459,10 +492,10 @@ async function steps(ctx, { anim, st }) {
   await step(ctx, 5, ctx.harness === 'claude' ? SAY[5] : SAY.codex);
   if (ctx.harness !== 'claude') info('Codex: nothing to wire yet (see .memory/CODEX-TODO.md).');
   else {
-    const handlers = hookHandlers(HOOKS_DIR);
+    const handlers = hookHandlers(HOOKS_DIR), hooksAt = ctx.dry ? join(ROOT, 'hooks') : HOOKS_DIR; // the demo copies nothing
     for (const f of Object.values(HOOK_FILES)) {
-      if (!existsSync(join(HOOKS_DIR, f))) {
-        warn(`${join(HOOKS_DIR, f)} is missing; Claude Code will report it on each event.`);
+      if (!existsSync(join(hooksAt, f))) {
+        warn(`${join(hooksAt, f)} is missing; Claude Code will report it on each event.`);
         await fail(ctx, `hook script ${f} missing`);
       }
     }
@@ -601,6 +634,7 @@ export async function uninstall(project = process.cwd(), { scope = 'project' } =
     else warn(`could not stop pid ${p.pid}`);
   } else if (p && !p.alive) rmSync(pidFile(project), { force: true });
   for (const prob of ctx.problems) warn(prob);
+  if (!SHARE && existsSync(INSTALL_DIR)) info(`The server and hooks stay in ${rel(ctx, INSTALL_DIR)}; delete that folder to remove them too.`);
   out(`\n   Your memory stays in .memory/. Run ${paint(C.GHOST, `npx @spookling/memory init${scope === 'user' ? ' --scope user' : ''}`)} to wire it back.\n`);
   return ctx.problems.length ? 1 : 0;
 }

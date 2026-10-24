@@ -1,0 +1,31 @@
+{
+  "name": "@spookling/memory",
+  "version": "0.1.0",
+  "description": "Spookling Memory for Claude Code: the install wizard, the local memory server and the hooks.",
+  "type": "module",
+  "bin": {
+    "spookling-memory": "bin/spookling-memory.js"
+  },
+  "files": [
+    "bin/",
+    "cli/src/",
+    "hooks/",
+    "server/pyproject.toml",
+    "server/uv.lock",
+    "server/spookling_memory/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test cli/test/hooks.test.js cli/test/ui.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Spookling/spookling-memory.git"
+  },
+  "license": "UNLICENSED",
+  "publishConfig": {
+    "access": "public"
+  }
+}
