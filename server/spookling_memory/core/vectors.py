@@ -1,12 +1,4 @@
-"""Local models for search (v2): a sentence embedder for exact-cosine dense ranking and a cross-encoder reranker.
-
-Both are optional: they need the `vectors` extra (`uv sync --extra vectors`; sentence-transformers and torch)
-and run on CUDA when torch sees a GPU, else CPU. SPOOKLING_LOCAL_MODELS=0 turns them off (the offline tests do).
-Every embedding and every rerank score is cached on disk in CACHE (sqlite), keyed by sha256 of the model
-id and the exact text, so a model runs once per text across runs and processes. A model loads once per process.
-One connection per process (WAL; writes in one short transaction per batch), and every vector or score this process
-has read or computed stays in a dict, so a repeat lookup never touches the table.
-"""
+"""Optional local models for search: an embedder and a reranker (the `vectors` extra), every result cached on disk."""
 from __future__ import annotations
 
 import hashlib
@@ -24,8 +16,8 @@ _lock = threading.Lock()
 _models: dict[tuple[str, str], object] = {}
 _db: sqlite3.Connection | None = None
 _db_pid = 0
-_vec_mem: dict[str, bytes] = {}  # key -> float16 bytes, every embedding this process has loaded or computed
-_score_mem: dict[str, float] = {}  # key -> rerank score, likewise
+_vec_mem: dict[str, bytes] = {}  # every embedding this process has loaded or computed
+_score_mem: dict[str, float] = {}  # likewise
 TIMING = {"embed_texts": 0, "embed_seconds": 0.0, "rerank_pairs": 0, "rerank_seconds": 0.0}
 
 

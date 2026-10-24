@@ -1,12 +1,4 @@
-"""TRIAGE: what each user turn says, as typed tags (research/34 moment 1; 33 D).
-
-`Triage` is the interface Jev can replace later: judge() is the fast tagger (one call per batch of user
-turns from one session); resolve() is the slow path for flagged items (one call each). `ModelTriage` does
-both with the writer model through models.py (Haiku 4.5 by default; every reply cached).
-
-The model only tags. Code checks every span is verbatim, maps the key through the alias vocabulary, turns
-time words into dates (dates.py), fires the trigger list, and decides the route.
-"""
+"""TRIAGE: what each user turn says, as typed tags. The model only tags; code checks spans and decides the route."""
 from __future__ import annotations
 
 import hashlib
@@ -19,10 +11,7 @@ OPS = ("assert", "retract", "correct", "rule", "none")
 WRITER = "anthropic/claude-haiku-4.5"
 FIX = "That was not a JSON object of the required shape. Reply with the JSON object only."
 
-# Seed alias vocabulary: canonical key -> words people use for it. Generic personal-assistant attributes, written
-# by us with the `updates` suite's domains in view (so routing numbers on that suite are optimistic; the
-# model-proposed cues of new keys are the honest path). Grown at run time from new keys the model proposes.
-# v1.4: no `address` key (it twinned `city`: "My flat in Lisbon" became an address, and went stale after a move).
+# seed alias vocabulary, grown from keys the model proposes; no `address` key: it twinned `city` and went stale
 SEED = {
     "name": ["name", "full name", "first name", "surname"],
     "birthday": ["birthday", "born", "birth date", "date of birth"],
@@ -59,8 +48,7 @@ SEED = {
     "nationality": ["nationality", "passport", "citizenship"],
 }
 
-# Code, not a model: signs of a "cognitive minefield" that force the slow path (research/33 D.4; the brief's list
-# plus 33's hypothetical and past-reference markers). Matched on the sentence that holds the item's value.
+# code, not a model: signs that force the slow path, matched on the sentence that holds the item's value
 TRIGGERS = {
     "correction": r"\b(?:actually|no wait|I meant|correction|I was wrong|not \w+(?: \w+)? but)\b",
     "no_longer": r"\bno longer\b|\bnot\b[^.!?]{0,40}\bany ?more\b",
@@ -70,8 +58,7 @@ TRIGGERS = {
                     r"|planning to|plan to|hoping to|interview)",
     "past_reference": r"\b(?:used to|back when|the days when|remember(?:ing)? when)\b",
 }
-# A change word makes a new value (or a retraction) a clean change the light sleep may apply; without one, a
-# value that differs from the stored one is a surprise and goes slow (research/33 D.4).
+# a change word makes a differing value a clean change; without one it is a surprise and goes slow
 CHANGE = re.compile(
     r"\b(?:switch(?:ed|ing)?|mov(?:ed|ing)|move|replac(?:ed|ing)|upgrad(?:ed|ing)|new|start(?:ed|ing)?|join(?:ed|ing)?"
     r"|left|quit|sold|bought|got rid|chang(?:ed|ing)|swap(?:ped|ping)?|took up|taken up|taking up|became|promot(?:ed|ion)"
@@ -121,14 +108,12 @@ class Triage:
     def resolve(self, turn: str, date: str, proposed: dict, history: list[str], flags: list[str]) -> tuple[Ruling | None, Spent]:
         raise NotImplementedError
 
-    # ---- events (research/37 E2): spans proposed here, checked verbatim by code in extract.py
     def events(self, turns: list[str], replies: list[str], date: str, candidates: list, classes) -> tuple[list[list], Spent]:
         """One list of extract.EventItem per user turn, for its candidate clauses."""
         raise NotImplementedError
 
     def resolve_class(self, clause: str, word: str, proposed: str, kind: str, classes) -> tuple[str | None, Spent]:
-        """The slow path for a class off the closed list: an existing class, a new class name (the only way a class
-        enters), or None (unsettled)."""
+        """An existing class, a new class name (the only way a class enters), or None (unsettled)."""
         return None, Spent()
 
 
@@ -191,7 +176,7 @@ FLAG_TEXT = {"correction": "it has correction words", "no_longer": "it says some
 
 def _json(reply: str):
     s = reply.strip()
-    m = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", s, re.S)  # one fence tolerated, as in files.py
+    m = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", s, re.S)  # one fence tolerated
     return json.loads(m.group(1) if m else s)
 
 
@@ -240,7 +225,7 @@ class ModelTriage(Triage):
 
     def __init__(self, model: str = WRITER, max_tokens: int = 2000):
         self.model, self.max_tokens = model, max_tokens
-        self.version = f"{model}|{hashlib.sha256((SYSTEM + RESOLVE).encode()).hexdigest()[:12]}|v2"  # v2: v1.4 tagging fixes
+        self.version = f"{model}|{hashlib.sha256((SYSTEM + RESOLVE).encode()).hexdigest()[:12]}|v2"
 
     def _ask(self, messages: list[dict], parse):
         spent = Spent()
@@ -272,8 +257,7 @@ class ModelTriage(Triage):
                 f"Stored history for {p['key']}:\n" + ("\n".join(history) or "(nothing stored yet)"))
         return self._ask([{"role": "system", "content": RESOLVE}, {"role": "user", "content": user}], parse_ruling)
 
-    # ---- events: a separate call per session batch (EVENTS prompt). Folding it into the fact call (research/37 E2)
-    # changes SYSTEM and so every cached fact tag; that fold waits for the approved re-tag.
+    # events: a separate call per batch; folding it into SYSTEM would change every cached fact tag
     @property
     def event_version(self) -> str:
         return f"{self.model}|{hashlib.sha256((EVENTS + CLASS_RESOLVE).encode()).hexdigest()[:12]}|ev1"
@@ -337,8 +321,7 @@ def parse_events(reply: str, n: int, item_cls) -> list[list]:
 
 
 class Vocab:
-    """The closed key vocabulary: canonical key -> words. Maps a tagger's key to a canonical one (alias first,
-    the model's own word only when nothing matches) and routes a question to keys by its words."""
+    """The closed key vocabulary: maps a tagger's key to a canonical one, and a question to keys by its words."""
 
     def __init__(self):
         self.words: dict[str, list[str]] = {k: list(v) for k, v in SEED.items()}
@@ -377,8 +360,7 @@ class Vocab:
                 ws.append(w)
 
     def route(self, text: str) -> set[str]:
-        """Keys a question names by word: a phrase as a phrase, a word whole or as a prefix of a longer word
-        ("music" in "musically") when it has 4+ letters."""
+        """Keys a question names: a phrase whole, a word whole or, from 4 letters, as a prefix ("musically")."""
         low = text.lower()
         toks = re.findall(r"\w+", low)
         out = set()
@@ -414,9 +396,7 @@ def verbatim(turn: str, span: str | None) -> str | None:
 
 
 def mention_of(turn: str, value: str) -> str | None:
-    """The longest run of value's words that appears in turn (whole words, case kept from the turn), if it has a
-    word of 4+ letters: the tagger completed a short mention to a stored value ("Long day at Quayside" tagged
-    "Quayside Health")."""
+    """The longest run of value's words in turn, with a 4+ letter word: the tagger completed a short mention."""
     w = value.split()
     for n in range(len(w), 0, -1):
         for i in range(len(w) - n + 1):

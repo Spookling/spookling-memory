@@ -1,16 +1,4 @@
-"""SLEEP, the one writer (research/34 moment 4; Mohammed's two modes, 2026-10-13).
-
-light(): runs at the end of every session (or every N turns). Tags the turns not yet tagged (one model call
-per session batch), logs every judgement to DECISIONS with its route, and applies only the FAST ones: seen
-again (counters) and clean changes (a first value, or a new value or retraction with a change word). No
-overlap check, no INDEX rebuild.
-
-full(): runs every N sessions and once before questions. Resolves each SLOW item with one writer-model call
-(the latest sourced statement wins; unsure or unparseable means applied anyway with status disputed, as
-metadata only; no human step), then rebuilds FACTS from zero by folding every final decision in LOG order
-(research/33 A.5: no model call, so rebuilds are deterministic), asserts no overlaps, and rebuilds the INDEX
-page and SEARCH.
-"""
+"""SLEEP, the one writer: light() applies the fast judgements; full() resolves the slow ones and rebuilds every view."""
 from __future__ import annotations
 
 import hashlib
@@ -49,9 +37,7 @@ def known(mem, day: str) -> list[tuple[str, list[str], str | None]]:
 
 def route(mem, label: str, key: str, value: str | None, sentence: str, vf: date, day: date, confidence: float,
           jev: dict | None = None) -> tuple[str, list[str]]:
-    """fast | slow | skip, and the flags that sent it slow (research/33 D.4). Code only. With the decider on (jev:
-    its Noul answers for this tag), the durable-fact probability replaces the tagger's confidence and the replaces
-    probability replaces the CHANGE word list, both gated at decide_threshold."""
+    """fast, slow or skip, and why slow; with the decider on, Jev's Nouls replace the confidence and CHANGE tests."""
     if label in ("none", "hypothetical"):
         return "skip", []
     bare = sentence.replace(value, " ") if value else sentence
@@ -75,7 +61,7 @@ def route(mem, label: str, key: str, value: str | None, sentence: str, vf: date,
     cur = next((r for r in rows if r.valid_from <= vf.isoformat() < r.valid_to), rows[-1] if rows else None)
     if label != "retraction":
         if cur is not None and cur.value is not None and same(value, cur.value) and changed(sentence, value, cur.value):
-            return "slow", ["changed"]  # v4: part of the stored value, beside another time or number: maybe an update
+            return "slow", ["changed"]  # part of the stored value, beside another time or number: maybe an update
         if cur is None or (cur.value is not None and same(value, cur.value)):
             return "fast", []  # a first value, or seen again
         if any(r.value and same(value, r.value) for r in rows):
@@ -90,8 +76,7 @@ NUMBER = re.compile(r"\b\d{1,2}(?::\d{2})?\s?[ap]\.?m\b\.?|\b\d+(?:[.,:]\d+)*\b"
 
 
 def changed(sentence: str, value: str, stored: str) -> bool:
-    """v4: a mention with only some of the stored value's words ("on Mondays, Wednesdays, and Fridays" of "7:00 pm on
-    Mondays, ...") whose sentence states a time or number while the stored value holds a different one."""
+    """Some of the stored value's words, beside a time or number that differs from the one the value holds."""
     if set(toks(value)) == set(toks(stored)):
         return False
     key = lambda s: {re.sub(r"[\s.]", "", x.lower()) for x in NUMBER.findall(s)}
@@ -100,8 +85,7 @@ def changed(sentence: str, value: str, stored: str) -> bool:
 
 
 def stored_keys(mem, value: str) -> set[str]:
-    """Keys holding a value this one names (or completes), its words a subset of the other's either way: values
-    applied to FACTS, and values already logged for a key but waiting for the slow path."""
+    """Keys holding a value this one names or completes, applied or waiting for the slow path."""
     v = set(toks(value))
     if not v:
         return set()
@@ -123,18 +107,18 @@ def triage_decision(mem, e, idx: int, it: Item, jev: dict | None = None) -> dict
     value, old, when = verbatim(turn, it.value), verbatim(turn, it.old), verbatim(turn, it.when)
     flags: list[str] = []
     stored = stored_keys(mem, it.value) if it.value else set()
-    if it.value and value is None and stored:  # v1.4: a mention the tagger completed to a stored value
+    if it.value and value is None and stored:  # a mention the tagger completed to a stored value
         value = mention_of(turn, it.value)
         if value:
             flags.append("mention")
     label = it.label
-    if label not in LABELS and it.key.strip() and value:  # v1.4: a key word put in the label field ("hobby")
+    if label not in LABELS and it.key.strip() and value:  # a key word put in the label field ("hobby")
         label = "fact"
         flags.append("label_guess")
     key, source = mem.vocab.canonical(it.key) if it.key.strip() else ("", "none")
     owners = stored_keys(mem, value) if value else set()
     if len(owners) == 1 and key not in owners and not mem.facts.believed(key):
-        key, source = next(iter(owners)), "value"  # v1.4: an empty key yields to the one key holding this value
+        key, source = next(iter(owners)), "value"  # an empty key yields to the one key holding this value
     d["label"] = label
     reject = ("label" if label not in LABELS else "value not verbatim" if it.value and value is None
               else "no value" if label in NEEDS_VALUE and not value
@@ -209,8 +193,7 @@ def light(mem) -> bool:
 
 
 def propose_events(mem, users: list, group: list) -> list[list] | None:
-    """research/37 E2: candidate clauses by code, spans by the event tagger. One list of EventItems per user turn,
-    or None when no turn has a candidate clause."""
+    """Candidate clauses by code, spans by the event tagger; None when no turn has a candidate clause."""
     from .extract import clauses
 
     replies = {a.hash: b.text for a, b in zip(group, group[1:]) if a.role == "user" and b.role == "assistant"}
@@ -224,8 +207,7 @@ def propose_events(mem, users: list, group: list) -> list[list] | None:
 
 
 def tag_events(mem, users: list, items: list[list], jev: list[dict] | None = None) -> None:
-    """Every proposed span checked verbatim, polarity and dates by code (or the decider's classes and polarity,
-    where they pass its gate). Decisions are logged before anything uses them; the full sleep builds EVENTS."""
+    """Spans checked verbatim, polarity and dates by code (or Jev above its gate); decisions logged before use."""
     from .extract import date_turn, event_decision
 
     tagger = mem.event_tagger
@@ -257,11 +239,7 @@ def tag_events(mem, users: list, items: list[list], jev: list[dict] | None = Non
 
 
 def resolve_events(mem) -> None:
-    """The slow path for events: a class off the closed list (or one the decider was unsure of). The tagger's
-    resolve_class may map it to a listed class or add a new one (the only way a class enters). With the decider on,
-    Jev picks from the listed classes or "new class" (Choice, gated), and only the new class's name comes from the
-    writer model; unsure, a listed class the tagger proposed stands, marked disputed. Unsettled: an object class is
-    dropped (the event stays, found by its words); an action class leaves no event."""
+    """The slow path for a class off the list; unsettled, an object class is dropped, an action class its event."""
     from .jev import NEW
 
     done = {d["of"] for d in mem.log.decisions if d.get("step") == "event_resolve"}
@@ -293,8 +271,7 @@ def resolve_events(mem) -> None:
 
 
 def same_event(mem):
-    """The decider's check of the identity rule's same-event candidates, for build(): each pair asked once (one
-    request per mention, a Noul per candidate) and recorded as a same_event decision; replays read the record."""
+    """Jev's check of the identity rule's candidates: each pair asked once and recorded; replays read the record."""
     def same(d: dict, cands: list[dict]) -> list[bool]:
         ids = [f"same:{d['id']}~{s['id']}" for s in cands]
         todo = [(i, s) for i, s in zip(ids, cands, strict=True) if i not in mem.decision_by_id]
@@ -308,8 +285,7 @@ def same_event(mem):
 
 
 def fold(decisions: list[dict]) -> Facts:
-    """FACTS from zero: the final decision per item (a resolve beats its triage; triage counts only if fast),
-    applied in LOG order. Pure code, so the same decisions always give the same rows."""
+    """FACTS from zero: the final decision per item, applied in LOG order; pure code, so rebuilds are deterministic."""
     final = {}
     for d in decisions:
         if d["step"] not in ("triage", "resolve"):
@@ -345,7 +321,7 @@ def full(mem) -> None:
         mem.spend(spent)
         mem.record(resolve_decision(mem, d, e, ruling))
     facts = fold(mem.log.decisions)
-    facts.check()  # research/33 B.6.2; raises IntegrityError
+    facts.check()  # raises IntegrityError
     old, mem.facts = mem.facts, facts
     if old is not None and old is not facts:
         old.close()
@@ -354,7 +330,7 @@ def full(mem) -> None:
     mem.index = render(facts, mem.usage, now, mem.index_cap)
     mem.index_strong = strong(facts, now)
     store = None
-    if mem.events_on:  # algorithm v2: EVENTS from LOG + DECISIONS, after the slow path settles new classes
+    if mem.events_on:  # EVENTS after the slow path settles new classes
         from .extract import build
 
         resolve_events(mem)

@@ -1,13 +1,4 @@
-"""Decisions API client: typed questions to a decision model (Jev, typesafe/jev-1.14) on OpenRouter.
-
-POST https://openrouter.ai/api/alpha/decisions with {"model", "state", "questions"}; the reply holds one typed
-answer per question id (Noul: {"noul": p_yes}; Choice: {"choice", "probabilities", "confidence"}) and usage
-(input tokens are billed, output is free; usage.cost in USD). docs/jev.md has the shapes and the guidance.
-
-Every request goes through models.call, so it shares the sqlite cache (keyed by model, state and questions),
-the single flight, the usage meter, CACHE_ONLY and the graceful credit stop. The key is OPENROUTER_API_KEY from
-~/spookling-rig/jev.env when that file exists, else from the environment (models' loader).
-"""
+"""Decisions API client: typed questions to a decision model (Jev) on OpenRouter, through models.call and its cache."""
 from __future__ import annotations
 
 import json
@@ -24,7 +15,7 @@ from . import models
 URL = "https://openrouter.ai/api/alpha/decisions"
 KEY_FILE = Path.home() / "spookling-rig" / "jev.env"
 TIMEOUT = 120
-TALLY: Counter = Counter()  # this process: calls, cached, questions, and "<gate>:ok" / "<gate>:below"
+TALLY: Counter = Counter()  # this process: calls, cached, questions, "<gate>:ok" and "<gate>:below"
 _lock = threading.Lock()
 
 
@@ -39,8 +30,7 @@ def api_key() -> str:
 
 
 def send(model: str, state, questions: dict) -> tuple[str, int, int, float | None]:
-    """One uncached request: (the response JSON, input tokens, output tokens, usage.cost). Retries 429, 5xx, the
-    in-flight-budget 402 and network errors with exponential backoff and jitter (Retry-After honoured, 60 s cap)."""
+    """One uncached request: (response, input tokens, output tokens, usage.cost); retried with backoff and jitter."""
     body = json.dumps({"model": model, "state": state, "questions": questions}, ensure_ascii=False).encode()
     for attempt in range(1, models.MAX_ATTEMPTS + 1):
         req = urllib.request.Request(URL, data=body, method="POST", headers={

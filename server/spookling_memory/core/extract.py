@@ -1,15 +1,4 @@
-"""Event extraction, per turn (research/37 E2): deterministic clause candidates, spans proposed by a tagger and
-checked verbatim by code, polarity by rule, dates by the date grammar, entities by rules, identity by rule.
-
-Taggers implement `events(turns, replies, date, candidates, classes)` (the Triage interface in triage.py):
-  - ModelTriage: the writer model reads the turn and its reply and returns spans and a class from the closed list
-    (a new prompt: it needs a paid re-tag, so it is never run at $0);
-  - RuleEvents: deterministic spans (a listed action word, the words after it, a capitalised place, an amount,
-    time words), the $0 stand-in that every offline measurement uses;
-  - a stub in the tests.
-Whatever proposes the spans, code decides: a span not found verbatim is rejected, polarity is computed here, the
-dates come from dates.py (never from a model), and a class off the closed list goes to the slow path.
-"""
+"""Event extraction: a tagger proposes spans; code checks them verbatim and decides polarity, dates and route."""
 from __future__ import annotations
 
 import re
@@ -22,7 +11,6 @@ from .events import ClassVocab, Events, event_id, stems
 
 EXTRACTOR_VERSION = "ev1"
 
-# ---------------------------------------------------------------- candidate clauses (deterministic)
 
 SENT = re.compile(r"[^.!?\n]+(?:[.!?]+|$)", re.M)
 SPLIT = re.compile(r"\s*(?:\bby the way\b,?|\boh,\s|;\s|,\s+and then\s|,\s+and\s|\s+and then\s|,\s+but\s|\s+but\s|,\s+also\s|\balso,\s)\s*", re.I)
@@ -41,8 +29,7 @@ class Clause:
 
 
 def clauses(turn: str, classes: ClassVocab | None = None) -> list[Clause]:
-    """Sentence split, then clause split at coordination and "by the way"; keep first-person clauses that have a
-    verb and are not questions (OpenIE: clauses first, then patterns; research/37 E2)."""
+    """First-person clauses with a verb that are not questions, split at sentences, coordination and "by the way"."""
     out = []
     for s in SENT.finditer(turn):
         pos, chunk = s.start(), s.group(0)
@@ -68,8 +55,6 @@ def _has_verb(text: str, classes: ClassVocab | None) -> bool:
     return any(w.lower() in IRREGULAR or (len(w) > 4 and w.lower().endswith("ed")) for w in re.findall(r"[A-Za-z']+", text))
 
 
-# ---------------------------------------------------------------- polarity, by rule
-
 NEGATED = re.compile(r"\b(?:didn't|did not|never|haven't|have not|hasn't|wasn't|weren't|couldn't|could not|won't|no longer|not able to|failed to|skipped)\b", re.I)
 PLAN = re.compile(r"\b(?:planning to|plan to|plans to|going to|gonna|will|'ll|want to|wanna|hoping to|hope to|about to|intend to|"
                   r"thinking of|thinking about|considering|looking to|aiming to|next (?:week|month|year|weekend)|tomorrow|upcoming|"
@@ -79,8 +64,7 @@ EARLIER = re.compile(r"\b(?:remember when|remember the time|back when|used to|th
 
 
 def polarity_of(clause: str) -> str:
-    """did | plan | hypothetical | negated, from the clause's own words ("thinking of buying" is a plan; plans and
-    negations never count)."""
+    """did, plan, hypothetical or negated, from the clause's own words; plans and negations never count."""
     if HYPOTHETICAL.search(clause) and not NEGATED.search(clause):
         return "hypothetical"
     if NEGATED.search(clause):
@@ -89,8 +73,6 @@ def polarity_of(clause: str) -> str:
         return "plan"
     return "did"
 
-
-# ---------------------------------------------------------------- what a tagger proposes, and the rule tagger
 
 @dataclass
 class EventItem:
@@ -105,7 +87,7 @@ class EventItem:
     amount: str | None = None
     time: str | None = None
     confidence: float = 1.0
-    # the fields the time module reads (timeline.Item; research/36 B.2): closed labels and verbatim amounts only
+    # the fields the time module reads: closed labels and verbatim amounts only
     tense: str | None = None  # past | present | future
     rel: str | None = None  # on | before | after | since | until | for | in_advance (measured from anchor_id)
     magnitude: str | None = None  # verbatim amount for "N days before / after" another event
@@ -129,9 +111,7 @@ OBJECT_STOP = re.compile(r"\s+(?:at|in|on|with|for|from|to|during|last|this|yest
 
 
 class RuleEvents:
-    """Deterministic span proposer: the first listed action word of a clause, the object after it up to a
-    preposition, a capitalised place after at/in/to, "with X", an amount, the clause's time words. Verbatim by
-    construction; classes only from the closed list."""
+    """Deterministic spans: a listed action word, its object, a place, "with X", an amount, time words."""
 
     name, version = "rule-events", EXTRACTOR_VERSION
 
@@ -172,8 +152,6 @@ class RuleEvents:
         return out, Spent()
 
 
-# ---------------------------------------------------------------- code decides: verbatim, polarity, dates, route
-
 def verbatim_in(turn: str, span: str | None) -> str | None:
     """span as it appears in turn (case may differ in the model's copy), or None."""
     if not span:
@@ -191,13 +169,12 @@ BASIS = {"explicit": "stated", "relative": "relative_to_said", "for_now": "relat
 
 def time_item(eid: str, clause: str, src: str, polarity: str, time_words: str | None, tense: str | None, rel: str | None,
               magnitude: str | None, anchor_id: str | None, just: bool, said: date) -> timeline.Item:
-    """One event as the time module's checked item (research/36 B.2): verbatim spans and closed labels only."""
+    """One event as the time module's checked item: verbatim spans and closed labels only."""
     return timeline.Item(eid, clause, src, time_words, tense, STATUS[polarity], anchor_id, rel, magnitude, just, "user", said)
 
 
 def occurrence(a: timeline.Anchor) -> tuple[str | None, str | None, str, str]:
-    """(occurred_from, occurred_to, precision, basis) from the time module's Anchor (research/36 C.1): only
-    occurrences get dates (a plan, a wish, a negation get none); no time words: on or before the day it was said."""
+    """(from, to, precision, basis); only occurrences get dates; no time words: on or before the day it was said."""
     if a.how == "unknown":
         return None, None, "unknown", "unknown"
     prec = "on_or_before" if a.lo is None else (a.gran if a.gran in ("day", "week", "month", "season", "year") else "unknown")
@@ -206,8 +183,7 @@ def occurrence(a: timeline.Anchor) -> tuple[str | None, str | None, str, str]:
 
 def event_decision(turn_hash: str, turn: str, said_ts: str, idx: int, it: EventItem, classes: ClassVocab, writer: str,
                    version: str, created: str, anchor: timeline.Anchor | None = None, anchor_event: str | None = None) -> dict:
-    """One proposed event as a decision (logged before it changes anything). Route: fast, slow (a class off the
-    closed list) or rejected (a span not verbatim, no action). Dated by the time module (`anchor`, from date_turn)."""
+    """One proposed event as a decision, logged before it acts: fast, slow (a class off the list) or rejected."""
     said = dates.day_of(said_ts)
     clause = verbatim_in(turn, it.clause)
     action = verbatim_in(clause or "", it.action)
@@ -242,8 +218,7 @@ def event_decision(turn_hash: str, turn: str, said_ts: str, idx: int, it: EventI
 
 
 def date_turn(turn_hash: str, turn: str, said_ts: str, items: list[EventItem]) -> list[tuple[timeline.Anchor, str | None]]:
-    """Every item of one turn dated by the time module in dependency order (an item measured from another clause of
-    the same message, by its 1-based number, comes after it). (Anchor, the id of the event it is measured from)."""
+    """Each item of a turn dated in dependency order, as (Anchor, the event id it is measured from)."""
     said = dates.day_of(said_ts)
     ids = [f"c{i + 1}" for i in range(len(items))]
     xs = []
@@ -256,8 +231,6 @@ def date_turn(turn_hash: str, turn: str, said_ts: str, items: list[EventItem]) -
     return [(done[ids[i]], ids[it.anchor_id - 1] if xs[i].anchor_id else None) for i, it in enumerate(items)]
 
 
-# ---------------------------------------------------------------- entities, by rules first
-
 PROPER = re.compile(r"(?<![\w'])((?:[A-Z][\w'&.+-]*)(?:\s+(?:of|the|de|du|and|&|on|for)\s+[A-Z][\w'&.+-]*|\s+[A-Z][\w'&.+-]*)*)")
 PLACE_WORDS = {"center", "centre", "museum", "park", "stadium", "hall", "theater", "theatre", "arena", "library", "gallery",
                "beach", "lake", "mountain", "street", "avenue", "market", "cafe", "café", "restaurant", "hotel", "airport",
@@ -269,8 +242,7 @@ MONTHS = {"January", "February", "March", "April", "May", "June", "July", "Augus
 
 
 def proper_spans(text: str, proper: set[str]) -> list[tuple[int, int, str]]:
-    """Multiword proper-noun spans ("Museum of Contemporary Art", "Wells Fargo Center"); a single word only when it
-    is capitalised somewhere other than a sentence start (the proper set)."""
+    """Proper-noun spans; a single word only when capitalised somewhere other than a sentence start."""
     out = []
     for m in PROPER.finditer(text):
         name = m.group(1).rstrip(".'-")
@@ -302,9 +274,7 @@ def entity_key(name: str) -> str:
 
 
 def texts_with(names, texts: list[str]) -> dict[str, int]:
-    """How many texts hold each (non-empty) name as a substring, exactly as `name in t`. One pass over the texts,
-    looking up names only where one could start, instead of scanning every text once per name: names and texts both
-    grow with the log, so that scan was quadratic (9 s of 12 in a build over a 3.6 MB developer log, 3,730 names)."""
+    """How many texts hold each name, as `name in t`, in one pass: a scan per name was quadratic on big logs."""
     out = dict.fromkeys(names, 0)
     by: dict[str, list[str]] = {}
     for n in out:
@@ -325,12 +295,8 @@ def texts_with(names, texts: list[str]) -> dict[str, int]:
     return out
 
 
-# ---------------------------------------------------------------- the store, rebuilt from LOG + DECISIONS
-
 def build(log_events, decisions: list[dict], classes: ClassVocab, now: str, same=None) -> Events:
-    """EVENTS and its tables from the LOG and the event decisions (fast ones, and the slow path's rulings). Pure:
-    the same LOG and decisions give the same rows. same: the decider's check of the identity rule's candidates
-    (identity()), which reads recorded answers on a replay."""
+    """EVENTS and its tables from the LOG and the event decisions; pure. same: the decider's identity check."""
     store = Events()
     by_hash = {e.hash: e for e in log_events}
     users = [e for e in log_events if e.role == "user"]
@@ -346,7 +312,7 @@ def build(log_events, decisions: list[dict], classes: ClassVocab, now: str, same
         m = speaker.match(t)
         if m:
             persons.add(m.group(1))
-    # entities: proper nouns (multiword) and relation/short-form aliases (entities.py rules)
+    # entities: multiword proper nouns, and relation and short-form aliases
     known: dict[str, tuple[str, str]] = {}  # name -> (entity id, kind)
     for t in texts:
         for a, b, name in proper_spans(t, proper):
@@ -394,8 +360,7 @@ def build(log_events, decisions: list[dict], classes: ClassVocab, now: str, same
         clause = d["clause"]
         roles = {"place": d.get("place") or "", "with": d.get("with") or "", "object": d.get("object") or ""}
         for name, (eid, _) in known.items():
-            # the substring test first: a regex per (event, name) missed re's 512-entry cache and recompiled every
-            # time, 100+ s of an open on a 6 MB developer log with thousands of capitalised names
+            # substring test first: a regex per (event, name) overflowed re's 512-entry cache and recompiled each time
             if name in clause and re.search(rf"(?<!\w){re.escape(name)}(?!\w)", clause):
                 role = next((r for r, span in roles.items() if span and name in span), "with")
                 store.link_entity(d["id"], eid, role)
@@ -455,9 +420,7 @@ def compatible(a: dict, b: dict) -> bool:
 
 
 def identity(d: dict, seen: list[dict], same=None) -> tuple[str | None, int]:
-    """research/37 E2: same action class, same normalised object, compatible periods -> same_as the earliest such
-    mention. Two or more different events matching is ambiguous: no link (the slow path's case). same(d, candidates)
-    -> one bool per candidate (the decider's "same event" Noul): only the candidates it confirms count."""
+    """same_as the earliest match: same action class and object, a compatible period; two matches link nothing."""
     obj = norm_object(d.get("object"))
     if d["polarity"] != "did" or not obj:
         return None, 0

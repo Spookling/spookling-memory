@@ -1,13 +1,4 @@
-"""SEARCH and recall(): research/32 section C, with the time rule of research/34 (2026-10-13).
-
-Units are a user turn plus the reply. Each unit is indexed under its own words plus the cue words of every
-key whose known value it names (index-time expansion, value -> attribute only). A question is read for a
-date first (absolute or relative to now), then for an anchor ("when I got the iPhone 16" -> that row's
-valid_from), else it means now. Keys named by its words or values are looked up at that date (a time slice,
-no ranking); text search runs too, filtered to units said before the date's end only when a date or anchor
-is named. Hits are diversified per key, dated, put in time order, and the fact records go last, next to
-the question. Vectors are off: `dense` is the hook for an embedder, and RRF fuses when it is set.
-"""
+"""SEARCH and recall(): a unit is a user turn and its reply; a question means a date, an anchor, else now."""
 from __future__ import annotations
 
 import calendar
@@ -31,9 +22,7 @@ from .index_page import TASTES, hidden
 from .triage import Vocab, sentence_of
 
 ABSTAIN = "Nothing on record about this."
-# Aggregation questions (count, sum or list across sessions; v1.2, repaired in v1.3): more hits, their own
-# budget, each hit with its neighbours in rank order, long assistant replies trimmed, quantities first.
-# The aggregation detector is the `aggregate` category of complex_triggers (v2: one table for both).
+# aggregation questions: more hits, their own budget, neighbours in rank order, replies trimmed, quantities first
 QUANTITY = re.compile(r"\b(\d+(?:[.,:]\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twice|once|dozen"
                       r"|couple)\b", re.I)
 NUMBER_BOOST = 1.25  # aggregation questions: a unit stating a quantity ranks this much higher
@@ -47,10 +36,10 @@ have has had i me my mine you your it its this that these those what which who w
 re ve not no so just also too very can could would should will shall may might must there here than then now currently
 current days moment right still again any some all""".split())
 CONNECTIVE = r"\b(when|while|after|before|since|by the time|at the time|around the time)\b"
-# v3: a question that also asks about now ("... when I started? How many now?") keeps the turns after its anchor
+# a question that also asks about now ("... How many now?") keeps the turns after its anchor
 NOW_TOO = re.compile(r"\b(?:now|currently|these days|at the moment|today|nowadays|still)\b", re.I)
 INTERROGATIVE = re.compile(r"\s+(?:did|do|does|was|were|is|are|will|would|has|have|had|can|could|should|might|may)\b", re.I)
-# Questions about what the assistant said keep its replies whole (v2 trims them everywhere else)
+# questions about what the assistant said keep its replies whole
 ASKS_ASSISTANT = re.compile(r"\b(?:what did you|did you (?:say|suggest|recommend|mention|tell)|you (?:suggested|recommended|said|told|"
                             r"mentioned|gave|listed|wrote|shared|provided|offered|explained|described)|remind me|our (?:previous|last|earlier)"
                             r" (?:chat|conversation|discussion)|(?:previous|last|earlier) (?:chat|conversation)|you were)\b", re.I)
@@ -62,8 +51,7 @@ def words(text: str) -> list[str]:
 
 
 def reader_tokens(text: str) -> int:
-    """What a reader is likely charged for text: cl100k tokens x READER_FACTOR (offline, deterministic; the count_tokens
-    endpoint would be exact but is a network call per context)."""
+    """cl100k tokens x READER_FACTOR: offline and deterministic; count_tokens would be a network call per context."""
     return math.ceil(READER_FACTOR * n_tokens(text))
 
 
@@ -85,17 +73,14 @@ class Unit:
     session: str
     lo: int  # its turns are positions lo..hi of its session's turns
     hi: int
-    event: str | None = None  # v2: the first date the user's turn names, resolved against the chat's date
-    kind: str = "turn"  # algorithm v2 (research/37 E3): "turn", or "event" (one clause of a user turn, with its class cue)
+    event: str | None = None  # the first date the user's turn names, resolved against the chat's date
+    kind: str = "turn"  # "turn", or "event": one clause of a user turn, with its class cue
     eid: str | None = None  # the EVENTS row of an event unit
     occ: tuple | None = None  # (occurred_from, occurred_to) of an event unit: when it HAPPENED
 
 
 class Values:
-    """Every way a believed value has been said, mapped back to (attribute, item, normalised value): the stored
-    value, the spans the tagger tied to it, the head of an appositive ("Quillmate, a journaling app" ->
-    Quillmate; "a greyhound called Juno" -> Juno) and, case-sensitively, a capitalised word of 4+ letters of a
-    multi-word value when no other value has it ("Tidewell Analytics" -> Tidewell)."""
+    """Every way a believed value has been said (tagged spans, appositive heads, distinctive words) -> its row."""
 
     def __init__(self, facts: Facts):
         ci: dict[str, set] = {}
@@ -148,7 +133,7 @@ class Search:
                 continue
             cur = [e.seq, e.session_id, e.ts[:10], [f"{e.role}: {e.text}"], len(turns) - 1, len(turns) - 1]
             units.append(cur)
-        # v2: dates the user's turns name ("last Tuesday"), resolved by the date grammar against the chat's date
+        # dates the user's turns name ("last Tuesday"), resolved against the chat's date
         self.events: dict[tuple[str, int], list[tuple[str, dates.Span]]] = {}
         if event_dates:
             for sid, turns in self.sessions.items():
@@ -172,10 +157,10 @@ class Search:
         for d in docs:
             for w in set(d):
                 self.df[w] = self.df.get(w, 0) + 1
-        for w, v in (self.bm.idf.items() if self.bm else ()):  # a small store gives 0 or negative idf; floor it, as files.py
+        for w, v in (self.bm.idf.items() if self.bm else ()):  # a small store gives 0 or negative idf: floor it
             if v <= 0:
                 self.bm.idf[w] = 1e-6
-        self.embed_model = embed_model  # v2: exact-cosine dense ranking (research/32 B4), fused by RRF
+        self.embed_model = embed_model  # exact-cosine dense ranking, fused by RRF
         self._vecs = None
         self._lock = threading.Lock()
         self.entities = Entities([e.text for turns in self.sessions.values() for e in turns if e.role == "user"]) \
@@ -184,13 +169,12 @@ class Search:
         self._event_units(store)
 
     def terms(self, text: str) -> list[str]:
-        """Index and query terms: stop words out, then Snowball-stemmed ("concerts" finds "concert"; research/37)."""
+        """Index and query terms: stop words out, then Snowball-stemmed ("concerts" finds "concert")."""
         ws = words(text)
         return [stem(w) for w in ws] if self.stem else ws
 
     def _event_units(self, store) -> None:
-        """Event-sized units beside the turns (research/37 E3): one per EVENTS row, its verbatim clause plus the class
-        words as a cue, pointing at its turn; their own BM25 and dense lists."""
+        """One unit per EVENTS row: its clause plus the class words as a cue; their own BM25 and dense lists."""
         self.eunits, self.einfo, self.ebm, self._evecs, self.actors = [], [], None, None, set()
         if store is None:
             return
@@ -230,9 +214,7 @@ class Search:
             if any(not a[:1].isupper() for a in self.alias_ids) else None  # relations ("my sister"): any case
 
     def entities_in(self, text: str) -> set[str]:
-        """Entity ids a text names through an alias (the lexical network, C&L assumption 6): a name as written, a
-        relation in any case. A speaker (the actor of the turns they say: LoCoMo's "Melanie: ...") is never a cue:
-        like the user in a one-person chat, the subject of every event names none of them."""
+        """Entity ids a text names: a name as written, a relation in any case; a speaker is never a cue."""
         out = set()
         for r in (self._alias_rx, self._rel_rx):
             if r is not None:
@@ -242,8 +224,7 @@ class Search:
         return out - self.actors
 
     def line(self, session: str, i: int, trim: int = 0, ev: bool = True) -> str:
-        """One turn as shown. trim > 0 shortens a long assistant turn: in aggregation mode the facts are in the
-        user's turns, and the replies were 87% of a unit's tokens (LongMemEval, 13 Oct)."""
+        """One turn as shown; trim > 0 cuts a long assistant reply (replies were 87% of a unit's tokens)."""
         e = self.sessions[session][i]
         text = e.text if not trim or e.role != "assistant" or len(e.text) <= trim else e.text[:trim].rstrip() + " [...]"
         found = self.events.get((session, i)) if ev else None
@@ -276,8 +257,7 @@ class Search:
         return f"[{fmt(date.fromisoformat(turns[0].ts[:10]))}]{f' ({label})' if label else ''} " + "\n".join(out)
 
     def coverage(self, query: str, u: Unit) -> float:
-        """Share of the question's terms that the unit holds, each weighted by a smoothed idf (Lucene's, positive even
-        for a term the store never saw, which counts against the unit: the question names something not here)."""
+        """Share of the question's terms the unit holds, by smoothed idf; an unseen term counts against it."""
         n = len(self.units)
         idf = {t: math.log(1 + (n - self.df.get(t, 0) + 0.5) / (self.df.get(t, 0) + 0.5)) for t in set(self.terms(query))}
         total = sum(idf.values())
@@ -293,7 +273,7 @@ class Search:
         return [i for i in sorted(range(len(self.units)), key=lambda i: (-scores[i], i)) if scores[i] > 0]
 
     def _dense(self, query: str, n: int) -> list[int]:
-        """Exact cosine over every unit (no ANN: research/32 B4); unit vectors computed once per build."""
+        """Exact cosine over every unit, no ANN; unit vectors computed once per build."""
         from . import vectors
 
         with self._lock:
@@ -324,21 +304,14 @@ class Search:
 
     def search(self, query: str, end: str | None = None, n: int = 100, prefer=None, extra=(), dense: bool = False,
                start: str | None = None, more=(), event_end: str | None = None) -> list[Unit]:
-        """Ranked units. Turn ranking: plain BM25 alone (v1), or with dense ranking and/or extra queries (entity
-        expansions, rewrites: (text, weight)) fused by reciprocal rank fusion, c = 60, each list scaled by its weight
-        (research/32 B5). With event units (research/37 E3), the turn ranking becomes one list among: dense over
-        event units 1.0, turns 0.5, stemmed BM25 over event units 0.25, and `more` ((list of ("t"|"e", index),
-        weight): direct joins, activation). Time: turn units said before `end`; event units whose HAPPENED period
-        overlaps [start, event_end or end). No filter is the fallback when it leaves nothing (research/32 B7)."""
+        """BM25, dense and extra queries fused by weighted RRF; time-filtered unless that leaves nothing."""
         order = self._turn_order(query, n, prefer, extra, dense)
         if not self.eunits:
             if end:
                 kept = [i for i in order if self.units[i].day < end]
                 order = kept or order
             return [self.units[i] for i in order[:n]]
-        # v2.1: two levels. The event lists (BM25, dense, direct joins, activation) are fused into ONE event ranking
-        # first, then fused with the turn ranking as equals: four event lists stacked against one turn list let 60 of
-        # 60 hits be event units and dropped the turn ranking's best units (LongMemEval 0ea62687, 3a704032)
+        # event lists fuse into ONE ranking before meeting the turns: stacked, they crowded out the best turn units
         ev_lists = [([("e", i) for i in self._ebm25(query)[:n]], W_EBM25)]
         if dense and self.embed_model:
             ev_lists.append(([("e", i) for i in self._edense(query, n)], W_EDENSE))
@@ -349,8 +322,8 @@ class Search:
             for pos, key in enumerate(rank[:n]):
                 fused[key] = fused.get(key, 0.0) + w / (60 + pos + 1)
         keys = sorted(fused, key=lambda k: (-fused[k], k))
-        if end or start:  # v2.1: the no-filter fallback per kind, as v5 had it for turns; an "on or before" event passes
-            stop = event_end or end  # every window, so one shared fallback let surviving events drop every turn (0ea62687)
+        if end or start:  # fallback per kind: one shared fallback let surviving events drop every turn
+            stop = event_end or end
             kt = [k for k in keys if k[0] == "t" and (not end or self.units[k[1]].day < end)]
             ke = [k for k in keys if k[0] == "e" and self._overlaps(self.eunits[k[1]], start, stop)]
             if kt or ke:  # turns fall back to unfiltered on their own; an event outside the window never shows
@@ -360,7 +333,7 @@ class Search:
 
     @staticmethod
     def _overlaps(u: Unit, start: str | None, end: str | None) -> bool:
-        """An event's happened period [from, to) against [start, end); "on or before" (no from) can be any earlier day."""
+        """An event's period [from, to) against [start, end); "on or before" (no from) can be any earlier day."""
         a, b = u.occ or (None, None)
         if end and a and a >= end:
             return False
@@ -384,11 +357,9 @@ class Search:
 
 
 YEAR = re.compile(r"\b(?:19|20)\d\d\b")
-# research/37 E3 fusion weights, set on the generated two-hop suite (never on LongMemEval): the simulation's dense-event
-# 1.0 over turns 0.5 lost one-hop evidence there (look-alike clauses crowd the turns out), so turns lead; activation at
-# 0.5 left its typed-path hits at fused rank 25-40, outside the budget, so it weighs as a direct join
+# fusion weights set on the two-hop suite, never on LongMemEval: turns lead, activation weighs as a direct join
 W_EDENSE, W_TURNS, W_EBM25, W_DIRECT, W_PPR = 0.5, 1.0, 0.25, 1.0, 1.0
-W_EVENTS = 1.0  # v2.1: the fused event ranking against the turn ranking, as equals
+W_EVENTS = 1.0  # the fused event ranking against the turn ranking, as equals
 
 
 def rrf(lists: list[tuple[list, float]], n: int) -> list:
@@ -398,7 +369,9 @@ def rrf(lists: list[tuple[list, float]], n: int) -> list:
         for pos, key in enumerate(rank[:n]):
             fused[key] = fused.get(key, 0.0) + w / (60 + pos + 1)
     return sorted(fused, key=lambda k: (-fused[k], k))
-TIMELINE_HITS = 12  # the timeline shows the events among this many best hits: 18-36 lines crowded the turns out (LoCoMo)
+
+
+TIMELINE_HITS = 12  # the timeline shows the events among this many best hits: more crowded the turns out
 PREF_ATTRS = TASTES
 
 
@@ -427,8 +400,7 @@ SINCE = re.compile(r"\bsince\s+(.+)$", re.I)
 
 
 def since_in(q: str, now: date, facts: Facts, values: Values, anchor_event=None) -> When | None:
-    """research/37 E3: "since X" is a range from X to now, never a point. X is a date ("since March"), a stored
-    row ("since I got the Fairphone"), or an event in EVENTS ("since I started painting classes")."""
+    """"since X" is a range from X to now, never a point; X is a date, a stored row or an event."""
     m = SINCE.search(q)
     if not m:
         return None
@@ -452,11 +424,8 @@ def since_in(q: str, now: date, facts: Facts, values: Values, anchor_event=None)
 
 def date_in(q: str, now: date, facts: Facts, values: Values, vocab: Vocab, fixes: bool = True, now_too: bool = True,
             since: bool = False, anchor_event=None) -> When:
-    """The time a question asks about: a date it names (absolute, or relative to now), else an anchor in the
-    stored rows, else now (the single open row per key: a direct lookup, never a guess).
-    fixes (v2, error analysis of v1.3): a named single day keeps the turns said after it (the report of "last night"
-    comes the next day) and puts that day's turns first; a question's own "When did ..." is never an anchor."""
-    if since:  # algorithm v2: "since X" is a range to now
+    """A date the question names, else an anchor in the stored rows, else now; "When did ..." is never an anchor."""
+    if since:  # "since X" is a range to now
         rng = since_in(q, now, facts, values, anchor_event)
         if rng:
             return rng
@@ -513,8 +482,7 @@ def fact_line(r: Row, when: When, quote: str, said: str, confirmed: str | None) 
 
 
 def fact_lines(mem, question: str, when: When, prefs: bool = False) -> tuple[list[str], list[Row]]:
-    """Keyed lookup at the question's time (research/32 C), plus, for a preference or recommendation question with
-    prefs on demand, every preference on record, said once or more (v2)."""
+    """Keyed lookup at the question's time, plus every preference on record for a preference question."""
     facts, values, vocab = mem.facts, mem.values, mem.vocab
     keys = vocab.route(question) | {ref[0] for _, _, refs in values.find(question) for ref in refs}
     support: dict[int, tuple] = {}  # line index -> (row, quote, said, last confirmed), for the stale label
@@ -525,7 +493,7 @@ def fact_lines(mem, question: str, when: When, prefs: bool = False) -> tuple[lis
         _, confirmed, newest = facts.stats_for(r.attribute, r.item, r.value)
         nd = mem.decision_by_id.get(newest or "")
         if nd and r.valid_to >= "9999-12-31" and nd["tx"] > r.recorded_at:
-            d, src = nd, nd["source"]  # v3.2: quote the newest turn that states the value (an open row only)
+            d, src = nd, nd["source"]  # quote the newest turn that states the value (an open row only)
         ev = mem.log.by_hash.get(src)
         quote = sentence_of(ev.text, d.get("value") or d.get("old")).strip()[:240] if ev else ""
         said = ev.ts[:10] if ev else r.recorded_at[:10]
@@ -537,7 +505,7 @@ def fact_lines(mem, question: str, when: When, prefs: bool = False) -> tuple[lis
     for k in sorted(keys):
         found = facts.at(k, (when.start or when.as_of).isoformat(), when.end.isoformat() if when.start else None)
         rows = [r for r in found if not hidden(facts, r)]
-        once = not rows and bool(found)  # v5: a once-said row in force is shown, marked, not "nothing on record"
+        once = not rows and bool(found)  # a once-said row in force is shown, marked, not "nothing on record"
         rows = rows or found
         if not rows:
             stored = facts.believed(k)
@@ -557,8 +525,7 @@ def fact_lines(mem, question: str, when: When, prefs: bool = False) -> tuple[lis
 
 
 def stale(mem, lines: list[str], when: When, latest_day: str | None) -> list[str]:
-    """Fix 5 (v2): a fact record said "in force now" although a later mention of its subject is shown (the gym at
-    7 pm, when a later chat said 6 pm). Such a record says when it was last supported instead."""
+    """A record "in force now" with a later on-subject mention shown says when it was last supported instead."""
     if when.how != "now" or not latest_day:
         return lines
     out = list(lines)
@@ -577,8 +544,7 @@ NUMBER_WORD = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
 
 
 def time_phrases(question: str, kind: str) -> list[str]:
-    """The question's event phrases in frame order (research/36 B.3): "between A and B" -> [A, B]; "... X when I Y"
-    -> [X, Y] (Y the reference); else the whole question. A rule stand-in for the model's match step."""
+    """"between A and B" -> [A, B]; "... X when I Y" -> [X, Y]; else the whole question. A rule stand-in."""
     m = BETWEEN.search(question)
     if m:
         return [m.group(1), m.group(2)]
@@ -589,10 +555,7 @@ def time_phrases(question: str, kind: str) -> list[str]:
 
 
 def match_step(mem, question: str, kind: str) -> dict[str, list[list[str]]]:
-    """research/36 B.3, the match step: question phrase -> the events it means, each event a list of its mentions
-    (a same_as cluster). Model work in the design; here the $0 stand-in: stemmed BM25 of the phrase over the event
-    clauses, the best event per phrase (an order question takes the best few). v2.1: an event must hold at least
-    half of the phrase's idf-weighted terms (Search.coverage, STRONG); a weaker best match is no match."""
+    """Question phrase -> the events it means, by stemmed BM25 over clauses; a match needs half the phrase's weight."""
     s, store = mem.search, mem.events_store
     if s is None or not s.eunits or store is None:
         return {}
@@ -617,13 +580,12 @@ def match_step(mem, question: str, kind: str) -> dict[str, list[list[str]]]:
 
 
 def time_block(mem, question: str, now: date, rows: list) -> str | None:
-    """The time module's hook (docs/timeline.md): needs_time, anchor_all over the matched events' items, then the
-    rendered <time-computed> block, or None when the question is not about time or nothing matched."""
+    """The rendered <time-computed> block, or None when the question is not about time or nothing matched."""
     kind = TIME.needs_time(question)
     if not kind or not mem.events_on:
         return None
     if kind == "point" and not TIME.POINT_Q.search(question):
-        return None  # v2.1: a window in a count or lookup question ("how many ... in March") filters retrieval; no block
+        return None  # a window in a count or lookup question filters retrieval: no block
     groups = match_step(mem, question, kind) if kind != "true_at" else {}
     if kind != "true_at" and len(groups) < len(time_phrases(question, kind)):
         return None  # a phrase with no event on record: never compute from what is missing (today's path runs)
@@ -648,7 +610,7 @@ def time_block(mem, question: str, now: date, rows: list) -> str | None:
     r = TIME.timeline_for(question, now, anchors, rows=rows if kind == "true_at" else None)
     mem._last["time"] = TIME.trace(r)
     out = TIME.render(r) or None
-    if out and r.status == "undetermined":  # v2.1: advisory, never a verdict the reader takes as a missing premise
+    if out and r.status == "undetermined":  # advisory, never a verdict the reader takes as a missing premise
         out = out.replace(TIME.INSTRUCTION, ADVISORY).replace(TIME.VETO, "")
         out = re.sub(r"\n{2,}", "\n", out)
     return out
@@ -665,8 +627,7 @@ def extract_status(polarity: str) -> str:
 
 
 def anchor_event(mem, tail: str) -> date | None:
-    """The date an event named in a question's tail happened ("since I started painting classes"): the best event
-    unit by stemmed BM25 over its clause, its happened date, else the day it was said."""
+    """The date an event in a question's tail happened ("since I started painting"), else the day it was said."""
     s = mem.search
     ranked = s._ebm25(tail) if s is not None and s.eunits else []
     for j in ranked[:1]:
@@ -676,8 +637,7 @@ def anchor_event(mem, tail: str) -> date | None:
 
 
 def event_lists(mem, question: str) -> list[tuple[list, float]]:
-    """research/37 E3: direct joins (events whose class or entity the question names; done, not planned) and, when
-    the question names one, spreading activation from those cues. (ranked keys, RRF weight) for Search.search."""
+    """Direct joins on the classes and entities a question names, and activation from them, as (ranked keys, weight)."""
     s = mem.search
     if not mem.events_on or s is None or not s.eunits:
         return []
@@ -715,10 +675,7 @@ POLARITY_NOTE = {"plan": "planned, not done: ", "hypothetical": "maybe, not done
 
 
 def timeline_lines(mem, hits: list[Unit], question: str = "") -> list[str]:
-    """research/37 E4: the event units among the hits, one line per real event (same_as mentions folded into their
-    first), in order of when they HAPPENED, each with its class words beside the user's verbatim clause. A line is
-    shown only when it meets the question literally (an entity, a class or a stemmed content word in common): the
-    reader is handed a literal match (research/37 G1), and look-alike events reached by meaning alone stay out."""
+    """One line per event among the hits, in HAPPENED order, only when it meets the question literally."""
     s, store = mem.search, mem.events_store
     info = {s.einfo[j]["row"]["event_id"]: s.einfo[j] for j in range(len(s.eunits))}
     q_ents, q_cls, q_terms = s.entities_in(question), mem.classes.classes_in(question, "object"), set(s.terms(question))
@@ -728,7 +685,7 @@ def timeline_lines(mem, hits: list[Unit], question: str = "") -> list[str]:
             reach |= i["ents"]
     meets = lambda i: bool(i["ents"] & reach or i["classes"] & q_cls or q_terms & set(s.terms(i["clause"])))
     roots: dict[str, list[dict]] = {}
-    for u in hits[:TIMELINE_HITS]:  # a short digest of the best hits (research/38 B), not every event in the pool
+    for u in hits[:TIMELINE_HITS]:  # a short digest of the best hits, not every event in the pool
         if u.kind == "event" and u.eid in info and (not question or meets(info[u.eid])):
             root = store.root(u.eid)
             roots.setdefault(root, [])
@@ -752,8 +709,7 @@ def timeline_lines(mem, hits: list[Unit], question: str = "") -> list[str]:
 
 
 def recall(mem, question: str, ts: str) -> tuple[str, list[Row], When]:
-    """The recalled block, the fact rows it shows (so the caller can count their use), and the time it read.
-    Leaves mem._last for followup(): what was found, so a later step never searches twice."""
+    """The recalled block, the fact rows it shows and the time it read; leaves mem._last for followup()."""
     now = dates.day_of(ts)
     anchor = (lambda tail: anchor_event(mem, tail)) if mem.events_on else None
     when = date_in(question, now, mem.facts, mem.values, mem.vocab, mem.date_fixes, mem.anchor_now, mem.since_range, anchor)
@@ -765,8 +721,8 @@ def recall(mem, question: str, ts: str) -> tuple[str, list[Row], When]:
     more = event_lists(mem, question)
     agg = mem.aggregate and "aggregate" in cats
     k, budget = (round(mem.k * mem.agg_k), max(mem.budget, mem.agg_budget)) if agg else (mem.k, mem.budget)
-    budget = min(budget, int(getattr(mem, "_room", budget * READER_FACTOR) / READER_FACTOR))  # v3.1: cap in reader tokens
-    ev = "timespan" in cats  # v3.1: event dates are shown only when the question is about time
+    budget = min(budget, int(getattr(mem, "_room", budget * READER_FACTOR) / READER_FACTOR))  # cap in reader tokens
+    ev = "timespan" in cats  # event dates only when the question is about time
     trim = mem.agg_trim if agg or (mem.trim_all and not ASKS_ASSISTANT.search(question)) else 0
     prefer = (lambda u: NUMBER_BOOST if QUANTITY.search(u.text) else 1.0) if agg else None
     extra = mem.search.entities.expand(question) if mem.search and mem.search.entities else []
@@ -774,12 +730,12 @@ def recall(mem, question: str, ts: str) -> tuple[str, list[Row], When]:
     search = (lambda q, x: mem.search.search(q, window, max(100, 2 * k), prefer, x, mem.vectors, start, more, event_end)) \
         if mem.search else None
     found = search(question, extra) if search else []
-    fused = (found if agg and mem.agg_nodiv else diversify(found, mem.per_key))[:k]  # fix 2: no cap when summing
-    if when.day:  # fix 4: the named day's own turns first (said that day, or naming it)
+    fused = (found if agg and mem.agg_nodiv else diversify(found, mem.per_key))[:k]  # no diversity cap when summing
+    if when.day:  # the named day's own turns first
         fused = [u for u in fused if u.day == when.day.isoformat() or u.event == when.day.isoformat()] + \
             [u for u in fused if not (u.day == when.day.isoformat() or u.event == when.day.isoformat())]
     pool, scores = fused, {}
-    if search and rewrites:  # rewrites only add candidates below the original's (research guard, Mohammed 13 Oct)
+    if search and rewrites:  # rewrites only add candidates below the original's
         more = [u for u in search(question, extra + [(q, 0.5) for q in rewrites]) if u not in fused]
         pool = fused + more[:20]
     hits = fused
@@ -802,8 +758,6 @@ def recall(mem, question: str, ts: str) -> tuple[str, list[Row], When]:
         mr = run_mapreduce(mem, question, fused, now)
         if mr:
             head = [mr]
-    # the time module (timeline.py, another builder) computes <time-computed> from its own Anchors; mapping EVENTS rows
-    # and question phrases onto them is the joint step still to do, so the computed block is not wired here yet
     tl = timeline_lines(mem, hits, question) if mem.events_on and mem.timeline and mem.search and mem.search.eunits else []
     tl = ["<timeline>"] + tl + ["</timeline>"] if tl else []
     tb = time_block(mem, question, now, shown) if mem.time else None  # counted first, never trimmed, shown last
@@ -826,9 +780,7 @@ DIGEST_LINES, DIGEST_CHARS = 5, 1200
 
 
 def digest(mem, question: str, hits: list[Unit], lines: list[str], tl: list[str]) -> str:
-    """The short evidence digest the runner shows next to the question and in its one re-ask (research/38 B):
-    verbatim lines only. The fact records first, then the timeline's event lines, then the sentence of each best hit
-    that holds most of the question's terms, dated; at most DIGEST_LINES lines and DIGEST_CHARS characters."""
+    """Verbatim evidence for the runner: fact records, timeline lines, each best hit's densest sentence."""
     out = list(lines[:2]) + [x for x in tl if re.match(r"E\d+ ", x)][:2]
     q = set(mem.search.terms(question)) if mem.search else set()
     for u in hits:
@@ -843,8 +795,7 @@ def digest(mem, question: str, hits: list[Unit], lines: list[str], tl: list[str]
 
 
 def blocks(mem, question: str, hits: list[Unit], chosen: dict[str, set[int]], trim: int, with_latest: bool = False, ev: bool = True):
-    """Chosen turns as dated session blocks in time order; the latest of several on-subject sessions labelled.
-    with_latest: also return that latest session's date (or None)."""
+    """Dated session blocks in time order; with_latest also returns the latest on-subject session's date."""
     order = sorted((sid for sid in chosen if chosen[sid]), key=lambda sid: mem.search.sessions[sid][0].seq)
     strong = {u.session for u in hits if u.lo in chosen.get(u.session, ()) and mem.search.coverage(question, u) >= STRONG}
     latest = max(strong, key=order.index) if len(strong) >= 2 else None
@@ -879,7 +830,7 @@ def run_mapreduce(mem, question: str, fused: list[Unit], today: date) -> str:
     sessions = matched_sessions(mem, fused)
     spent = {"tokens": 0}
 
-    def metered(model, messages, **p):  # v3: writer calls count against the per-question cap; stop before it
+    def metered(model, messages, **p):  # writer calls count against the per-question cap
         if mem._last.get("writer_tokens", 0) + spent["tokens"] + sum(n_tokens(m["content"]) for m in messages) > mem.token_cap // 2:
             raise ValueError("token cap")
         r = call(model, messages, **p)
@@ -895,15 +846,13 @@ def run_mapreduce(mem, question: str, fused: list[Unit], today: date) -> str:
 
 
 def rung(mem, n: int, question: str, ts: str) -> str | None:
-    """The escalation ladder after an exact "I don't know" (Mohammed 13 Oct). 1: the best 8 reranked units with
-    neighbours; 2: the top-scoring chat in full plus the fact records; 3: map-reduce over every matched chat.
-    "" skips a rung that would repeat what the reader already had; None: no rung n."""
+    """1: the best reranked units; 2: the top chat; 3: map-reduce. "" skips a repeating rung; None: no rung n."""
     last = mem._last
     if not last or not mem.search:
         return None
     when, lines = last["when"], last["lines"]
     wrap = lambda body: f'<recalled-data {when.how}="{when.label}">\n' + "\n".join(body) + "\n</recalled-data>"
-    left = mem.token_cap - last.get("spent", 0) - 1000  # v3: what the per-question cap leaves for this context
+    left = mem.token_cap - last.get("spent", 0) - 1000  # what the per-question cap leaves for this context
     if left < 500:
         return ""
     if n == 1:
@@ -923,7 +872,7 @@ def rung(mem, n: int, question: str, ts: str) -> str | None:
             return ""
         sid = ranked[0].session
         turns = list(range(len(mem.search.sessions[sid])))
-        cap, kept = min(RUNG2_TOKENS, int(left / READER_FACTOR)), []  # v3: never a whole chat beyond the per-question cap
+        cap, kept = min(RUNG2_TOKENS, int(left / READER_FACTOR)), []  # never a whole chat beyond the per-question cap
         for i in turns:  # the whole chat, inside a reader-window-safe cap
             cap -= mem.search.cost(sid, i)
             if cap < 0:
@@ -939,9 +888,7 @@ def rung(mem, n: int, question: str, ts: str) -> str | None:
 
 
 def check(mem, question: str, answer: str, ts: str) -> str | None:
-    """Self-check on an aggregation answer (Mohammed 13 Oct): one cached call compares the answer with the extracted
-    items and may add missing ones (verbatim) or drop wrong ones; code recomputes. A new context only if the
-    computed result changed."""
+    """One cached call may add or drop items; a new context only if the recomputed result changed."""
     last = mem._last
     if not last or not last["agg"] or not last["items"] or last["checked"]:
         return None
@@ -962,16 +909,7 @@ def check(mem, question: str, answer: str, ts: str) -> str | None:
 
 def pick(search: Search, hits: list[Unit], budget: int, neighbours: int, cap: int, min_hits: int = 3,
          window_first: bool = False, trim: int = 0, ev: bool = True) -> dict[str, set[int]]:
-    """Which turns to show, inside the token budget; overlapping windows merge (a turn is shown and paid for once).
-
-    Default (v1.1): coverage first, every hit's own unit in rank order while it fits; then context with what is
-    left, in rank order: a session with `min_hits` or more hits brings its turns around them (at most `cap`), any
-    other hit its `neighbours` turns either side (a block that does not fit shrinks to the window).
-
-    window_first (aggregation questions, v1.3): each hit with its neighbours, in rank order, before the next hit
-    (a window that does not fit shrinks to the bare unit). Measured at $0 on LongMemEval: of the orders tried, it
-    is the one where every answer turn shown also has its neighbours (70 of 94; v1.2's one-unit-per-session
-    order: 24); v1.2's order showed sessions, but rarely the turn in them that held the number."""
+    """Turns to show inside the budget, windows merged; window_first: each hit with its neighbours first."""
     chosen: dict[str, set[int]] = {}
 
     def take(session: str, want: set[int]) -> bool:
@@ -1004,7 +942,7 @@ def pick(search: Search, hits: list[Unit], budget: int, neighbours: int, cap: in
             if take(u.session, search.around(u.session, per_session[u.session], cap)):
                 continue
         take(u.session, window(u))
-    for s, have in chosen.items():  # v4: a lone gap between two shown turns is shown (it ties them: "it" = the snake)
+    for s, have in chosen.items():  # a lone gap between two shown turns is shown: it ties them ("it" = the snake)
         for i in sorted(have):
             if i + 2 in have and i + 1 not in have:
                 take(s, {i + 1})

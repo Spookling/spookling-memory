@@ -1,12 +1,4 @@
-"""spookling_memory.core: our memory algorithm (v1 research/34; v2 research/39, adapter 6.0), the Memory contract it
-implements (base.py), the model client (models.py) and the Jev Decisions client (decisions.py). memory-bench runs it as
-its `spookling` adapter; its docs/spookling-adapter.md describes it.
-
-Stores: LOG (verbatim turns, content-hashed) and DECISIONS (every model judgement) are the truth; FACTS
-(bitemporal rows), the INDEX page and SEARCH are views rebuilt from them. ingest() appends to the LOG and runs
-the light sleep; every `full_every` sessions, and once before the first question, the full sleep runs.
-retrieve() = the INDEX page (undated questions) + recall() of research/32 C with the question's own date.
-"""
+"""The memory algorithm: LOG and DECISIONS are the truth; FACTS, EVENTS, INDEX and SEARCH are views of them."""
 from __future__ import annotations
 
 import copy
@@ -24,99 +16,20 @@ from .recall import Search, Values, check, reader_tokens, recall, rung, words
 from .sleep import full, light
 from .triage import WRITER, ModelTriage, Spent, Triage, Vocab
 
-VERSION = "6.1"  # algorithm v2.1 (research/39): events, classes, entities, activation, invariant; context fixes  # in result file names with a config fingerprint, so runs with other knobs never overwrite
+VERSION = "6.1"  # names memory-bench's result files, with a config fingerprint
 
 
-INVARIANT_CAP = 40  # item lines in <invariant> (research/39 stores)
-RESERVE = 1000  # per reader call: its system prompt, the question and the date, counted against token_cap
+INVARIANT_CAP = 40  # item lines in <invariant>
+RESERVE = 1000  # per reader call: its prompt, the question and the date
 
 
 def is_idk(response: str) -> bool:
-    """The reader's exact abstention string (the same test as memory-bench's judge.is_idk)."""
+    """The reader's exact abstention string, as memory-bench's judge.is_idk tests it."""
     return re.sub(r"[^a-z' ]", "", response.lower().replace("\u2019", "'")).strip() == "i don't know"
 
 
 class SpooklingMemory(Memory):
-    """Knobs:
-    model        writer model for triage and the slow path (default Haiku 4.5), via models.py (cached)
-    triage       a Triage instance to use instead of ModelTriage(model) (tests, Jev later)
-    k, budget    recall: at most k hit units, ~budget tiktoken tokens for the recalled block (facts never trimmed)
-    neighbours   turns shown either side of each hit, in its session (overlapping windows merge)
-    session_cap  a session with 3+ hits shows its turns around them, up to this many turns
-    aggregate    questions that count, sum or list ("how many", "total", "all the", "since") get agg_k x the hits, a
-                 budget of at least agg_budget tokens, each hit with its neighbours in rank order, assistant replies
-                 cut to agg_trim characters (0: whole), and quantity-stating units preferred
-    guide        off by default (v1.4: on, LoCoMo abstention fell 0.934 -> 0.918 and accuracy 0.782 -> 0.774). On:
-                 when a shown hit is about the question's subject (or a fact record is shown), tell the reader to
-                 answer from what is here and say what is missing; "I don't know" stays the rule otherwise
-    per_key      diversify: at most this many units per fact key before the rest
-    tau          tagger confidence under which an item goes to the slow path
-    sleep_every  light sleep: "session" (end of each session) or a number of turns (10, 50, or "50 turns")
-    full_every   full sleep every N sessions (0: only once before questions); it always runs before retrieval
-    index        when the INDEX page leads the context: "undated" (questions naming no date or anchor; a dated
-                 question sees only the version in force then), "always" or "never"; in every mode it leads only
-                 when it holds 3+ facts confirmed twice (noise control)
-    index_cap    INDEX page line cap
-    v2 (13 Oct; each an ablation knob):
-    vectors      dense ranking with a local embedder (embed_model), fused with BM25 by RRF. Default "auto" (v4): on
-                 when the `vectors` extra is installed and SPOOKLING_LOCAL_MODELS is not 0 (off in v3.1 and v3.2,
-                 which cost LoCoMo evidence recall 0.862 -> 0.809)
-    rerank       a local cross-encoder (rerank_model) re-orders the top rerank_pool fused hits against the question
-                 ("auto" as for vectors). rerank_mode "order": every hit, in the reranker's order, inside the budget;
-                 "top": only the best rerank_k units, each with its neighbours (measured worse at $0, see the doc)
-    mapreduce    aggregation questions: one cached writer call per matched chat (at most mr_sessions) lists the
-                 items; code counts, sums, compares and subtracts dates; the reader phrases the computed result
-    ladder       after an exact "I don't know" the runner asks again with: 1 the best reranked units, 2 the top
-                 chat in full, 3 map-reduce over every matched chat (followup())
-    selfcheck    after an aggregation answer, one cached call checks it against the items; code recomputes, and a
-                 changed result is asked again
-    event_dates  dates the user's turns name ("last Tuesday") resolved against the chat's date; since v3.1 shown only
-                 when the question is about time (the complexity table's timespan triggers)
-    entities     a rules-built entity table (my sister <-> Rachel, Mel <-> Melanie) expands questions for ranking only
-    prefs_on_demand  preference and recommendation questions also get every preference on record, said once or more
-    rewrite      "off" | "complex" | "all": up to 3 guarded search rewrites per question (one cached writer call)
-    v3 (13 Oct, after the v2 paid run; see docs/error-analysis-v2.md):
-    ladder_max   the highest ladder rung used (default 1: the best reranked units; rung 2, a whole chat, and rung 3,
-                 map-reduce, made answers worse). mapreduce, selfcheck and rewrite default off for the same reason
-    token_cap    a hard limit, per question, on the tokens of everything this adapter hands the reader or sends a
-                 model: the first context, every follow-up context, and its own writer calls. In reader tokens
-                 (v3.1): cl100k x 1.25, the harness's TOKEN_FACTOR, since budgets are counted in cl100k
-    compact_keep compact() keeps every rule, decision, value, date, path and name of the compacted session, verbatim
-    pin_rules    standing rules (kept at compaction, or tagged) lead every context in a <rules> block
-    anchor_now   a question anchored on a past event that also asks about now keeps the turns after the anchor
-    from docs/error-analysis-v1.3.md (13 Oct):
-    date_fixes   a question's "When did ..." is never an anchor; a named day keeps later turns and shows its own first
-    agg_nodiv    no per-key diversity cap on aggregation questions
-    trim_all     assistant replies cut to agg_trim characters on every question, except ones about what it said
-                 ("remind me", "what did you say"). Kept on in v4: whole replies cost LongMemEval answer turns at
-                 $0 (all answer turns present 89/94 with it, 84/94 without)
-    v4 has one set of defaults for every suite (no suite_defaults).
-    algorithm v2 (research/39, adapter 6.0):
-    events       EVENTS store (research/37 E1): clause candidates by code, spans by event_tagger checked verbatim,
-                 polarity by rule, dates by the date grammar, entities by rules, same_as identity; event-sized
-                 units in search beside the turns, with the class word appended as a cue; a <timeline> block
-    event_tagger "rule" (deterministic spans: the $0 stand-in) or "model" (the writer model's events prompt: a paid
-                 re-tag, run only once approved), or a Triage object with events()
-    activation   Personalized PageRank (Haveliwala Eq. 5) over turns, events, entities and classes, seeded by the
-                 entities and classes a question names; fused by RRF at 0.5; at most activation_cap units
-    event_cap    at most this many event lines in <timeline> and direct joins per question
-    stem         Snowball stemming in the keyword index ("concerts" finds "concert")
-    since_range  "since X" is a range from X to now, never a point
-    invariant    the INVARIANT block (rules, decisions, failed attempts, open items; 40 lines) under <invariant>
-    time         the time module (timeline.py, research/36): for a time question, the matched events dated and related
-                 by code in a <time-computed> block, last and never trimmed (needs events; the match step is a rule
-                 stand-in for the model's)
-    stale_label  a fact record with a later on-subject mention shown reads "last confirmed <date>", not "in force now".
-    the decider (23 Oct, docs/jev.md; default off):
-    decider      a Decisions-API model id (typesafe/jev-1.14) that makes every judgement on the extractor's proposals as a
-                 typed question (jev.py): Nouls for each fact tag (durable now: replaces tau's self-reported confidence;
-                 replaces an earlier value: replaces the CHANGE words; a standing instruction: beside is_rule()),
-                 Choices for each event clause's classes and polarity, a Choice for each slow ruling and new class, a
-                 Noul per same-event candidate. One request per message; every answer recorded on its decision
-    decide_threshold  a Noul is yes at p >= this
-    class_threshold, class_confidence  a Choice is accepted when its top probability and its confidence reach these;
-                 below, the item goes slow (classes), polarity_of() decides (polarity), or the tagger's proposal stands
-                 marked disputed (slow rulings)"""
+    """Knobs: the keyword arguments below; memory-bench's docs/spookling-adapter.md describes them."""
 
     name = "spookling"
 
@@ -135,7 +48,7 @@ class SpooklingMemory(Memory):
                  event_cap: int = 40, timeline: bool = True, stem: bool = True, since_range: bool = True,
                  invariant: bool = True, time: bool = True, decider: str | None = None, decide_threshold: float = 0.8,
                  class_threshold: float = 0.6, class_confidence: float = 0.5):
-        index = {True: "always", False: "never"}.get(index, index) if isinstance(index, bool) else index  # CLI coerces on/off
+        index = {True: "always", False: "never"}.get(index, index) if isinstance(index, bool) else index  # the CLI coerces on/off to bool
         if index not in ("undated", "always", "never"):
             raise ValueError(f"index must be undated, always or never, not {index!r}")
         self.model, self.k, self.budget, self.per_key, self.tau = model, k, budget, per_key, tau
@@ -162,7 +75,7 @@ class SpooklingMemory(Memory):
         self.ladder_max, self.token_cap, self.compact_keep, self.pin_rules = ladder_max, token_cap, compact_keep, pin_rules
         self.anchor_now = anchor_now
         self.event_dates, self.entities, self.prefs_on_demand = event_dates, entities, prefs_on_demand
-        rewrite = {True: "all", False: "off"}.get(rewrite, rewrite) if isinstance(rewrite, bool) else rewrite  # CLI coerces on/off
+        rewrite = {True: "all", False: "off"}.get(rewrite, rewrite) if isinstance(rewrite, bool) else rewrite  # the CLI coerces on/off to bool
         if rewrite not in ("off", "complex", "all"):
             raise ValueError(f"rewrite must be off, complex or all, not {rewrite!r}")
         self.rewrite = rewrite
@@ -211,21 +124,20 @@ class SpooklingMemory(Memory):
         self.log, self.facts, self.vocab = Log(), Facts(), Vocab()
         from .events import ClassVocab
 
-        self.classes = ClassVocab()  # the closed class list, grown only by the slow path
+        self.classes = ClassVocab()  # grown only by the slow path
         self.events_store, self.graph, self._owns_events = None, None, True
         self.values: Values = Values(self.facts)
         self.search: Search | None = None
         self.index = ""
-        self.index_strong = 0  # facts on the page confirmed twice; under MIN_STRONG the page is noise and stays out
-        self._last = None  # what the last retrieve() found, for followup()
-        self.staging: list = []  # compact(): verbatim items kept before the harness summarised a session
+        self.index_strong = 0  # under MIN_STRONG the page is noise and stays out
+        self._last = None  # for followup()
+        self.staging: list = []  # compact()'s verbatim keepers
         self.usage: dict[tuple[str, str], tuple[int, str]] = {}  # (attribute, item) -> (n_used, last_used)
         self.decision_by_id: dict[str, dict] = {}
         self.tag_cursor = self.full_seq = 0
         self.turns_since_light = self.sessions_since_full = 0
         self.n_light = self.n_full = self.write_calls = self.write_tokens = self.n_write_failures = 0
 
-    # ---- bookkeeping used by sleep.py
     def record(self, d: dict) -> dict:
         self.decision_by_id[d["id"]] = d
         return self.log.decide(d)
@@ -238,7 +150,6 @@ class SpooklingMemory(Memory):
     def log_time(self) -> str:
         return self.log.events[-1].ts if self.log.events else ""
 
-    # ---- Memory interface
     def ingest(self, session) -> None:
         for i, t in enumerate(session.turns):
             if self.log.append(session.agent, session.id, i, t.role, session.ts, t.content) is None:
@@ -256,8 +167,7 @@ class SpooklingMemory(Memory):
             self.sessions_since_full = 0
 
     def compact(self, session_id: str) -> None:
-        """research/34 moment 3: before the harness summarises a session, keep its rules, decisions, values, dates,
-        paths and names verbatim, with pointers into the LOG. Rules are then pinned at the top of every context."""
+        """Keep the session's rules, decisions, values, dates, paths and names verbatim, pointing into the LOG."""
         if not self.compact_keep:
             return
         have = {k.text for k in self.staging}
@@ -283,16 +193,12 @@ class SpooklingMemory(Memory):
         return self.decider is not None and r.get("p_rule") is not None and r["p_rule"] >= self.decider.threshold
 
     def said_rule(self, r: dict) -> str:
-        """v3.2: the user's own sentence that holds a tagged rule ('' if none does). The rule test reads it, not the
-        tagger's cut, so a rule scoped to one task ("whenever I ask you for a cover letter, always ...") stays out."""
+        """The user's own sentence holding a tagged rule ('' if none), so a rule scoped to one task stays out."""
         ev, frag = self.log.by_hash.get(r["source"]), (r["text"] or "").lower()
         return next((s for s in keep.sentences(ev.text) if frag in s.lower()), "") if ev and frag else ""
 
     def invariant_block(self) -> str:
-        """research/38 C, research/39 choice 3: the INVARIANT block our plugin prepends at retrieve time, so rules,
-        decisions, failed attempts and open items survive every compaction by injection, not by a summary. At most
-        INVARIANT_CAP item lines: every rule first (they bind), then the newest decisions, failed attempts, open items.
-        The rules keep their own <rules> tag inside (the runner's rules note keys on it)."""
+        """Rules first, in their own <rules> tag (the runner keys on it), then the newest other keepers."""
         rules = self.rules() if self.pin_rules else []
         room = max(INVARIANT_CAP - len(rules), 0)
         rules = rules[:INVARIANT_CAP]
@@ -308,8 +214,7 @@ class SpooklingMemory(Memory):
         return "<invariant>\n" + "\n".join(parts) + "\n</invariant>" if parts else ""
 
     def kept_lines(self, question: str, limit: int = 12) -> list[str]:
-        """Non-rule items kept at compaction that share a content word with the question, most shared first (with
-        the invariant on, rules, decisions, failed attempts and open items are always in <invariant> instead)."""
+        """Non-rule keepers sharing a content word with the question, most shared first."""
         q = set(words(question))
         skip = {"rule", "decision", "failed", "open"} if self.invariant else {"rule"}
         scored = [(len(q & set(words(k.text))), i, k) for i, k in enumerate(self.staging) if k.kind not in skip]
@@ -317,14 +222,12 @@ class SpooklingMemory(Memory):
         return [f"- [{k.day}, {k.kind}, u{k.seq}] {k.text}" for _, _, k in sorted(best, key=lambda x: x[2].seq)]
 
     def retrieve(self, question: str, asked_by: str, ts: str) -> dict:
-        """The runner's v2 contract: {context, digest, strong}. strong: a fact record or a hit about the question's
-        subject was found (the runner's one "look again" re-ask uses it); digest: a few verbatim lines (recall.digest)."""
+        """{context, digest, strong}; strong: a fact record or an on-subject hit was found (the runner's re-ask)."""
         ctx = self.context(question, asked_by, ts)
         last = self._last or {}
         return {"context": ctx, "digest": last.get("digest", ""), "strong": bool(last.get("strong"))}
 
     def context(self, question: str, asked_by: str, ts: str) -> str:
-        """The recalled context alone (what retrieve() returns as "context")."""
         self.settle()
         if self.invariant:
             head = self.invariant_block()
@@ -336,7 +239,7 @@ class SpooklingMemory(Memory):
         page_tokens = reader_tokens(self.index) if self.index else 0
         self._room = self.token_cap - RESERVE - reader_tokens(head + kept_block) - page_tokens  # the recalled block's ceiling
         body, shown, when = recall(self, question, ts)
-        for r in shown:  # use counts rank the INDEX; they live outside FACTS, so a refold keeps them
+        for r in shown:  # use counts rank the INDEX; outside FACTS, a refold keeps them
             n, _ = self.usage.get((r.attribute, r.item), (0, ""))
             self.usage[(r.attribute, r.item)] = (n + 1, ts[:10])
         page = self.index_strong >= MIN_STRONG and (self.index_mode == "always" or (self.index_mode == "undated" and when.how == "now"))
@@ -347,8 +250,7 @@ class SpooklingMemory(Memory):
         return out
 
     def followup(self, question: str, asked_by: str, ts: str, reply: str, step: int) -> tuple[str, str] | None:
-        """The runner's hook after each reader reply (v2): (a new context, its label) to ask again with, or None.
-        An exact "I don't know" climbs the ladder; an aggregation answer gets one self-check."""
+        """(context, label) to ask again with, or None: "I don't know" climbs the ladder; a sum gets a self-check."""
         if self._last is None:
             return None
         if is_idk(reply):
@@ -389,8 +291,7 @@ class SpooklingMemory(Memory):
             return new  # values, search and index are rebuilt, never mutated: shared
 
     def close(self) -> None:
-        """Release the LOG's SQLite handle and temp dir, FACTS, and the in-memory indexes. Idempotent. A fork's
-        close() leaves its parent intact (the search and values it shares are only dropped, never torn down)."""
+        """Idempotent; a fork's close() leaves its parent intact."""
         with self._lock:
             if self.log is not None:
                 self.log.close()

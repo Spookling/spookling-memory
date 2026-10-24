@@ -1,11 +1,4 @@
-"""Query rewriting for complex questions (v2; Mohammed's guards, 13 Oct).
-
-One cached writer-model call turns a complex question (complex_triggers) into up to 3 search queries plus entity
-names and synonyms. Guards, all code: the original question is always query one and is never replaced; at most 3
-rewrites; a rewrite that shares no content word or entity with the question is dropped; the caller fuses the
-hit lists by RRF so rewrites can only add candidates below the original's, and the reranker scores every
-candidate against the ORIGINAL question, never a rewrite. The time window is the original question's.
-"""
+"""Guarded query rewriting: the original question stays query one, and the reranker scores against it alone."""
 from __future__ import annotations
 
 import json

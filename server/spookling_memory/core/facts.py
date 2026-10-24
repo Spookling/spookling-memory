@@ -1,16 +1,4 @@
-"""FACTS: bitemporal rows (research/33 B.2), changed only by insert or close (33 B.3).
-
-Valid time [valid_from, valid_to) says when a value was true; transaction time [recorded_at, superseded_at)
-says when we believed it, recorded_at being the LOG turn's time (never the time sleep ran). Every change is
-put(): close each believed row that overlaps the new period, re-insert the parts of it outside the period,
-insert the new row (Snodgrass's sequenced update, p194 and p286). So a new value closes the old row, a
-retraction inserts an explicit `none` row, and a correction rewrites a past period without erasing what we
-believed before. `status = 'disputed'` is metadata only (Mohammed, 2026-10-13): it never hides or blocks a row.
-Triggers make UPDATE of anything but a first close, and every DELETE, fail.
-
-Two deliberate extensions of the 33 B.2 schema: `kind` (fact | preference) so the INDEX can group by type,
-and `status` no longer filters any query.
-"""
+"""FACTS: bitemporal rows, changed only by insert or close; status 'disputed' never hides or blocks a row."""
 from __future__ import annotations
 
 import json
@@ -21,8 +9,7 @@ from datetime import date, timedelta
 
 FOREVER = "9999-12-31"
 SUBJECT = "user"  # ponytail: one subject; 'user.partner', 'repo:x' when other subjects are triaged
-# Attributes that can hold several values at once, keyed by (attribute, item). A fixed list in v1; research/33 D.3
-# sends this judgement to the big model per new key, not done yet.
+# several values at once, keyed by (attribute, item); a fixed list, not yet judged per new key
 MULTI_VALUED = frozenset({"allergy", "language", "child", "sibling"})
 
 SCHEMA = f"""
@@ -46,7 +33,7 @@ CREATE TRIGGER facts_close_once BEFORE UPDATE OF superseded_at ON facts WHEN OLD
 CREATE TABLE fact_stats (subject TEXT, attribute TEXT, item TEXT, value TEXT, n_confirmed INTEGER NOT NULL,
   last_confirmed_at TEXT NOT NULL, last_decision TEXT, PRIMARY KEY (subject, attribute, item, value));
 """
-# research/33 B.6.2: sequenced in valid time, current in transaction time. Must return nothing.
+# sequenced in valid time, current in transaction time: must return nothing
 OVERLAPS = f"""SELECT a.attribute, a.item, a.row_id, b.row_id FROM facts a JOIN facts b
   ON a.subject = b.subject AND a.attribute = b.attribute AND a.item = b.item AND a.row_id < b.row_id
   WHERE a.superseded_at = '{FOREVER}' AND b.superseded_at = '{FOREVER}'
@@ -88,8 +75,7 @@ def norm(s: str) -> str:
 
 
 def same(mention: str, stored: str) -> bool:
-    """A mention names a stored value when its words are a subset of the value's ("Tidewell" in "Tidewell
-    Analytics", "the Pixel" in "Pixel 8"). A longer mention is a different value ("senior data analyst")."""
+    """A mention names a stored value when its words are a subset of the value's; a longer mention is another value."""
     m = set(toks(mention))
     return bool(m) and m <= set(toks(stored))
 
@@ -116,7 +102,6 @@ class Facts:
             self.db.close()
             self.db = None
 
-    # ---- reads
     def _rows(self, sql: str, args=()) -> list[Row]:
         return [Row(**dict(r)) for r in self.db.execute(sql, args)]
 
@@ -129,7 +114,7 @@ class Facts:
                           (SUBJECT, attr, item, FOREVER))
 
     def at(self, attr: str, start: str, end: str | None = None) -> list[Row]:
-        """The time slice (research/33 B.4): rows in force on `start`, or overlapping [start, end)."""
+        """Rows in force on `start`, or overlapping [start, end)."""
         end = end or next_day(start)
         return self._rows("SELECT * FROM facts WHERE subject=? AND attribute=? AND superseded_at=? AND valid_from < ?"
                           " AND ? < valid_to ORDER BY item, valid_from", (SUBJECT, attr, FOREVER, end, start))
@@ -142,8 +127,7 @@ class Facts:
         return [r[0] for r in self.db.execute("SELECT DISTINCT attribute FROM facts WHERE superseded_at=? ORDER BY 1", (FOREVER,))]
 
     def stats_for(self, attr: str, item: str, value: str | None) -> tuple[int, str | None, str | None]:
-        """Confirmations of this value (a new value starts at zero), the day of the last, and its decision (v3.2: the
-        newest turn that states the value). Keyed by value too: an extension of 33 B.2."""
+        """(confirmations of this value, the day of the last, its decision); a new value starts at zero."""
         r = self.db.execute("SELECT n_confirmed, last_confirmed_at, last_decision FROM fact_stats WHERE subject=? AND attribute=?"
                             " AND item=? AND value=?", (SUBJECT, attr, item, norm(value or ""))).fetchone()
         return (r[0], r[1], r[2]) if r else (0, None, None)
@@ -151,7 +135,6 @@ class Facts:
     def all_rows(self) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM facts ORDER BY row_id")]
 
-    # ---- the two physical changes
     def _insert(self, attr, item, value, a, b, tx, src: dict) -> None:
         self.db.execute(
             "INSERT INTO facts (subject, attribute, item, value, value_kind, valid_from, valid_to, from_precision,"
@@ -176,7 +159,7 @@ class Facts:
             self._insert(attr, item, value, a, b, tx, meta)
 
     def touch(self, attr: str, item: str, value: str | None, tx: str, decision: str | None = None) -> None:
-        """Seen again: counters only, never a new row (research/33 B.3.4)."""
+        """Seen again: counters only, never a new row."""
         self.db.execute("INSERT INTO fact_stats VALUES (?,?,?,?,1,?,?) ON CONFLICT DO UPDATE SET n_confirmed = n_confirmed + 1,"
                         " last_confirmed_at = excluded.last_confirmed_at, last_decision = excluded.last_decision",
                         (SUBJECT, attr, item, norm(value or ""), tx[:10], decision))
@@ -189,9 +172,8 @@ class Facts:
         if bad:
             raise IntegrityError(f"overlapping believed rows (attribute, item, row, row): {[tuple(x) for x in bad][:5]}")
 
-    # ---- decisions -> rows
     def apply(self, d: dict) -> str:
-        """One decision (research/34 sleep): what it did, for the log. Pure function of (store, decision)."""
+        """One decision applied: what it did, for the log. Pure function of (store, decision)."""
         op, attr = d["op"], d["key"]
         if op == "none":
             return "none"
@@ -220,7 +202,7 @@ class Facts:
             if value:
                 self.add_surface(attr, "", cur.value, value)
             if value is not None and set(toks(value)) != set(toks(cur.value)):
-                return "mention"  # v3.2: only some of its words ("in Harajuku"): no new row, and no confirmation either
+                return "mention"  # only some of its words: no new row, no confirmation either
             self.touch(attr, "", cur.value, d["tx"], d.get("id"))
             return "confirm"
         b = min((r.valid_from for r in rows if r.valid_from > vf), default=FOREVER)
@@ -232,7 +214,7 @@ class Facts:
         return ("retract" if value is None else "update") if cur else ("none-row" if value is None else "insert")
 
     def _correct(self, attr, rows, value, d, meta, said) -> str | None:
-        """A correction of the past (research/33 B.3.3): a retroactive sequenced update."""
+        """A correction of the past: a retroactive sequenced update."""
         tx, vf = d["tx"], d["vf"]
         if d.get("old"):  # "it's X, not Y": Y's whole period becomes X
             o = next((r for r in reversed(rows) if r.value and same(d["old"], r.value)), None)

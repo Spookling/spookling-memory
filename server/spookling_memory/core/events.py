@@ -1,15 +1,4 @@
-"""EVENTS, ENTITIES, ALIASES, CLASSES and their links (research/37 E1; research/39 stores).
-
-Events happened once; facts stay true for a while (Tulving: episodic beside semantic). One row per mention:
-verbatim spans of the turn, a class from a CLOSED vocabulary stored beside the user's own word ("gig" ->
-concert, so the question's word meets a literal match), polarity by rule, when it HAPPENED (occurred_*, from
-the date grammar) kept apart from when it was SAID (said_at), and a pointer to the LOG turn. A second mention of
-the same event is a new row with `same_as`; counts run over same_as clusters. Every table here is derived:
-the full sleep rebuilds it from LOG + DECISIONS, so it never needs an update or a delete.
-
-Class rules (research/39 choice 1): the seed list in classes.json is closed. A class not on it enters only
-through the slow path (the big model may add it); a new word for a listed class is applied once seen twice.
-"""
+"""EVENTS, ENTITIES, ALIASES, CLASSES and their links: derived tables, rebuilt from LOG and DECISIONS, never updated."""
 from __future__ import annotations
 
 import hashlib
@@ -21,8 +10,7 @@ from pathlib import Path
 
 import snowballstemmer
 
-# research/37 E1, verbatim (REFERENCES are documentation here: log lives in its own database, and code checks
-# that every source_event is in the LOG before a row is written).
+# REFERENCES are documentation: the log lives in its own database, and code checks every source_event first
 SCHEMA = """
 CREATE TABLE events (
   event_id       TEXT PRIMARY KEY,
@@ -55,7 +43,7 @@ CREATE TRIGGER events_no_delete BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT
 POLARITY = ("did", "plan", "hypothetical", "negated")
 CLASSES_FILE = Path(__file__).with_name("classes.json")
 DETERMINERS = {"a", "an", "the", "my", "our", "your", "his", "her", "their", "some", "this", "that", "these", "those", "any", "no"}
-TRUST = 2  # a new word for a listed class is applied once seen this many times (the 2:1 line of entities.py)
+TRUST = 2  # a new word for a listed class is applied once seen this many times
 
 _stemmer = snowballstemmer.stemmer("english")
 _TOKEN = re.compile(r"[\w+'-]+")
@@ -103,8 +91,7 @@ class ClassVocab:
         self._rx = None
 
     def propose_word(self, word: str, cls: str) -> bool:
-        """A tagger's new word for a LISTED class: applied once seen TRUST times. False for an unlisted class
-        (that is the slow path's business) or a word still below the line."""
+        """Applied once seen TRUST times; False for an unlisted class (the slow path's) or a word below the line."""
         if not self.closed(cls) or not word.strip():
             return False
         w = word.strip().lower()
@@ -149,8 +136,7 @@ class ClassVocab:
         return {c for _, _, c in self.match(text, kind)}
 
     def spans(self, text: str, kind: str | None = None) -> list[tuple[int, int, str]]:
-        """Like match(), in character offsets of text: (start, end, class), so a span is text[start:end] verbatim.
-        An action word right after a determiner is a noun ("some book", "a play", "the show"), not an action."""
+        """match() in character offsets; an action word after a determiner ("a play") is a noun, not an action."""
         toks = list(_TOKEN.finditer(text))
         out = []
         for i, j, c in self.match(text, kind):
@@ -163,7 +149,7 @@ class ClassVocab:
 
 
 class Events:
-    """The store: one in-memory SQLite database with the six tables of research/37 E1."""
+    """The store: one in-memory SQLite database of six tables."""
 
     def __init__(self):
         self.db = sqlite3.connect(":memory:", check_same_thread=False, isolation_level=None)
@@ -175,7 +161,6 @@ class Events:
             self.db.close()
             self.db = None
 
-    # ---- writes (insert only; the full sleep rebuilds from LOG + DECISIONS)
     def add_event(self, row: dict) -> None:
         cols = ("event_id", "source_event", "span_start", "span_end", "action", "action_class", "object", "object_class",
                 "place", "amount", "unit", "polarity", "occurred_from", "occurred_to", "occ_precision", "occ_basis",
@@ -198,7 +183,6 @@ class Events:
     def link(self, a: str, b: str, kind: str, weight: float = 1.0) -> None:
         self.db.execute("INSERT INTO event_links VALUES (?,?,?,?)", (a, b, kind, weight))
 
-    # ---- reads
     def rows(self, sql: str = "SELECT * FROM events ORDER BY said_at, span_start", args=()) -> list[dict]:
         return [dict(r) for r in self.db.execute(sql, args)]
 

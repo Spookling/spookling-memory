@@ -1,13 +1,4 @@
-"""Entity table (v2): people, places and things with their aliases, built by rules from the user's turns.
-
-Rules, no model: "my sister Rachel" / "Rachel, my sister" link a relation ("my sister") to a name; a short form
-that begins exactly one known name ("Mel" -> "Melanie", "Rachel" -> "Rachel Green") links to it; LoCoMo-style
-"Speaker: text" prefixes make the speakers known names. A link seen in two or more turns is trusted, in one is
-provisional, and one whose alias points to several names more evenly than 2:1 is no link (the confidence line).
-Links only change ranking: a question naming one alias also searches for its linked aliases, fused by RRF with
-trusted links at full weight and provisional ones at half. Stored text is never rewritten. The tagger is not used
-for leftovers (it would need a paid re-tag).
-"""
+"""Entity table: aliases linked by rules, no model; links only change ranking, stored text is never rewritten."""
 from __future__ import annotations
 
 import re
@@ -77,7 +68,7 @@ class Entities:
             if self.links else None
 
     def expand(self, question: str) -> list[tuple[str, float]]:
-        """Extra search queries for the aliases a question names: (linked alias, weight 1.0 trusted / 0.5 provisional)."""
+        """Extra queries for the aliases a question names: (linked alias, weight 1.0 trusted, 0.5 provisional)."""
         if self._rx is None:
             return []
         out = {}

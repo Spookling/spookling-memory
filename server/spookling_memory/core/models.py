@@ -1,25 +1,4 @@
-"""Model client: OpenRouter, or the Anthropic API for anthropic/ models, behind one sqlite cache.
-
-Every model call in the harness (reader, judges, compaction, adapters) goes through call().
-complete() is the plain-text wrapper the files adapter uses.
-
-Routing: with BACKEND = "anthropic", ids starting with anthropic/ go to the Anthropic API
-(official SDK, key from ANTHROPIC_API_KEY or ~/spookling-rig/anthropic.env); everything else
-(openai/, qwen/, ...) still goes to OpenRouter. The default BACKEND is "openrouter".
-
-Determinism (SPEC Rigor 7): temperature 0 where the model takes it, pinned model ids, on
-OpenRouter provider.order pinned to the first listed provider with allow_fallbacks false, and
-every reply cached in CACHE_PATH (sqlite) keyed by sha256(model, messages, params), plus the
-backend for Anthropic-API calls (OpenRouter keys are unchanged, so no paid reply is lost).
-Models that reason by default and take no temperature get a pinned effort instead; for them
-the cache is the determinism.
-
-Batch mode (Anthropic only): with DEFER on, a cache miss in the reader or judge phase is not
-sent; it is parked in PENDING and raises Deferred. run_batches() sends PENDING as Message
-Batches jobs (50% off), polls with exponential backoff and jitter capped at 60 s, and writes
-every result into the same cache. Batch ids are kept under results/batches/, so a crashed
-run collects them on the next start instead of paying twice.
-"""
+"""Model client: OpenRouter, or the Anthropic API for anthropic/ ids when BACKEND is "anthropic", behind one cache."""
 from __future__ import annotations
 
 import difflib
@@ -52,12 +31,10 @@ MODEL_PARAMS: dict[str, dict] = {
     "anthropic/claude-sonnet-5": {"reasoning": {"effort": "low"}},
     "openai/gpt-6-sol": {"reasoning": {"effort": "low"}},
 }
-# Our ids -> Anthropic API ids (anything else: drop "anthropic/", dots become dashes). Verified
-# against client.models.list() at startup.
+# our ids -> Anthropic API ids; anything else drops "anthropic/" and turns dots into dashes
 ANTHROPIC_IDS = {"anthropic/claude-haiku-4.5": "claude-haiku-4-5", "anthropic/claude-sonnet-5": "claude-sonnet-5",
                  "anthropic/claude-opus-5.5": "claude-opus-5-5"}
-# USD per million tokens: input, output, cache-read multiplier (Anthropic pricing, cached 2026-06-24).
-# A 5-minute cache write is 1.25x input; the Batches API halves everything.
+# USD per million tokens: input, output, cache-read multiplier; a cache write is 1.25x input, a batch halves it all
 ANTHROPIC_PRICES = {"claude-haiku-4-5": (1.0, 5.0, 0.1), "claude-sonnet-5": (2.0, 10.0, 0.1),
                     "claude-opus-5-5": (4.0, 20.0, 0.05)}
 CACHE_WRITE = 1.25
@@ -90,8 +67,7 @@ class CacheMiss(RuntimeError):
 
 
 class CreditExhausted(RuntimeError):
-    """The account is out of credit (a 402, or a 400 "credit balance is too low"). Never retried; the
-    first one stops every new call in this process, finished calls stay cached."""
+    """Out of credit: never retried; the first one stops every new call in this process."""
 
 
 def is_credit_error(e: Exception) -> bool:
@@ -138,8 +114,7 @@ def anthropic_id(model: str) -> str:
 
 
 def _key(var: str, path: Path, file_first: bool = False) -> str:
-    """The key from the env, else from a `[export ]VAR=...` line in path (file_first: the file wins).
-    Never printed."""
+    """The key from the env, else from a `[export ]VAR=...` line in path (file_first: the file wins)."""
     key = None if file_first else os.environ.get(var)
     if not key and path.exists():
         m = re.search(rf"^\s*(?:export\s+)?{var}\s*=\s*['\"]?([^'\"\s]+)", path.read_text(), re.M)
@@ -168,8 +143,7 @@ def _closest_or_exit(missing: list[str], have: list[str], where: str) -> None:
 
 
 def check_models(ids) -> None:
-    """SPEC startup check: every id must exist where it is routed, else print the closest and exit 1.
-    Also loads list prices, context windows, and pins the first listed OpenRouter provider."""
+    """Every id must exist where it is routed (else exit 1); loads prices and context windows, pins providers."""
     ids = list(dict.fromkeys(ids))
     anth = [i for i in ids if route(i) == "anthropic"]
     if anth:
@@ -229,8 +203,7 @@ def _client() -> openai.OpenAI:
 
 
 def _anthropic():
-    """The official SDK client. Its own retries: exponential backoff with jitter on 408/409/429/5xx,
-    4 retries (5 attempts)."""
+    """The official SDK client; it retries 408, 409, 429 and 5xx itself, with backoff and jitter."""
     global _anthropic_client
     if _anthropic_client is None:
         import anthropic
@@ -355,8 +328,7 @@ def cache_key(model: str, messages: list[dict], params: dict) -> str:
 
 
 def call(model: str, messages: list[dict], **params) -> Reply:
-    """One chat completion, cached. Hits return instantly with cache_hit=True.
-    Single flight: concurrent identical calls make one API call and all get the stored reply."""
+    """One chat completion, cached; single flight: concurrent identical calls make one API call."""
     params = {**MODEL_PARAMS.get(model, {}), **params, "temperature": 0}
     key = cache_key(model, messages, params)
     reply = _cached(key)
@@ -443,20 +415,14 @@ def _send(model: str, messages: list[dict], params: dict) -> tuple[str, int, int
 
 
 def _retryable(e: Exception) -> bool:
-    """429, 5xx, network errors, empty replies, and OpenRouter's 402 "in-flight budget" (the
-    balance must cover every request in flight on the account; it clears when they finish).
-    A plain 402 (out of credit) and other 4xx are not retried."""
+    """429, 5xx, network errors, empty replies and the 402 "in-flight budget"; never a plain 402 or other 4xx."""
     if isinstance(e, openai.APIStatusError):
         return e.status_code == 429 or e.status_code >= 500 or (e.status_code == 402 and "in_flight" in str(e))
     return True
 
 
-# ---------------------------------------------------------------- Anthropic API
-
 def anthropic_request(model: str, messages: list[dict], params: dict) -> dict:
-    """Our chat messages and params as Messages API parameters. System messages become `system`
-    blocks; content blocks (with any cache_control) pass through; temperature only for Haiku
-    (Sonnet 5 and Opus 5.5 reject it); a pinned reasoning effort becomes output_config.effort."""
+    """Our messages and params as Messages API parameters; temperature only for Haiku (the others reject it)."""
     mid = anthropic_id(model)
     system, msgs = [], []
     for m in messages:
@@ -486,8 +452,7 @@ def _parse_message(msg) -> tuple[str, int, int, str | None, int, int]:
 
 def _send_anthropic(model: str, messages: list[dict], params: dict) -> tuple[str, int, int, str | None, int, int]:
     req = anthropic_request(model, messages, params)
-    # SDK 1.x dropped temperature from create()'s signature; the API still honours it on Haiku 4.5,
-    # so it rides in extra_body (batch params forward it as is).
+    # SDK 1.x dropped temperature from create(); the API still honours it on Haiku 4.5, so it rides in extra_body
     extra = {"extra_body": {"temperature": req.pop("temperature")}} if "temperature" in req else {}
     msg = _anthropic().messages.create(**req, **extra)
     text, pt, ct, finish, cw, cr = _parse_message(msg)
@@ -552,9 +517,7 @@ def _collect(state_file: Path) -> dict:
 
 
 def run_batches(pending: dict[str, dict], state_dir: Path) -> int:
-    """Send pending requests as Message Batches jobs and cache every result. First collects any
-    batch a crashed run left uncollected; never resubmits a request whose batch is still open.
-    Returns the number of requests submitted now."""
+    """Send pending requests as batches and cache every result; a crashed run's open batches are collected first."""
     state_dir.mkdir(parents=True, exist_ok=True)
     for f in sorted(state_dir.glob("*.json")):  # resume
         if not json.loads(f.read_text()).get("collected"):

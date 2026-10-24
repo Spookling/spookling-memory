@@ -1,16 +1,4 @@
-"""The Memory contract (memory-bench SPEC.md), and the Session and Turn it is fed.
-
-The interface under test. The runner makes one instance per history and calls
-reset() first, then ingest() once per session in order, compact() when the harness
-compacts, and retrieve() once per question. An adapter never sees the gold answer.
-
-Questions that share one history (LoCoMo, MemoryAgentBench, updates) are answered on
-fork()s of the ingested adapter, one fork per question, so one question's retrieve() can
-never change what another sees. The default fork is a deep copy, which is right for
-adapters that keep all state in memory. A disk-backed adapter (files on disk, SQLite)
-MUST override fork() to snapshot its directory or database into a fresh copy, and close() to release
-it: the runner closes every fork after its question and every adapter after its history's questions,
-and keeps at most max_concurrency of them alive."""
+"""The Memory contract. The runner forks per question: a disk-backed adapter must override fork() and close()."""
 from __future__ import annotations
 
 import copy
@@ -49,15 +37,14 @@ class Memory:
         raise NotImplementedError
 
     def stats(self) -> dict:  # at least {"store_bytes": int}
-        # Optional: "view_bytes" (the prompt-facing store: facts, rules, index page) and "log_bytes"
-        # (a verbatim log, never loaded whole). The runner defaults view to store and log to 0.
+        # optional: "view_bytes" and "log_bytes"; the runner defaults view to store and log to 0
         raise NotImplementedError
 
     def fork(self) -> "Memory":  # an independent copy of the ingested state, one per question
         return copy.deepcopy(self)
 
-    def close(self) -> None:  # release files, connections and temp dirs; the runner calls it on every
-        pass  # adapter and fork as soon as its questions are answered (at most max_concurrency live)
+    def close(self) -> None:  # release files, connections and temp dirs
+        pass
 
 
 def format_session(s: Session) -> str:

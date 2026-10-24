@@ -1,22 +1,4 @@
-"""The DECIDER: Jev (typesafe/jev-1.14) makes every judgement on what the extractor proposed, as a typed question
-whose probability code gates on (docs/jev.md; Mohammed, 23 Oct 2026: "make sure when we're using jev we're using the
-choice mode and gating on that probability").
-
-Two layers. The extractor (Haiku through ModelTriage, or the rule event tagger) only proposes spans and labels; Jev
-cannot extract spans. Jev then answers, per user message in ONE Decisions request:
-  - each proposed fact tag: three Nouls (a durable fact true now; a value that replaces an earlier one; a standing
-    instruction to the assistant);
-  - each event clause: a Choice for the action class, one for the object class (both over the closed list plus
-    "none of these") and one for the polarity.
-The full sleep asks one request per message for its slow fact items (a Choice: same, new value, gone, unclear), one
-per class off the list (the existing classes plus "new class"), and one per event mention whose same-event rule found
-candidates (a Noul per candidate). Every answer is recorded on its decision with its probabilities.
-
-Gates: a Noul is yes at p >= threshold (decide_threshold, 0.8). A Choice is accepted when its top probability is at
-least class_threshold (0.6) and its confidence at least class_confidence (0.5, TypeSafe's "genuinely unsure" floor);
-confidence is (p_top - 1/n) / (1 - 1/n), so a confidence gate at 0.8 would also force p_top >= 0.8 and make the
-0.6 gate dead.
-"""
+"""The decider: Jev judges the extractor's proposals as typed questions, gated on their probability."""
 from __future__ import annotations
 
 import hashlib
@@ -74,8 +56,7 @@ def choice(question: str, criteria: dict, **refs) -> dict:
 
 
 def class_criteria(classes, kind: str, extra: str, extra_text: str) -> dict:
-    """The closed list of one kind, each class with a few of its words (sorted: the cache key must not depend on set
-    order), plus one way out. ponytail: a Choice takes up to 255 options; the seed list has 37 + 59, so no cap yet."""
+    """Sorted: the cache key must not depend on set order. ponytail: a Choice takes 255 options, the seeds are 96."""
     return {c: ", ".join(sorted(classes.words[c])[:4]) for c in sorted(classes.kind) if classes.kind[c] == kind} \
         | {extra: extra_text}
 
@@ -111,7 +92,7 @@ class Decider:
         return float((a.get("probabilities") or {}).get(a.get("choice"), 0.0)) if a else 0.0
 
     def sure(self, a: dict | None, gate: str) -> bool:
-        """A Choice gate: top probability >= class_threshold and confidence >= class_confidence."""
+        """On p_top and confidence = (p_top - 1/n) / (1 - 1/n): a high confidence floor makes class_threshold dead."""
         if not a:
             return decisions.tally(gate, False)
         p, n = self.top(a), max(len(a.get("probabilities") or {}), 2)
@@ -119,10 +100,8 @@ class Decider:
         conf = (p - 1 / n) / (1 - 1 / n) if conf is None else conf  # TypeSafe's formula, if the field is missing
         return decisions.tally(gate, p >= self.class_threshold and conf >= self.class_confidence)
 
-    # ---- light sleep: one request per user message
     def message(self, turn: str, date: str, items: list, events: list, classes) -> dict:
-        """{("f", i): {"durable": p, "replaces": p, "rule": p}} per fact tag i (labels none and hypothetical are
-        skipped anyway) and {("e", j): {"action": answer, "object": answer, "polarity": answer}} per event clause j."""
+        """{("f", i): durable, replaces, rule Nouls} per fact tag; {("e", j): action, object, polarity} per clause."""
         facts = [(i, it) for i, it in enumerate(items) if it.label not in ("none", "hypothetical")]
         if not facts and not events:
             return {}
@@ -151,9 +130,7 @@ class Decider:
         return out
 
     def events(self, its: list, answers: dict) -> tuple[list, dict]:
-        """Jev's Choices replace the extractor's class guesses and the rule polarity where they pass the gate.
-        A class below the gate, or "none of these", keeps the extractor's guess and sends the clause slow; a
-        polarity below the gate falls back to polarity_of(). Returns the items and {j: what to record}."""
+        """Jev's Choices replace class guesses and rule polarity above the gate; below it the clause goes slow."""
         out, notes = [], {}
         for j, it in enumerate(its):
             a = answers.get(("e", j))
@@ -173,10 +150,8 @@ class Decider:
             notes[j] = {"jev": a, "jev_slow": slow}
         return out, notes
 
-    # ---- full sleep
     def resolve(self, turn: str, date: str, slow: list[dict], history: dict[str, list[str]]) -> dict[str, dict]:
-        """One request for the slow fact items of one message: {decision id: Choice answer}. Rule items get no
-        question: their recorded rule Noul settles them (ruling())."""
+        """{decision id: Choice} for one message's slow fact items; rule items are settled by their recorded Noul."""
         asked = [d for d in slow if d["op"] != "rule"]
         if not asked:
             return {}
@@ -206,8 +181,7 @@ class Decider:
         return Ruling(d["op"], d["value"], d["old"], d["when"], True, p, why)
 
     def resolve_class(self, clause: str, word: str, proposed: str, kind: str, classes) -> tuple[str | None, dict]:
-        """(an existing class, NEW, or None below the gate; the answer). A new class still needs a name: the caller
-        asks the generative model for it."""
+        """(an existing class, NEW or None below the gate; the answer); a NEW class is named by the generative model."""
         a = self.ask({"clause": clause, "word": word, "proposed": proposed},
                      {"class": choice(CLASS_Q, class_criteria(classes, kind, NEW, NEW_TEXT), clause="`clause`", word="`word`",
                                       tagger_proposed="`proposed`")})["class"]

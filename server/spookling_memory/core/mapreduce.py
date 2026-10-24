@@ -1,14 +1,4 @@
-"""Map-reduce for questions that count, sum, compare or list across chats (v2, Mohammed 13 Oct).
-
-MAP: one cached writer-model call per matched chat lists the items in it that bear on the question, as
-(unit id, verbatim quote, short label, amount as written). Code keeps an item only when its quote is verbatim in
-that unit and its amount appears in the quote; its date is the chat's date, or the event date the date grammar
-reads in the quote. COMBINE is code: count, sum, max, min and date differences are computed from the kept items.
-The reader is handed the computed result and the item list and asked only to phrase the answer, citing unit ids.
-Nothing parseable: the caller falls back to the raw-units context. SELF-CHECK: one cached call shows the item
-list and the reader's answer; it may add items it finds missing (with quotes) or drop ones it calls wrong; code
-recomputes.
-"""
+"""Map-reduce for count, sum, compare and list questions: a model lists verbatim items; code computes the answer."""
 from __future__ import annotations
 
 import json

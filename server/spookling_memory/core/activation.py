@@ -1,14 +1,4 @@
-"""Spreading activation (research/37 B, E3): Personalized PageRank over turns, events, entities and classes.
-
-Haveliwala Eq. 5: r = (1 - a) M r + a p, M column-stochastic over the weighted, undirected edges; solved by
-iteration (the error falls by (1 - a) per step). a = 0.5 as HippoRAG 2 (the walk restarts every other step, so it
-mostly smooths over one or two hops). Seeds are the entities and classes the question names, each weighted by an
-idf over events (the fan effect: a node linked to everything spreads little), plus the best dense event units at
-0.05 (HippoRAG 2's passage seeds). Collins & Loftus p415: an intersection must be checked, so a unit reached by
-association alone is returned only if it shares an entity or class with a seed or with an event that holds one.
-
-The graph is built once per full sleep and is immutable, so forks share it.
-"""
+"""Spreading activation: Personalized PageRank over turns, events, entities and classes; forks share the graph."""
 from __future__ import annotations
 
 import math
@@ -26,7 +16,7 @@ DENSE_SEED = 0.05
 
 
 def ppr(M: sparse.csc_matrix, p: np.ndarray, restart: float = RESTART, iters: int = ITERS, tol: float = TOL) -> np.ndarray:
-    """Personalized PageRank by power iteration (Haveliwala Eq. 5). p is normalised to sum 1."""
+    """Personalized PageRank by power iteration; p is normalised to sum 1."""
     p = p / p.sum()
     r = p.copy()
     for _ in range(iters):
@@ -54,8 +44,7 @@ def column_stochastic(n: int, edges: list[tuple[int, int, float]]) -> sparse.csc
 
 
 class Graph:
-    """Nodes: turn units, event units, entities, classes. Edges: event-turn, event-entity (by role), event-class,
-    event-event (same_as, same_day, adjacent)."""
+    """Turn, event, entity and class nodes; edges join events to their turns, entities, classes and related events."""
 
     def __init__(self, search, store):
         self.n_turn = len(search.units)
@@ -98,8 +87,7 @@ class Graph:
         return max(math.log((1 + self.n_event) / (1 + self.deg[node])), 0.05)
 
     def query(self, ents: set[str], classes: set[str], dense_events: list[int], cap: int) -> list[tuple[str, int]]:
-        """Units ranked by activation from the question's entities and classes (plus the dense event seeds), at most
-        `cap`, each kept only if it shares an entity or class with a seed or with an event holding a seed."""
+        """At most `cap` units by activation, each sharing an entity or class with a seed or an event holding one."""
         seeds = {self.ent[e]: self.idf(self.ent[e]) for e in ents if e in self.ent}
         seeds |= {self.cls[c]: self.idf(self.cls[c]) for c in classes if c in self.cls}
         if not seeds or self.M is None:
@@ -110,7 +98,7 @@ class Graph:
         for j in dense_events[:20]:
             p[self.n_turn + j] += DENSE_SEED * max(seeds.values())
         r = ppr(self.M, p)
-        # the typed path (C&L p415): seed entities and classes, and the entities of events that hold a seed entity
+        # the typed path: seeds, and the entities of events that hold a seed entity
         reach_e, reach_c = set(ents), set(classes)
         for info in self.einfo:
             if info["ents"] & set(ents):

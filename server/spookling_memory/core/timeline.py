@@ -1,15 +1,4 @@
-"""Time in code: research/36 B.2 to B.6 and C (memory algorithm v2, research/39). The model never dates, subtracts or
-orders anything here. The input is the extractor's checked items (verbatim spans and closed labels, 36 B.2), the
-output is the <time-computed> block the reader phrases, or "cannot be determined" with the missing piece named.
-
-    anchor(x, chat_day, done)      one item -> an Anchor: closed-open day bounds, nominal day, granule, basis
-    merge(mentions)                one event said several times: bounds intersected, a conflict flagged
-    allen(p, q), relation(p, q)    Allen's relations where the bounds decide them, else "undetermined"
-    elapsed(p, q, unit)            q minus p in the unit asked; a range when an input is coarser than the unit
-    true_at(rows, t)               FACTS rows in force during t (kind 5)
-    needs_time(question)           point | duration | order | since | true_at | None, by rules
-    timeline_for(question, as_of, anchors, rows=None) -> TimelineResult;  render(result) -> str
-"""
+"""Time in code: the model never dates, subtracts or orders; the reader phrases the <time-computed> block."""
 from __future__ import annotations
 
 import calendar
@@ -26,7 +15,7 @@ DAY = timedelta(days=1)
 STATUSES = ("happened", "ongoing", "planned", "hypothetical", "habitual", "negated")
 TENSES = ("past", "present", "future")
 RELS = ("on", "before", "after", "since", "until", "for", "in_advance")
-RANK = {"explicit": 0, "relative": 1, "for_now": 2, "mentioned": 3}  # which mention wins a conflict (36 B.2)
+RANK = {"explicit": 0, "relative": 1, "for_now": 2, "mentioned": 3}  # which mention wins a conflict
 UNIT_GRAN = {"day": "day", "week": "week", "month": "month", "year": "year", "age": "year"}
 INSTRUCTION = "Computed by code from the dated lines below. Phrase this result in your answer; do not compute it again."
 VETO = "If an event listed here is not the one the question means, say so and give no number."
@@ -36,7 +25,7 @@ KIND_LABEL = {"point": "what happened at a time", "duration": "time between two 
 
 @dataclass(frozen=True)
 class Item:
-    """One checked extractor item (36 B.2): verbatim spans and closed labels only, never a date or a number."""
+    """One checked extractor item: verbatim spans and closed labels only, never a date or a number."""
     id: str
     event: str  # the shortest verbatim span naming the event
     src: str  # where it was said, shown as is: 'u201, chat of 5 Jan 2023: "..."'
@@ -47,7 +36,7 @@ class Item:
     rel: str | None = None  # on | before | after | since | until | for | in_advance
     magnitude: str | None = None  # verbatim amount for "N before / after / in advance"
     just: bool = False  # "just", "today", "now" put it on the chat's day
-    speaker: str = "user"  # only the user's own turns date the user's events (36 F, rule 9)
+    speaker: str = "user"  # only the user's own turns date the user's events
     day: date | None = None  # the chat's date (anchor_all reads it)
 
 
@@ -97,10 +86,8 @@ class TimelineResult:
     missing: list[str] = field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------------------------------- anchoring (B.2)
-
 def check(x: Item, turn: str) -> str | None:
-    """Why code drops an item before use (36 B.2), or None: a span not verbatim in its turn, a label off its list."""
+    """Why code drops an item (a span not verbatim, a label off its list), or None."""
     for name in ("event", "time", "magnitude"):
         v = getattr(x, name)
         if v and v.lower() not in turn.lower():
@@ -130,7 +117,7 @@ def _clamp(a: Anchor, chat_day: date) -> Anchor | None:
 
 
 def anchor(x: Item, chat_day: date, done: dict[str, Anchor]) -> Anchor:
-    """research/36 C.1: one checked item, dated. Only occurrences get dates; only the user's own turns date them."""
+    """One checked item, dated: only occurrences get dates, and only the user's own turns date them."""
     a = partial(Anchor, x.id, x.event, x.src)
     said = f"said {fmt(chat_day)}"
 
@@ -226,8 +213,7 @@ def anchor_all(items) -> dict[str, Anchor]:
 
 
 def merge(mentions) -> Anchor:
-    """One event said several times: intersect the bounds. Empty: the strongest basis wins (explicit, relative,
-    for-now, mentioned) and the conflict is flagged (36 B.2)."""
+    """One event said several times: bounds intersected; when empty the strongest basis wins, flagged as a conflict."""
     mentions = list(mentions)
     known = sorted((m for m in mentions if m.how != "unknown"), key=lambda m: RANK[m.how])
     if not known:
@@ -250,10 +236,8 @@ def merge(mentions) -> Anchor:
                    readings=readings, why=f"{best.why}; {len(mentions) - 1} more mention(s) agree")
 
 
-# ------------------------------------------------------------------------------------- relations and arithmetic (B.4)
-
 INF = float("inf")
-# Allen's 13 relations as the signs of (a1-b1, a1-b2, a2-b1, a2-b2), a = [a1, a2), b = [b1, b2) [Allen p834 Fig. 1]
+# Allen's 13 relations as the signs of (a1-b1, a1-b2, a2-b1, a2-b2), a = [a1, a2), b = [b1, b2)
 ALLEN = {"before": "<<<<", "meets": "<<=<", "overlaps": "<<><", "finished_by": "<<>=", "contains": "<<>>", "starts": "=<><",
          "equals": "=<>=", "started_by": "=<>>", "during": "><><", "finishes": "><>=", "overlapped_by": "><>>",
          "met_by": ">=>>", "after": ">>>>"}
@@ -264,8 +248,7 @@ def _day(d: date | None, dflt: float, k: int = 0) -> float:
 
 
 def _ends(x) -> tuple[tuple[float, float], tuple[float, float]]:
-    """Where an event's start day and its (exclusive) end can lie, as day numbers. An Anchor is a one-day event;
-    a (start, end) pair of Anchors is an event with extent."""
+    """Where an event's start and exclusive end can lie, as day numbers; a (start, end) pair of Anchors has extent."""
     s, e = (x, x) if isinstance(x, Anchor) else x
     return (_day(s.lo, -INF), _day(s.hi, INF, -1)), (_day(e.lo, -INF, 1), _day(e.hi, INF))
 
@@ -276,8 +259,7 @@ def _signs(x: tuple, y: tuple) -> set[str]:
 
 
 def possible(p, q) -> set[str]:
-    """Allen's relations p can have to q given the bounds; a set when they allow several [Allen p835 Fig. 3]. Two one-day
-    events go by the difference of their days (exact); events with extent by the endpoint signs the bounds allow."""
+    """Allen's relations p can have to q given the bounds; one-day events go by their day difference."""
     if isinstance(p, Anchor) and isinstance(q, Anchor):
         lo, hi = _day(p.lo, -INF) - _day(q.hi, INF, -1), _day(p.hi, INF, -1) - _day(q.lo, -INF)
         return {r for r, (a, b) in (("before", (-INF, -2)), ("meets", (-1, -1)), ("equals", (0, 0)), ("met_by", (1, 1)),
@@ -288,14 +270,13 @@ def possible(p, q) -> set[str]:
 
 
 def allen(p, q) -> str:
-    """The one Allen relation the bounds decide, or "undetermined". Dates first, no transitivity table [Allen p842]."""
+    """The one Allen relation the bounds decide, or "undetermined"; dates first, no transitivity table."""
     got = possible(p, q)
     return got.pop() if len(got) == 1 else "undetermined"
 
 
 def relation(p, q) -> str:
-    """For ordering: before (incl. meets), after (incl. met-by), same_day, or undetermined. Before is certain only when
-    p.hi <= q.lo (36 B.4)."""
+    """before (incl. meets), after (incl. met-by), same_day or undetermined; before only when p.hi <= q.lo."""
     got = possible(p, q)
     if got <= {"before", "meets"}:
         return "before"
@@ -305,8 +286,7 @@ def relation(p, q) -> str:
 
 
 def count(p: date, q: date, unit: str) -> int:
-    """q minus p. Days and weeks count days; months and years subtract at that field, never through days
-    [Snodgrass p34, p39-40]; an age counts completed years."""
+    """q minus p; months and years subtract at that field, never through days; an age counts completed years."""
     if unit in ("day", "week"):
         return (q - p).days
     if unit == "month":
@@ -317,8 +297,7 @@ def count(p: date, q: date, unit: str) -> int:
 
 
 def elapsed(p: Anchor, q: Anchor, unit: str) -> Elapsed:
-    """q minus p in the unit asked. The extremes come from the bounds; one number only when they collapse or every input
-    is no coarser than the unit (and not a vague count); otherwise a range with the nominal labelled (36 B.4)."""
+    """q minus p in the unit asked: one number only when the bounds collapse or no input is coarser, else a range."""
     least = count(p.hi - DAY, q.lo, unit) if p.hi and q.lo else None
     most = count(p.lo, q.hi - DAY, unit) if p.lo and q.hi else None
     nominal = count(p.nominal, q.nominal, unit) if p.nominal and q.nominal else None
@@ -331,8 +310,7 @@ def _fine(p: Anchor, q: Anchor, unit: str) -> bool:
 
 
 def either_way(p: Anchor, q: Anchor, unit: str) -> Elapsed:
-    """The gap between two events whose order the bounds do not decide: at least zero (they can share a day), at most
-    the larger reach of the two directions."""
+    """A gap of undecided order: at least zero (a shared day), at most the larger reach of the two directions."""
     a, b = elapsed(p, q, unit), elapsed(q, p, unit)
     most = None if a.most is None or b.most is None else max(a.most, b.most)
     nominal = abs(a.nominal) if a.nominal is not None else None
@@ -344,13 +322,11 @@ def _readings(x: Anchor) -> list[Anchor]:
 
 
 def true_at(rows, t) -> list:
-    """FACTS rows in force at any moment of t's bounds (FACTS.at, research/33 B.4): two rows when t holds a change."""
+    """FACTS rows in force at any moment of t's bounds: two rows when t holds a change."""
     get = lambda r, k: r[k] if isinstance(r, dict) else getattr(r, k)
     lo, hi = t.lo.isoformat(), t.hi.isoformat()
     return sorted((r for r in rows if get(r, "valid_from") < hi and lo < get(r, "valid_to")), key=lambda r: get(r, "valid_from"))
 
-
-# -------------------------------------------------------------------------------------------- reading the question
 
 _TIMEWORD = (r"(?:week|month|year|weekend|night|time I|summer|winter|spring|autumn|fall|monday|tuesday|wednesday|thursday|friday"
              r"|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december"
@@ -383,7 +359,7 @@ def window_of(question: str, as_of: date) -> dates.Timex | None:
 
 
 def needs_time(question: str) -> str | None:
-    """Which kind of time question this is (36 A.3), by rules over the complexity triggers; None: not about time."""
+    """Which kind of time question this is, by rules over the complexity triggers; None: not about time."""
     cats = categories(question)
     dated = window_of(question, date(2000, 1, 1)) is not None
     if not (cats & {"timespan", "compare", "conditional"} or dated or POINT_Q.search(question)):
@@ -405,8 +381,6 @@ def unit_of(question: str) -> str | None:
     m = UNIT_Q.search(question)
     return (m[1] or m[2]).lower().rstrip("s") if m else None
 
-
-# ---------------------------------------------------------------------------------------------- the timeline (B.3)
 
 def when_text(a) -> str:
     """An Anchor's or a Timex's bounds in words."""
@@ -522,8 +496,7 @@ def _duration(kind, question, as_of, ev) -> tuple[str, list[str], dict, list[str
         p, q = q, p  # a duration between two events is measured from the earlier
     unit = unit_of(question) or _auto_unit(p, q)
     combos = [(rp, rq) for rp in _readings(p) for rq in _readings(q)]
-    # bounded windows that overlap can fall either way round; an open (mention-dated) one is ordered by its nominal,
-    # the mention convention of 36 B.4, and gives a one-sided bound instead
+    # overlapping bounded windows can fall either way; an open (mention-dated) one is ordered by its nominal
     unsure = len(keys) > 1 and relation(p, q) == "undetermined" and all(x.lo and x.hi for x in (p, q))
     got = [(rp, rq, (either_way if unsure else elapsed)(rp, rq, unit)) for rp, rq in combos]
     texts = [_elapsed_text(e) for _, _, e in got]
@@ -575,7 +548,7 @@ def _order(question, ev) -> tuple[str, list[str], dict, list[str]]:
     val = {"order": [e.eid for e in known], "ties": [[a.eid, b.eid] for a, b in ties], "missing": [e.eid for e in missing]}
     lines = ["Oldest first: " + "; ".join(f'{i}. "{e.words}" ({when_text(e)})' for i, e in enumerate(known, 1)) + "."]
     left = list(ties)
-    while left:  # name only the undetermined pairs (36 B.6), grouped around the event that ties most
+    while left:  # name only the undetermined pairs, grouped around the event that ties most
         hub = max(known, key=lambda e: sum(e in t for t in left))
         rivals = [b if a is hub else a for a, b in left if hub in (a, b)]
         left = [t for t in left if hub not in t]
@@ -605,7 +578,7 @@ def _point(question, as_of, ev) -> tuple[str, list[str], dict, list[str]]:
     ws = list(w.readings) or [w]
 
     def meets(e: Anchor, pad: bool) -> bool:
-        """e (any reading) meets the window, widened by its granule when pad (36 B.3)."""
+        """e (any reading) meets the window, widened by its granule when pad."""
         for r in _readings(e):
             for x in ws:
                 p = timedelta(days=max(1, dates.HALF[x.gran]) if pad else 0)
@@ -657,11 +630,7 @@ def _true_at(question, as_of, rows) -> tuple[str, list[str], dict, list[str]]:
 
 
 def timeline_for(question: str, as_of: date, anchors: dict, rows=None) -> TimelineResult:
-    """The per-question timeline and its computed result. anchors: question phrase -> the events it matched (each an
-    Anchor, or a list of Anchors that are mentions of one event, merged here). The order of the phrases is the frame:
-    for a duration the first is the from-event and the second the to-event (the reference: "when I made the cake");
-    with one phrase it runs to the question's date. For order, a phrase the question puts after "before" or "after"
-    is the reference to count against. rows: FACTS rows for "what was true at T"."""
+    """The timeline and result: anchors maps question phrases, in frame order, to the events they matched."""
     ev = {k: [merge(e) if isinstance(e, (list, tuple)) else e for e in v] for k, v in anchors.items()}
     timeline = sorted({id(e): e for es in ev.values() for e in es}.values(), key=_sortkey)
     kind = needs_time(question)
@@ -680,8 +649,7 @@ def timeline_for(question: str, as_of: date, anchors: dict, rows=None) -> Timeli
 
 
 def render(result: TimelineResult) -> str:
-    """The block the reader receives (36 B.5): the computed answer, the timeline with sources, and the instruction to
-    phrase it, not compute it. "" when the question is not about time."""
+    """The computed answer, the timeline with sources, and the instruction to phrase it; "" when not about time."""
     if result.kind is None:
         return ""
     head = [INSTRUCTION, f"Question: {KIND_LABEL[result.kind]} (asked {fmt(result.as_of)}). Result: {result.answer[0]}",
@@ -691,8 +659,7 @@ def render(result: TimelineResult) -> str:
 
 
 def block(question: str, as_of: date, anchors: dict, rows=None) -> str | None:
-    """The hook for recall(): the rendered block, or None when the question is not about time or nothing was matched
-    to it (a typed fallback: today's path runs unchanged, 36 B.6)."""
+    """The rendered block for recall(), or None (not about time, or nothing matched): today's path runs unchanged."""
     if not rows and not any(e for es in anchors.values() for e in es):
         return None
     r = timeline_for(question, as_of, anchors, rows)
@@ -700,7 +667,7 @@ def block(question: str, as_of: date, anchors: dict, rows=None) -> str | None:
 
 
 def trace(r: TimelineResult) -> dict:
-    """The result as JSON for the result rows (36 C.2: row["time"]), so a miss can be audited without a replay."""
+    """The result as JSON for the result rows, so a miss can be audited without a replay."""
     when = lambda x: x.isoformat() if x else None
     return {"kind": r.kind, "status": r.status, "value": r.value, "answer": r.answer, "missing": r.missing,
             "timeline": [{"eid": a.eid, "words": a.words, "lo": when(a.lo), "hi": when(a.hi), "nominal": when(a.nominal),

@@ -1,19 +1,4 @@
-"""compact(): keep what a summary must not erase (research/34 moment 3), by code, before the harness summarises.
-
-When the runner compacts a session, the user turns of that session are scanned, sentence by sentence, and kept
-verbatim with a pointer (LOG seq) into STAGING:
-- rule: a standing instruction ("Never schedule anything on a Friday", "Address me as Dr. Rao from now on"), found
-  by a lead ("from now on", "standing rule", "for the rest of this session") or by an imperative to the assistant
-  with a word that makes it general ("every", "always", "never", "only", "all"); a lead that ends in ":" takes the
-  sentence after it;
-- decision, value, date, path, name: sentences that decide something, or hold a quantity, a date, a path or URL, or
-  a named thing (a codename, a branch, a version);
-- failed, open (algorithm v2, research/38 C): an attempt that did not work ("tried X, it didn't help"), and an item
-  still open ("we still need to pick the queue").
-Rules, decisions, failed attempts and open items form the INVARIANT block, prepended to every later retrieve()
-under <invariant> (capped at 40 lines); the other kept items are shown when they share a content word with the
-question. No model: a summary can drop a rule, this cannot.
-"""
+"""compact(): keep verbatim, by code, what a summary must not erase; a summary can drop a rule, this cannot."""
 from __future__ import annotations
 
 import re

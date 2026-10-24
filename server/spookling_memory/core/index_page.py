@@ -1,8 +1,4 @@
-"""INDEX: the page the model sees first, rendered by formula from FACTS and RULES, never by a model
-(research/33 E.1). Rules pinned first; then the values in force now, grouped by type, ranked by how often
-they were confirmed and then how recently recall used them; capped. Noise control (v1.1): a preference or hobby
-said only once is never shown, and the page leads a context only when it holds MIN_STRONG facts confirmed twice.
-v4: the page lists only facts confirmed twice or more."""
+"""INDEX: the page the model sees first, rendered by formula from FACTS, never by a model."""
 from __future__ import annotations
 
 from datetime import date
@@ -10,8 +6,8 @@ from datetime import date
 from .dates import fmt
 from .facts import Facts
 
-TASTES = ("hobby",)  # attributes treated like preferences by the noise rule below
-MIN_STRONG = 1  # v5: the page shows whenever a fact is confirmed twice (it lists only those); before v5, 3
+TASTES = ("hobby",)  # treated like preferences by the noise rule
+MIN_STRONG = 1  # the page shows once one fact is confirmed twice
 
 
 def hidden(facts: Facts, r) -> bool:
@@ -25,10 +21,10 @@ def strong(facts: Facts, now: str) -> int:
 
 
 def render(facts: Facts, usage: dict, now: str, cap: int = 200) -> str:
-    """The page without rules: v3 pins rules in their own <rules> block at the top of every context."""
+    """The page without rules: those lead every context in their own <rules> block."""
     lines: list[str] = []
     groups: dict[str, list] = {}
-    for r in facts.in_force(now):  # v4: confirmed twice or more; a once-said hobby misled the reader (LoCoMo conv-50-q046)
+    for r in facts.in_force(now):  # confirmed twice or more: a once-said hobby misled the reader
         if facts.stats_for(r.attribute, r.item, r.value)[0] >= 2:
             groups.setdefault(r.kind, []).append(r)
     for kind, title in (("fact", "Facts in force now:"), ("preference", "Preferences:")):

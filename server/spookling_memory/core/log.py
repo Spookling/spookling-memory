@@ -1,10 +1,4 @@
-"""LOG and DECISIONS: the two stores that are the truth (research/33 A).
-
-LOG: every turn, verbatim, once. The event id is sha256(agent, session, turn index, role, ts, text), so a
-retried append adds nothing (33 A.3). DECISIONS: every model judgement and the route code gave it, written
-before it changes anything (33 A.2); FACTS is rebuilt from them with no model call. Both live in one SQLite
-file in a temp dir, plus in-memory mirrors for speed; triggers refuse UPDATE and DELETE on both (33 B.6.3).
-"""
+"""LOG and DECISIONS: the truth, append-only (triggers refuse UPDATE and DELETE), in a temp SQLite file."""
 from __future__ import annotations
 
 import hashlib
@@ -45,13 +39,11 @@ def event_hash(agent: str, session_id: str, turn_index: int, role: str, ts: str,
 
 class Log:
     def __init__(self, src: "Log | None" = None):
-        # The LOG lives in a file in a temp dir; a fork (one per question) is an in-memory snapshot, so a run with
-        # many forks holds no files. close() releases the handle and removes the dir.
+        # a fork is an in-memory snapshot, so many forks hold no files
         self._tmp = tempfile.TemporaryDirectory(prefix="spookling-log-") if src is None else None
         path = Path(self._tmp.name) / "log.sqlite" if self._tmp else ":memory:"
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
-        # ponytail: no fsync for the bench's temp copy (rebuilt every run; dump() writes it out). A deployed LOG keeps
-        # synchronous=FULL: it is the truth.
+        # ponytail: no fsync for the bench's temp copy; a deployed LOG keeps synchronous=FULL, it is the truth
         self.db.execute("PRAGMA synchronous=OFF")
         self.db.execute("PRAGMA journal_mode=MEMORY")
         if src is None:
@@ -59,12 +51,12 @@ class Log:
             self.events: list[Event] = []
             self.by_hash: dict[str, Event] = {}
             self.decisions: list[dict] = []
-        else:  # fork: a snapshot of the file; events and decision dicts are never mutated, so sharing them is safe
+        else:  # fork: events and decision dicts are never mutated, so sharing them is safe
             src.db.backup(self.db)
             self.events, self.by_hash, self.decisions = list(src.events), dict(src.by_hash), list(src.decisions)
 
     def close(self) -> None:
-        """Release the SQLite handle and remove the temp dir. Idempotent; the LOG is unusable afterwards."""
+        """Idempotent; the LOG is unusable afterwards."""
         if self.db is not None:
             self.db.close()
             self.db = None
@@ -96,11 +88,11 @@ class Log:
         return self.events[-1].seq if self.events else 0
 
     def text_bytes(self) -> int:
-        """The verbatim turn text only: what PASS-MARKS 8 compares the prompt-facing store against."""
+        """The verbatim turn text only, in bytes."""
         return sum(len(e.text.encode()) for e in self.events)
 
     def lines(self) -> tuple[list[str], list[str]]:
-        """LOG and DECISIONS as JSON lines (what dump() writes and store_bytes counts)."""
+        """As JSON lines: what dump() writes and store_bytes counts."""
         log = [json.dumps(asdict(e), ensure_ascii=False) for e in self.events]
         return log, [json.dumps(d, ensure_ascii=False, sort_keys=True) for d in self.decisions]
 

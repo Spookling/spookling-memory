@@ -1,12 +1,4 @@
-"""Date words to dates, in code (research/33 D.3: models do no date arithmetic).
-
-parse(text, now) finds the first date expression in text and returns a Span: the period it names
-[start, end) and the point inside it. Absolute: "2025-03-15", "15 March 2025", "mid-December 2024",
-"June 2026", "summer 2025", "late 2025", "in 2025", "since March". Relative to now: "today", "this
-week", "last month", "two months ago", "last winter", "next week", "starting Monday". Used for the
-valid_from hint of a turn (now = the turn's date) and for the date a question names (now = the
-question's date). Seasons are meteorological, northern hemisphere; "winter 2024" starts in Dec 2024.
-"""
+"""Date words to dates, in code: models do no date arithmetic. Seasons are meteorological, northern hemisphere."""
 from __future__ import annotations
 
 import calendar
@@ -22,7 +14,7 @@ NUMBERS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5
            "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "a couple of": 2, "couple of": 2,
            "a few": 3, "few": 3, "several": 3}
 SEASONS = {"spring": 3, "summer": 6, "autumn": 9, "fall": 9, "winter": 12}  # first month; each lasts 3
-PART_DAY = {"early": 5, "mid": 15, "late": 25}  # research/33 B.4
+PART_DAY = {"early": 5, "mid": 15, "late": 25}
 PART_YEAR = {"early": (1, 5), "mid": (5, 9), "late": (9, 13)}  # month ranges [a, b)
 
 # Month names count only capitalised ("May I ask" is not a date); abbreviations need a following year or day.
@@ -75,9 +67,7 @@ def _n(s: str) -> int:
 
 
 def _year_for(m: int, d: int, now: date, mode: str) -> int:
-    """The year of a month (and day) named without one. past: the latest on or before now (memory
-    questions ask about the past); last: strictly before now's month ("last March"); nearest: the
-    occurrence closest to now, either side (a turn may name a coming date: "I start on 14 July")."""
+    """The year of a month named without one: past (latest on or before now), last (before now's month) or nearest."""
     if mode == "last":
         return now.year if m < now.month else now.year - 1
     cands = [y for y in (now.year - 1, now.year, now.year + 1) if d <= calendar.monthrange(y, m)[1]]
@@ -208,9 +198,7 @@ def _handlers(now: date, mode: str):
 
 
 def find_all(text: str, now: date, mode: str = "past") -> list[Span]:
-    """Every date expression in text, left to right, resolved against now; where two overlap the earlier (then
-    longer) wins. A phrase the grammar does not know ("the other day", "recently") is simply not found: it
-    stays unresolved, never guessed."""
+    """Every date expression, left to right; an overlap goes to the earlier, then longer; unknown phrases stay out."""
     found = []
     for pattern, flags, handle in _handlers(now, mode):
         for m in re.finditer(pattern, text, flags):
@@ -228,15 +216,13 @@ def find_all(text: str, now: date, mode: str = "past") -> list[Span]:
 
 
 def parse(text: str, now: date, mode: str = "past") -> Span | None:
-    """The first (then longest) date expression in text, resolved against now. None if there is none.
-    mode says which year a month named without one gets: past (questions) or nearest (a turn's hint)."""
+    """The first, then longest, date expression resolved against now, or None; mode picks the year of a bare month."""
     spans = find_all(text, now, mode)
     return spans[0] if spans else None
 
 
 def resolve_when(when: str | None, turn_day: date) -> tuple[date, str]:
-    """A turn's time words as (valid_from, precision). No words, or words that name no date: the turn's
-    own day, precision on_or_before (true by then, start unknown; research/33 B.3.6)."""
+    """A turn's time words as (valid_from, precision); none: the turn's own day, precision on_or_before."""
     span = parse(when, turn_day, "nearest") if when else None
     return (span.vf, span.precision) if span else (turn_day, "on_or_before")
 
@@ -249,19 +235,11 @@ def fmt(d: date) -> str:
     return "now" if d >= FOREVER else f"{d.day} {calendar.month_abbr[d.month]} {d.year}"
 
 
-# =====================================================================================================================
-# timex(): the time grammar of research/36 B.1, beside parse() (which sleep, the turn brackets and the events builder
-# still use, unchanged). HeidelTime's shape [HeidelTime p323-324]: each rule is a pattern, an underspecified value
-# (phase 1: "XXXX-05-01", "UNDEF-last-week") and a resolver (phase 2) that fixes it against the chat's date and the
-# TENSE of the event the words belong to (the extractor's closed label; there is no tagger here, by design). Output is
-# TIMEX3-like [TimeML p.5-6]: type, value, closed-open day bounds [lo, hi) [Snodgrass p91], the day named if the
-# amounts said are exact (nominal), a granule [Snodgrass p75], a mod and a status. It never guesses: vague words, two
-# readings and calendars we do not ship come back with that status (the refuse list), never as a confident date.
+# timex(): the time grammar beside parse(); a rule's value is resolved by the event's tense, never guessed
 
 ONE = timedelta(days=1)
 GRANS = ("day", "week", "month", "season", "year")  # finest first
-HALF = {"day": 0, "week": 3, "month": 15, "season": 45, "year": 182}  # an amount said in a unit is taken as rounded to
-# it: "two weeks ago" may lie 3 days either side of chat-14 (a convention, stated in the answer)
+HALF = {"day": 0, "week": 3, "month": 15, "season": 45, "year": 182}  # an amount said in a unit is taken as rounded to it: a convention, stated in the answer
 VAGUE = {"couple": (2, 3, 2), "few": (2, 4, 3), "several": (3, 7, None)}  # (least, most, nominal): conventions, not facts
 VAGUE_NOTE = "a vague count read by convention (a couple 2-3, a few 2-4, several 3-7)"
 UNITS = {"day": ((0, 1), "day"), "week": ((0, 7), "week"), "fortnight": ((0, 14), "week"),
@@ -359,8 +337,7 @@ def _count(s: str) -> tuple[int, int, int | None]:
 
 
 def _amount(text: str, mod: str | None) -> dict:
-    """An amount of time ("six weeks", "about 4 years and 3 months", "a few months", "over a year") as DURATION
-    fields: the amount as said, the shortest and longest it can mean, and the finest granule named."""
+    """An amount of time as DURATION fields: as said, shortest, longest, and the finest granule named."""
     nom, least, most, grans, vague = [0, 0], [0, 0], [0, 0], [], False
     for m in re.finditer(rf"{_CNT} {_UNIT}( and a half)?", text, re.I):
         lo_n, hi_n, n = _count(m[1])
@@ -440,9 +417,7 @@ def _part_year(part: str, y: int) -> dict:
 
 
 def _by_tense(make, now: date, tense: str | None):
-    """A date named without its year, by the tense of its event (HeidelTime phase 2). past: the latest that started on
-    or before the chat day; future: the earliest that ends after it; no tense: the one the chat day is in, else both
-    readings when both lie within six months, else the nearer."""
+    """A yearless date by its event's tense (past: latest begun; future: earliest unended), else the nearer."""
     cands = []
     for y in range(now.year - 4, now.year + 5):  # 29 Feb needs four years either side
         try:
@@ -463,7 +438,7 @@ def _weekday(word: str, wd: int, now: date, tense: str | None):
     before = now - timedelta(days=(now.weekday() - wd) % 7 or 7)  # the latest one before today
     after = now + timedelta(days=(wd - now.weekday()) % 7 or 7)  # the first one after today
     if word in ("last", "this past", "past", "since last"):
-        timeml = monday(now) - timedelta(days=7 - wd)  # thursday(predecessor(week DCT)) [TimeML p.6]
+        timeml = monday(now) - timedelta(days=7 - wd)  # TimeML's reading: that weekday of the previous week
         return _on(before) if timeml == before or (now - before).days > 3 else [_on(before), _on(timeml)]
     if word == "next":
         timeml = monday(now) + timedelta(days=7 + wd)
@@ -515,7 +490,7 @@ def _since_start(unit: str, now: date) -> date:
 
 
 def _earlier_this(unit: str, now: date) -> dict:
-    """"earlier this month": from the period's start up to the day before the chat (the chat day itself on its first day)."""
+    """"earlier this month": from its start to the day before the chat (the chat day on the first)."""
     a = _since_start(unit, now)
     b = max(now, a + ONE)
     return _span(a, b, unit, f"{a.isoformat()}/{(b - ONE).isoformat()}", False)
@@ -596,8 +571,7 @@ def _set_value(text: str) -> str:
     return next((v for k, v in _SETV.items() if k in t), "SET")
 
 
-# (rule id, pattern, flags, phase 1). Earliest match wins, then the longest, then the first listed: the refuse list,
-# sets and names come first so that "on Friday evenings" is a SET, never a Friday, and "the March 15th issue" a NAME.
+# earliest match wins, then longest, then first listed: refuse list, sets and names first, so "Friday evenings" is a SET
 TIMEX_RULES = [
     ("refuse_calendar", r"\b(Holi|Diwali|Deepavali|Eid(?: al[- ](?:Fitr|Adha))?|Lunar New Year|Chinese New Year|Tet|Hanukkah"
      r"|Chanukah|Rosh Hashanah|Yom Kippur|Passover|Ramadan|Vesak|Navratri|Chuseok|Songkran|Mid-Autumn Festival|Purim|Sukkot)\b",
@@ -715,8 +689,7 @@ def _build(text: str, rule: str, under: str, got) -> Timex:
 
 
 def find_timex(text: str, chat_day: date, tense: str | None = None) -> list[Timex]:
-    """Every time expression in text, left to right: phase 1 (the rules), then phase 2 against the chat's date and the
-    tense of the event the words belong to (past | present | future | None)."""
+    """Every time expression, left to right: phase 1 rules, then phase 2 against the chat date and the event's tense."""
     found = []
     for order, (rid, rx, fn) in enumerate(_TIMEX):
         for m in rx.finditer(text):
@@ -738,8 +711,7 @@ def find_timex(text: str, chat_day: date, tense: str | None = None) -> list[Time
 
 
 def amount(text: str) -> Timex | None:
-    """Text read only as an amount of time: a TLINK magnitude ("three months in advance", "one day after") is a
-    duration by definition [TimeML p.9], so "one day" here is 24 hours, never the vague "someday"."""
+    """Text read only as an amount: a TLINK magnitude ("one day after") is a duration, never the vague "someday"."""
     m = re.search(rf"\b{_MODW}({_AMT})\b", text, re.I)
     return Timex(text=m[0], rule="amount", under="UNDEF-duration", **_amount(m[2], MODS.get((m[1] or "").lower()))) if m else None
 
@@ -750,7 +722,7 @@ def timex(text: str, chat_day: date, tense: str | None = None) -> Timex | None:
     return found[0] if found else None
 
 
-if __name__ == "__main__":  # smallest self-check; the real tests are tests/test_spookling_adapter.py
+if __name__ == "__main__":  # smallest self-check
     now = date(2027, 3, 4)
     assert parse("Which phone was I using in mid-December 2024?", now).point == date(2024, 12, 15)
     assert parse("in June 2026", now).start == date(2026, 6, 1) and not parse("in June 2026", now).use_point

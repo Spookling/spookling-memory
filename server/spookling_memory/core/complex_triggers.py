@@ -1,18 +1,10 @@
-"""Which questions are complex: a data table of trigger patterns (code, no model; Mohammed 13 Oct).
-
-Each entry is (regex, category, example question). A question matching any entry is complex; nothing matching
-means simple, the default. The `aggregate` category is also the aggregation-mode detector (more hits, its own
-budget, window-first order, map-reduce); `preference` is also the preferences-on-demand detector. Patterns use
-word boundaries ("Andrew" never matches "and", "Beforehand" never matches "before") and are case-insensitive
-unless they say otherwise.
-"""
+"""Which questions are complex: (regex, category, example) rows; no match means simple."""
 from __future__ import annotations
 
 import re
 
 N = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|a few|a couple of|several)"
 TRIGGERS: list[tuple[str, str, str]] = [
-    # counting, summing, listing
     (r"\bhow many\b", "aggregate", "How many books did I read this year?"),
     (r"\bhow much\b", "aggregate", "How much did I spend on coffee?"),
     (r"\btotal(?:ly|led|ling|s)?\b", "aggregate", "What is the total I raised for charity?"),
@@ -28,7 +20,7 @@ TRIGGERS: list[tuple[str, str, str]] = [
     (r"\bevery\b", "aggregate", "Which restaurants did I try every week?"),
     (r"\beach (?:time|one|of)\b", "aggregate", "What did I order each time I went there?"),
     (r"\bevery time\b", "aggregate", "What did I bring every time I hiked?"),
-    # "list" as an ask, never as a noun ("my grocery list" is not a request to list; error-analysis-v2, d7c942c3)
+    # "list" as an ask, never as a noun: "my grocery list" is not a request to list
     (r"^\s*(?:(?:can|could|would) you |please )?list\b|\blist (?:all|every|each|the|my|of)\b|\blisted\b", "aggregate",
      "List the courses I have taken."),
     (r"\bname (?:all|every|each)\b", "aggregate", "Name all the bands I saw live."),
@@ -42,7 +34,6 @@ TRIGGERS: list[tuple[str, str, str]] = [
     (r"\b(?:overall|cumulative)\b", "aggregate", "What is my overall spending on books?"),
     (r"\baverage\b", "aggregate", "What's the average price I paid per ticket?"),
     (r"\bper (?:week|month|day|year)\b", "aggregate", "How much do I save per month?"),
-    # comparison and superlatives
     (r"\bmore than\b", "compare", "Did I spend more than last year on gifts?"),
     (r"\bless than\b", "compare", "Was my rent less than my friend's?"),
     (r"\bfewer than\b", "compare", "Did I read fewer than ten books?"),
@@ -60,7 +51,6 @@ TRIGGERS: list[tuple[str, str, str]] = [
     (r"\b(?:increase|decrease|improve|improvement|grew|dropped|went up|went down|changed)\b", "compare", "How much did my score improve?"),
     (r"\b(?:rank|ranking|order(?:ed)? by|top \d+|top (?:three|five|ten))\b", "compare", "What were my top three destinations?"),
     (r"\bthe same as\b", "compare", "Is my new phone the same as my old one?"),
-    # two-part and conditional
     (r"\band\b", "conditional", "What did I buy and where did I buy it?"),
     (r"\bwhen I\b", "conditional", "Where was I living when I got the dog?"),
     (r"\bwhen (?:we|my|she|he|they)\b", "conditional", "What did I cook when my parents visited?"),
@@ -78,7 +68,6 @@ TRIGGERS: list[tuple[str, str, str]] = [
     (r"\bonce I\b", "conditional", "What did I plan once I finished the course?"),
     (r"\bor\b", "conditional", "Did I choose the red or the blue jacket?"),
     (r"\bbut\b", "conditional", "Which one did I like but not buy?"),
-    # time spans and arithmetic
     (r"\bsince\b", "timespan", "How long have I lived here since moving?"),
     (r"\bbetween\b", "timespan", "What did I do between May and July?"),
     (r"\bduring\b", "timespan", "Which books did I read during the summer?"),
@@ -100,7 +89,6 @@ TRIGGERS: list[tuple[str, str, str]] = [
      "What did I do in March?"),
     (r"\b(?:19|20)\d\d\b", "timespan", "Where did I travel in 2022?"),
     (r"\bhow old\b", "timespan", "How old will I be at my friend's wedding?"),
-    # back-references and coreference
     (r"\bthat (?:place|one|restaurant|shop|store|book|movie|show|trip|guy|woman|man|person|thing|game|song|course|city|hotel|café|cafe)\b",
      "coreference", "What was that place called again?"),
     (r"\bthe one (?:I|we|you|that|which)\b", "coreference", "What's the one I recommended to my sister?"),
@@ -112,7 +100,6 @@ TRIGGERS: list[tuple[str, str, str]] = [
     (r"\b(?:you|we) (?:mentioned|talked about|discussed|said|suggested|recommended)\b", "coreference",
      "What was the book you recommended?"),
     (r"\bremind me\b", "coreference", "Remind me what we decided about the venue?"),
-    # multi-entity
     (r"\bboth\b", "multi_entity", "Did both my sisters come to the wedding?"),
     (r"\beither\b", "multi_entity", "Did either of my parents call?"),
     (r"\bneither\b", "multi_entity", "Did neither of my friends reply?"),
@@ -121,7 +108,6 @@ TRIGGERS: list[tuple[str, str, str]] = [
     (r"\bmy \w+(?: \w+)? and my\b", "multi_entity", "What do my brother and my sister do?"),
     (r"\b(?:my|our) (?:friends|parents|kids|children|siblings|cousins|colleagues|coworkers|pets|neighbors|neighbours)\b",
      "multi_entity", "Where did my friends go on holiday?"),
-    # aggregation over categories
     (r"\bspen[dt] on\b", "category", "What have I spent on home improvements?"),
     (r"\brelated to\b", "category", "Which expenses were related to my car?"),
     (r"\babout my\b", "category", "What did I say about my health?"),
@@ -129,7 +115,6 @@ TRIGGERS: list[tuple[str, str, str]] = [
     (r"\b(?:kinds|types|sorts|categories) of\b", "category", "What kinds of music do I like?"),
     (r"\b(?:expenses?|costs?|purchases?|payments?|bills?)\b", "category", "What were my travel expenses?"),
     (r"\bin terms of\b", "category", "How am I doing in terms of savings?"),
-    # recommendation and preference
     (r"\brecommend(?:s|ed|ation|ations)?\b", "preference", "Can you recommend a book for me?"),
     (r"\bsuggest(?:s|ed|ion|ions)?\b", "preference", "Suggest a restaurant for my anniversary."),
     (r"\bshould I\b", "preference", "What should I cook tonight?"),
@@ -150,8 +135,7 @@ RECALL_ASK = re.compile(r"\bremind me\b|\bwhat did i (?:say|tell you|mention|wri
 
 
 def categories(question: str) -> set[str]:
-    """The trigger categories a question matches; empty means simple. v4: a question asking to be reminded of
-    something said ("remind me ... the average improvement") is never an aggregation, whatever words it holds."""
+    """The categories a question matches (empty: simple); a request to be reminded is never an aggregation."""
     cats = {cat for rx, cat in COMPILED if rx.search(question)}
     return cats - {"aggregate"} if RECALL_ASK.search(question) else cats
 
