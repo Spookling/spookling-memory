@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 import threading
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -125,7 +126,8 @@ def create_app(store: Store) -> FastAPI:
         if event == "stop":  # reply at once: the tagging runs after the response
             tasks.add_task(quietly, store, event, payload)
             return {}
-        return await run_in_threadpool(hooks.handle, store, event, payload)
+        body, pulse = await run_in_threadpool(hooks.handle, store, event, payload)
+        return JSONResponse(body, headers={hooks.PULSE: json.dumps(pulse, separators=(",", ":"))} if pulse else None)
 
     return app
 

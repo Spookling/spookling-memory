@@ -90,28 +90,47 @@ def test_hooks_log_the_transcript_and_recall_for_the_prompt(open_store, tmp_path
         {"role": "user", "content": "From now on, always answer in metric units."}]  # our own recalled block stripped
     base = {"session_id": "abc", "transcript_path": str(path), "cwd": str(tmp_path)}
     prompt = {**base, "hook_event_name": "UserPromptSubmit", "prompt": "What car do I drive?"}
-    assert c.post("/v1/hook/user-prompt-submit", json=prompt).json() == {}
+    empty = c.post("/v1/hook/user-prompt-submit", json=prompt)
+    assert empty.json() == {} and hooks.PULSE not in empty.headers  # nothing recalled, nothing to count
 
     stop = {**base, "hook_event_name": "Stop", "stop_hook_active": False}
-    assert c.post("/v1/hook/stop", json=stop).json() == {}
+    r = c.post("/v1/hook/stop", json=stop)
+    assert r.json() == {} and hooks.PULSE not in r.headers
     assert [(e.session_id, e.role) for e in store.mem.log.events] == [("abc#0", "user"), ("abc#0", "assistant"), ("abc#0", "user")]
     c.post("/v1/hook/stop", json=stop)
     assert len(store.mem.log.events) == 3
 
-    out = c.post("/v1/hook/user-prompt-submit", json=prompt).json()["hookSpecificOutput"]
+    r = c.post("/v1/hook/user-prompt-submit", json=prompt)
+    out = r.json()["hookSpecificOutput"]
     assert out["hookEventName"] == "UserPromptSubmit" and "Toyota Corolla" in out["additionalContext"]
     assert len(out["additionalContext"]) <= hooks.CAP
+    assert json.loads(r.headers[hooks.PULSE]) == hooks.counts(out["additionalContext"])  # the status line's numbers
+    assert hooks.counts(out["additionalContext"])["chats"] >= 1
 
     write_transcript(path, TRANSCRIPT + [
         {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Metric it is."}]}},
         {"type": "user", "message": {"role": "user", "content": "We decided to use Postgres 16 for the shop."}}])
     pre = {**base, "hook_event_name": "PreCompact", "trigger": "auto", "custom_instructions": ""}
-    assert c.post("/v1/hook/pre-compact", json=pre).json() == {}
+    r = c.post("/v1/hook/pre-compact", json=pre)
+    assert r.json() == {}
     assert [e.session_id for e in store.mem.log.events][3:] == ["abc#3", "abc#3"]
     assert {k.kind for k in store.mem.staging} == {"rule", "decision"}
+    assert json.loads(r.headers[hooks.PULSE]) == {"kept": 2, "rules": 1, "lines": 2}
 
     gone = {**stop, "transcript_path": str(tmp_path / "missing.jsonl")}
     assert c.post("/v1/hook/stop", json=gone).json() == {}
+
+
+def test_counts_reads_each_kind_of_line_in_a_recall_block():
+    ctx = ("<rules>\nStanding instructions the user gave, still in force:\n- Always answer in metric units. (said 2024-05-22)\n"
+           "- Call me Dr. Rao. (said 2024-05-23)\n</rules>\n\n"
+           '<recalled-data now="in force now (24 Oct 2026)">\n<timeline>\nE1 once [buy; car] "bought a Corolla" (said 2 May 2024)\n'
+           "</timeline>\n[22 May 2024] user: I drive a Toyota Corolla\n[...]\nassistant: Noted.\n[3 Jun 2024] (latest mention) user: still the Corolla\n"
+           '[u12, chat of 3 Jun 2024] car: "Corolla"\n'
+           'car: Toyota Corolla (true from 22 May 2024 to now; in force now (24 Oct 2026); said 22 May 2024: "I drive a Toyota Corolla")\n'
+           "</recalled-data>")
+    assert hooks.counts(ctx) == {"facts": 1, "rules": 2, "events": 1, "chats": 2, "chars": len(ctx), "cap": hooks.CAP}
+    assert hooks.counts("")["facts"] == hooks.counts("Nothing on record about this.")["chats"] == 0
 
 
 @pytest.mark.parametrize("prompt", ["", "   "])

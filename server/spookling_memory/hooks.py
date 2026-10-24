@@ -16,6 +16,7 @@ OURS = re.compile(r"<(invariant|recalled-data|memory-index|kept-before-compactio
 COMMAND = ("<command-", "<local-command-")  # slash-command wrappers and their output
 MNT = Path("/mnt")  # WSL's default automount root
 TURN_CAP = 4000
+PULSE = "x-spookling-pulse"  # a hook call's counts as JSON, for the status line; the body stays what Claude Code reads
 LOG = logging.getLogger("uvicorn.error")  # uvicorn's, so it lands in .memory/server.log
 
 # a wrapper is any closed <x-y> or <x_y> block: Claude Code's and our own
@@ -140,16 +141,28 @@ def codex_turns(path: Path) -> list[dict]:
     return out
 
 
-def handle(store, event: str, p: dict) -> dict:
-    """What the hook prints. Stop and PreCompact log new turns; PreCompact then keeps the session's rules."""
+def counts(ctx: str) -> dict:
+    """What a recall block holds: fact records, standing rules, timeline events, dated past chats, and its size."""
+    rules = re.search(r"<rules>\n(.*?)</rules>", ctx, re.S)
+    data = "".join(re.findall(r"<recalled-data\b[^>]*>\n(.*?)</recalled-data>", ctx, re.S))
+    return {"facts": len(re.findall(r"^.*\(true from ", data, re.M)),
+            "rules": len(re.findall(r"^- ", rules[1], re.M)) if rules else 0,
+            "events": len(re.findall(r"^E\d+ ", data, re.M)),
+            "chats": len(re.findall(r"^\[\d{1,2} [A-Z][a-z]{2} \d{4}\]", data, re.M)),
+            "chars": len(ctx), "cap": CAP}
+
+
+def handle(store, event: str, p: dict) -> tuple[dict, dict]:
+    """What the hook prints, and its pulse. Stop and PreCompact log new turns; PreCompact then keeps the session's rules."""
     agent = "codex" if p.get("harness") == "codex" else "claude-code"
     sid = str(p.get("session_id") or agent)
     if event == "user-prompt-submit":
         prompt = p.get("prompt") or ""
         ctx = store.retrieve(prompt)["context"] if prompt.strip() else ""
         if not ctx or ctx == ABSTAIN:
-            return {}
-        return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": cap(ctx)}}
+            return {}, {}
+        ctx = cap(ctx)
+        return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ctx}}, counts(ctx)
     path = local_path(str(p.get("transcript_path") or ""))
     if path.suffix == ".jsonl" and path.is_file():
         conversation = codex_turns(path) if agent == "codex" else turns(path)
@@ -162,5 +175,6 @@ def handle(store, event: str, p: dict) -> dict:
         if conversation:  # Stop is after the reply: it may wait for a rebuild
             store.ingest(sid, conversation, agent=agent, tail=True, patient=event == "stop")
     if event == "pre-compact":
-        store.compact(sid)
-    return {}
+        c = store.compact(sid)
+        return {}, {"kept": c["kept"], "rules": counts(c["block"])["rules"], "lines": len(re.findall(r"^- ", c["block"], re.M))}
+    return {}, {}
