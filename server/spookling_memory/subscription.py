@@ -87,16 +87,13 @@ def codex(messages: list[dict]) -> str:
     return run("codex", CODEX, prompt(messages))
 
 
-BACKENDS = {"codex": codex}
-
-
 class Subscription(ModelTriage):
     """ModelTriage with core.models swapped for a subscription CLI. Replies are not cached, and the token counts are
     unknown (0)."""
 
     def __init__(self, model: str):
         super().__init__(model)
-        self.name, self.ask = model, BACKENDS[model]
+        self.name, self.ask = model, codex
 
     def _ask(self, messages, parse):
         # ModelTriage._ask with the call swapped: keep in step with core/triage.py
@@ -115,7 +112,7 @@ class Subscription(ModelTriage):
 def backend(model: str) -> str:
     """Where a model id's tagging calls go: a subscription backend by name; "anthropic" for an anthropic/ id when
     ANTHROPIC_API_KEY is set; else "openrouter"."""
-    if model in BACKENDS:
+    if model == "codex":
         return model
     return "anthropic" if model.startswith("anthropic/") and os.environ.get("ANTHROPIC_API_KEY") else "openrouter"
 
@@ -126,8 +123,10 @@ def adapter(model: str | None = None, decider: str | None = None, decide_thresho
     OpenRouter. A decider (Jev) answers every gate as a typed question through the Decisions API on the OpenRouter key."""
     model = model or WRITER
     b = backend(model)
-    out = {"model": model, "triage": Subscription(model)} if b in BACKENDS else {"model": model}
-    if b not in BACKENDS:
+    if b == "codex":
+        out = {"model": model, "triage": Subscription(model)}
+    else:
+        out = {"model": model}
         models.BACKEND = b
     if decider:
         out |= {"decider": decider, "decide_threshold": decide_threshold}

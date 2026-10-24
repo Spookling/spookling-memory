@@ -19,7 +19,7 @@ export const fits = (anim = true) => {
 
 // hold: ms a line stays up before the next one may replace it, so a quick step does not swallow its line.
 export function stage({ anim = true, label = '', hold = 1200 } = {}) {
-  const plain = { live: false, async say(line) { write(said(line)); }, busy() {}, close() {} };
+  const plain = { live: false, async say(line) { write(said(line)); }, close() {} };
   if (!fits(anim)) { restore(); return plain; } // restore: leave a cutscene's alternate screen, if one was kept
   const { stdout } = process, t0 = Date.now(), { g, band, talk } = layout(size().rows), ROWS = band + 1;
   let text = '', shownAt = 0, timer = null, open = true;
@@ -79,7 +79,6 @@ export function stage({ anim = true, label = '', hold = 1200 } = {}) {
       note(said(line));
       if (open) paintStage();
     },
-    busy,
     close,
   };
 }

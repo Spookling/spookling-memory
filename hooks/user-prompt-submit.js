@@ -20,10 +20,7 @@ process.stdin.on('end', () => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (d) => { body += d; });
-      res.on('end', () => {
-      if (res.statusCode === 200 && body) return process.stdout.write(body, done); // exit once stdout has flushed
-        done();
-      });
+      res.on('end', () => (res.statusCode === 200 && body ? process.stdout.write(body, done) : done())); // exit once stdout has flushed
     });
     req.on('socket', (s) => s.once('connect', () => req.setTimeout(15000)));
     req.on('timeout', () => req.destroy());

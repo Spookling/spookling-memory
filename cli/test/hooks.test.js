@@ -7,7 +7,7 @@ import { homedir, tmpdir } from 'node:os';
 import path, { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  addHooks, removeHooks, addMcp, removeMcp, hookHandlers, mcpEntry, mcpPath, settingsPath, showHandler, wiring, readJson,
+  addHooks, removeHooks, addMcp, removeMcp, hookHandlers, mcpEntry, mcpPath, settingsPath, wiring, readJson,
   isOurs, wslShare, HOOK_FILES, MCP_NAME,
 } from '../src/hooks.js';
 
@@ -42,7 +42,6 @@ test('win32: a path with spaces, quotes, $ or a WSL share goes into args verbati
     assert.deepEqual(settings.hooks.Stop[0].hooks[0].args, [`${dir}\\stop.js`]);
     assert.deepEqual(removeHooks(settings), {});
   }
-  assert.equal(showHandler(hookHandlers('C:\\a b\\hooks', path.win32).Stop), 'node "C:\\\\a b\\\\hooks\\\\stop.js"');
 });
 
 test('addHooks swaps an older shell-form .sh install for the exec form', () => {

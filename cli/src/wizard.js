@@ -7,13 +7,13 @@ import { chmodSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readFile
 import { basename, delimiter, dirname, isAbsolute, join, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { C, DOWN, MODE, UP, askHidden, bail, choose, confirm, paint, press, setFeed, setRaw, sleep, write as emit } from './term.js';
+import { C, DOWN, MODE, UP, askHidden, bail, choose, confirm, paint, press, setFeed, setRaw, sleep, write as out } from './term.js';
 import { play } from './cutscene.js';
 import { flyOnce } from './ghost.js';
 import { fits, stage } from './stage.js';
 import {
   HOOK_FILES, MCP_NAME, addHooks, addMcp, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
-  showHandler, wiring, wslShare,
+  wiring, wslShare,
 } from './hooks.js';
 
 const WIN = process.platform === 'win32';
@@ -69,7 +69,6 @@ export function codexLogin(env = process.env) {
   return { ok: r.status === 0, line: line.replace(/sk-[\w-]+/g, 'sk-…') };
 }
 
-const out = (s) => emit(s);
 const ok = (s) => out(`   ${paint(C.MINT, '✓')} ${s}\n`);
 const warn = (s) => out(`   ${paint(C.LILAC, '!')} ${s}\n`);
 const info = (s) => out(`   ${paint(C.GREY, s)}\n`);
@@ -440,11 +439,10 @@ async function steps(ctx, { anim, st }) {
 
   // 4. Server
   await step(ctx, 4);
-  const share = SHARE;
-  if (share) {
+  if (SHARE) {
     // Run from PowerShell against a clone inside WSL: one server, in WSL, serves both sides on 127.0.0.1.
-    info(`The server folder is inside WSL (${share.distro}), so the server runs there. In WSL, from your project:`);
-    info(`  node '${share.path.replace(/\/server$/, '')}/bin/spookling-memory.js' init`);
+    info(`The server folder is inside WSL (${SHARE.distro}), so the server runs there. In WSL, from your project:`);
+    info(`  node '${SHARE.path.replace(/\/server$/, '')}/bin/spookling-memory.js' init`);
     info('No uv sync from Windows: it would build a Windows .venv over the one WSL uses.');
     ctx.skipped.push('the server install (it runs in WSL)');
   } else if (!existsSync(join(ROOT, 'server', 'pyproject.toml'))) {
@@ -530,7 +528,7 @@ async function steps(ctx, { anim, st }) {
     ok(`the server answered: ${short(JSON.stringify(res))}`);
     if (ctx.dry) info('demo: a sample reply');
   } else {
-    warn(`nothing answered on 127.0.0.1:${PORT}. ${share ? 'Start the server in WSL (the command in step 4).' : 'Look in .memory/server.log.'}`);
+    warn(`nothing answered on 127.0.0.1:${PORT}. ${SHARE ? 'Start the server in WSL (the command in step 4).' : 'Look in .memory/server.log.'}`);
     await fail(ctx, 'smoke test failed');
   }
 

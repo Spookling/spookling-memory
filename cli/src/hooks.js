@@ -20,7 +20,6 @@ export const MCP_NAME = 'spookling-memory';
 // and read SPOOKLING_MEMORY_URL from the environment. `p` is node:path; tests pass path.win32.
 export const hookHandlers = (hooksDir, p = path) => Object.fromEntries(Object.entries(HOOK_FILES)
   .map(([ev, f]) => [ev, { type: 'command', command: 'node', args: [p.join(hooksDir, f)] }]));
-export const showHandler = (h) => [h.command, ...(h.args ?? [])].map((a) => (/[\s"']/.test(a) ? JSON.stringify(a) : a)).join(' ');
 
 // A clone inside WSL as Windows sees it: \\wsl.localhost\<distro>\... (or \\wsl$\...) -> { distro, path }.
 export const wslShare = (dir) => {
