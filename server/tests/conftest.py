@@ -1,8 +1,7 @@
-"""Offline fixtures: a stub Triage stands in for the writer model (as test_spookling_adapter.py does), local models are
-off, and any model call fails the test."""
+"""Offline fixtures: a stub Triage, no local models, and any model call fails the test."""
 import os
 
-os.environ["SPOOKLING_LOCAL_MODELS"] = "0"  # no embedder or reranker
+os.environ["SPOOKLING_LOCAL_MODELS"] = "0"
 
 import pytest  # noqa: E402
 from spookling_memory.core import triage as triage_mod  # noqa: E402
@@ -60,7 +59,7 @@ def offline(monkeypatch):
 
 @pytest.fixture
 def open_store(tmp_path):
-    """open_store(name="m") -> a Store on tmp_path/name with the stub triage; every one is closed after the test."""
+    """open_store(name) -> a Store on tmp_path/name with the stub triage, closed after the test."""
     made = []
 
     def make(name="m", tags=TAGS):

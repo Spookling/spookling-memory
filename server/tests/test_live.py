@@ -1,5 +1,4 @@
-"""Against a real server on a 127.0.0.1 socket: the MCP tools (thin clients of the API) and both sets of hook scripts
-(hooks/*.js with node, any OS; hooks/*.sh with bash and curl, macOS and Linux)."""
+"""Against a real server on a socket: the MCP tools and both sets of hook scripts."""
 import asyncio
 import json
 import os
@@ -31,7 +30,7 @@ def live(open_store):
     store = open_store("live")
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
-    sock.listen()  # connections wait in the backlog until uvicorn accepts: no start-up wait needed
+    sock.listen()  # connections wait in the backlog until uvicorn accepts
     server = uvicorn.Server(uvicorn.Config(create_app(store), log_level="warning"))
     thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
     thread.start()
@@ -42,14 +41,14 @@ def live(open_store):
 
 
 def nobody() -> str:
-    """A URL where nothing listens: a port just bound and released, so a connect is refused at once."""
+    """A port just bound and released: a connect is refused at once."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return f"http://127.0.0.1:{s.getsockname()[1]}"
 
 
 def hook(runner, name, payload, url, **env):
-    """Run one hook script as Claude Code's exec form does: the interpreter, the script path as one argument."""
+    """As Claude Code's exec form runs it: the interpreter, the script path as one argument."""
     exe, ext = runner
     return subprocess.run([exe, str(HOOKS / (name + ext))], input=json.dumps(payload), capture_output=True,
                           text=True, encoding="utf-8", env={**os.environ, "SPOOKLING_MEMORY_URL": url, **env}, timeout=90)
@@ -103,8 +102,7 @@ def test_hook_scripts(live, tmp_path, runner):
 
 @pytest.mark.parametrize("runner", RUNNERS)
 def test_hook_scripts_do_nothing_inside_a_tagging_call(live, tmp_path, runner):
-    """A subscription tagger runs a CLI that may fire these same hooks; SPOOKLING_TAGGING (set by the server for that
-    call) makes every script exit at once, so tagging never logs or tags itself."""
+    """SPOOKLING_TAGGING, set for a tagging CLI that may fire these hooks, makes every script exit at once."""
     url, store = live
     path = tmp_path / "t.jsonl"
     path.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "I drive a Toyota Corolla."}}) + "\n")
@@ -119,8 +117,7 @@ def test_hook_scripts_do_nothing_inside_a_tagging_call(live, tmp_path, runner):
 @pytest.mark.parametrize("name", ["user-prompt-submit", "pre-compact", "stop"])
 @pytest.mark.parametrize("where", ["refused", "dropped"])
 def test_hook_scripts_never_block_claude_when_the_server_is_down(name, runner, where):
-    """refused: nothing listens. dropped: the connect is never answered, as a dead port on WSL's mirrored network
-    behaves (10.255.255.1 is not routed; where there is no route at all it fails at once, which also passes)."""
+    """10.255.255.1 is not routed, so the connect hangs as a dead port on WSL's mirrored network does."""
     url = nobody() if where == "refused" else "http://10.255.255.1:7447"
     t = time.monotonic()
     out = hook(runner, name, {"session_id": "x", "prompt": "hi", "transcript_path": "/nope.jsonl"}, url)
@@ -130,8 +127,7 @@ def test_hook_scripts_never_block_claude_when_the_server_is_down(name, runner, w
 @pytest.mark.skipif(os.name == "nt", reason="POSIX signals; Windows stops the server with taskkill /F, see cli/README.md")
 @pytest.mark.parametrize("sig", ["SIGTERM", "SIGINT"])
 def test_serve_cleans_up_on_a_signal(tmp_path, sig):
-    """uvicorn re-raises SIGTERM/SIGINT after it shuts down, so only the lifespan hook gets to close the store and
-    remove the adapter's temp copy of the LOG (spookling-log-*)."""
+    """uvicorn re-raises SIGTERM after shutdown: only the lifespan hook can close the store and its temp LOG."""
     import signal
     import sys
     import urllib.request

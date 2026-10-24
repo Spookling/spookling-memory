@@ -1,11 +1,4 @@
-"""One archive per memory (a `.spookling` file, tar.gz): the two append-only records and a manifest.
-
-    manifest.json     {"format": "spookling-memory", "version": 1, "created", "adapter", "counts": {"log", "judgements"}}
-    log.jsonl         the LOG, one turn per line
-    judgements.jsonl  the judgement log, one judgement or ruling per line
-
-Every view (FACTS, EVENTS, INDEX, SEARCH) is rebuilt from these two on import, so the archive holds no view.
-"""
+"""A `.spookling` archive (tar.gz): manifest.json, log.jsonl and judgements.jsonl; every view is rebuilt on import."""
 from __future__ import annotations
 
 import io
@@ -21,7 +14,7 @@ MEMBERS = ("manifest.json", LOG, JUDGEMENTS)
 
 
 def export(mem, path) -> dict:
-    """Write `mem`'s two records to `path` (a file path, or a binary file object). Returns the manifest."""
+    """path: a file path or a binary file object."""
     log, dec = lines(mem)
     manifest = {"format": FORMAT, "version": ARCHIVE_VERSION, "created": now(), "adapter": VERSION,
                 "counts": {"log": len(log), "judgements": len(dec)}}
@@ -37,8 +30,7 @@ def export(mem, path) -> dict:
 
 
 def read_archive(path) -> tuple[list[dict], list[dict], dict]:
-    """(log events, judgements, manifest) from an archive, checked: only the three members, read in memory (nothing
-    is extracted to disk), the format and version known, and the line counts the manifest promises."""
+    """(events, judgements, manifest), read in memory and checked against the manifest."""
     try:
         with (tarfile.open(path, "r:gz") if isinstance(path, (str, Path)) else tarfile.open(fileobj=path, mode="r:gz")) as tar:
             members = {m.name: m for m in tar.getmembers()}
@@ -58,7 +50,6 @@ def read_archive(path) -> tuple[list[dict], list[dict], dict]:
 
 
 def import_archive(path, folder: str | Path, **adapter) -> Store:
-    """Restore an archive into an empty memory folder and rebuild every view with settle(). Returns the open Store."""
     events, decisions, _ = read_archive(path)
     store = Store(folder, **adapter)
     try:

@@ -90,13 +90,13 @@ def test_hooks_log_the_transcript_and_recall_for_the_prompt(open_store, tmp_path
         {"role": "user", "content": "From now on, always answer in metric units."}]  # our own recalled block stripped
     base = {"session_id": "abc", "transcript_path": str(path), "cwd": str(tmp_path)}
     prompt = {**base, "hook_event_name": "UserPromptSubmit", "prompt": "What car do I drive?"}
-    assert c.post("/v1/hook/user-prompt-submit", json=prompt).json() == {}  # empty memory: nothing injected
+    assert c.post("/v1/hook/user-prompt-submit", json=prompt).json() == {}
 
     stop = {**base, "hook_event_name": "Stop", "stop_hook_active": False}
     assert c.post("/v1/hook/stop", json=stop).json() == {}
     assert [(e.session_id, e.role) for e in store.mem.log.events] == [("abc#0", "user"), ("abc#0", "assistant"), ("abc#0", "user")]
     c.post("/v1/hook/stop", json=stop)
-    assert len(store.mem.log.events) == 3  # the same transcript again: nothing new
+    assert len(store.mem.log.events) == 3
 
     out = c.post("/v1/hook/user-prompt-submit", json=prompt).json()["hookSpecificOutput"]
     assert out["hookEventName"] == "UserPromptSubmit" and "Toyota Corolla" in out["additionalContext"]
@@ -107,11 +107,11 @@ def test_hooks_log_the_transcript_and_recall_for_the_prompt(open_store, tmp_path
         {"type": "user", "message": {"role": "user", "content": "We decided to use Postgres 16 for the shop."}}])
     pre = {**base, "hook_event_name": "PreCompact", "trigger": "auto", "custom_instructions": ""}
     assert c.post("/v1/hook/pre-compact", json=pre).json() == {}
-    assert [e.session_id for e in store.mem.log.events][3:] == ["abc#3", "abc#3"]  # the new tail, then kept
+    assert [e.session_id for e in store.mem.log.events][3:] == ["abc#3", "abc#3"]
     assert {k.kind for k in store.mem.staging} == {"rule", "decision"}
 
     gone = {**stop, "transcript_path": str(tmp_path / "missing.jsonl")}
-    assert c.post("/v1/hook/stop", json=gone).json() == {}  # no transcript: nothing to log, no error
+    assert c.post("/v1/hook/stop", json=gone).json() == {}
 
 
 @pytest.mark.parametrize("prompt", ["", "   "])
@@ -132,12 +132,12 @@ def test_a_missing_model_key_is_a_503_and_the_server_lives(open_store):
     assert r.status_code == 503 and "OPENROUTER_API_KEY" in r.json()["detail"]
     store.mem.triage = Stub(TAGS)
     assert c.post("/v1/ingest", json={"id": "s2", "ts": "2024-05-23T10:00:00Z", "turns": turns(["How do I roast peppers?"])}).status_code == 200
-    assert c.get("/v1/stats").json()["n_events"] == 4  # the first session waited in memory and was written, tagged
+    assert c.get("/v1/stats").json()["n_events"] == 4  # the first session waited in memory
 
 
 def test_injected_context_fits_claude_codes_cap():
     ghost = "\U0001F47B"  # two UTF-16 units, as Claude Code (JavaScript) counts it
-    assert hooks.CAP == 10_000  # over it, Claude gets a file path and a 2,000-character preview instead
+    assert hooks.CAP == 10_000
     out = hooks.cap("a" + ghost * 6000)
     assert len(out.encode("utf-16-le")) // 2 <= hooks.CAP and out == "a" + ghost * 4999  # never half an emoji
     assert hooks.cap("short") == "short"
@@ -171,8 +171,6 @@ def test_a_windows_transcript_path_is_read_through_the_wsl_mount(monkeypatch, tm
     assert hooks.local_path("D:\\nope\\s.jsonl") == hooks.Path("D:\\nope\\s.jsonl")  # no such mount: as given
     assert hooks.local_path("/home/a/s.jsonl") == hooks.Path("/home/a/s.jsonl")
 
-
-# ---------------------------------------------------------------- hook bodies: the 422s (one test per shape)
 
 STOP = {"session_id": "s", "cwd": "/home/a", "hook_event_name": "Stop", "stop_hook_active": False,
         "background_tasks": [], "session_crons": []}
@@ -231,7 +229,7 @@ def test_hook_garbage_is_400_with_the_reason_logged_once(open_store, caplog, bod
     for _ in range(2):
         r = post_stop(c, body)
         assert r.status_code == 400 and why in r.json()["detail"]
-    assert sum("refused" in m for m in caplog.messages) == 1  # once per kind, not once per request
+    assert sum("refused" in m for m in caplog.messages) == 1  # once per kind, not per request
 
 
 def test_busy_is_a_503_with_retry_after(open_store):
@@ -242,9 +240,7 @@ def test_busy_is_a_503_with_retry_after(open_store):
     assert r.status_code == 503 and r.headers["retry-after"] == "5" and "busy" in r.json()["detail"]
 
 
-# ---------------------------------------------------------------- what the tagger is sent (turns() and clean())
-
-DEV = [  # a developer's session: a prompt with a paste, tool calls and narration, a task notification, a reminder
+DEV = [  # a prompt with a paste, tool calls, narration, a task notification and a reminder
     {"type": "user", "message": {"role": "user", "content": "Why is the deploy failing? Here is the log:\n"
         "<pasted_content id=\"a1\">\nexport AWS_SECRET_ACCESS_KEY=\"abc\"\n</pasted_content id=\"a1\">\n"
         "2026-10-22T21:55:45Z ERROR deploy failed\n{\"status\": 500,\n  \"error\": \"boom\"\n}\n[Image #3] see this"}},

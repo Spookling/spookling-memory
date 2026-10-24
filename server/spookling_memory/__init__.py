@@ -1,10 +1,4 @@
-"""Spookling Memory: the local memory server over the memory algorithm in core/. See README.md.
-
-    spookling-memory serve  [--folder .memory] [--port 7447] [--model M] [--decider D]   HTTP API on 127.0.0.1 (M: a model id, or codex; D: typesafe/jev-1.14)
-    spookling-memory mcp                                                    stdio MCP tools (client of serve)
-    spookling-memory export [--folder .memory] FILE                         the two records, one archive
-    spookling-memory import [--folder .memory] FILE                         restore into an empty folder
-"""
+"""spookling-memory serve | mcp | export | import: the local memory server over the algorithm in core/."""
 from __future__ import annotations
 
 import argparse

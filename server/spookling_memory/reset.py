@@ -1,19 +1,4 @@
-"""Reset: one ruling in the judgement log at time T, and how every view honours it. Nothing is deleted.
-
-A ruling {"step": "reset", "at": T, "upto": the LOG's last seq at T, "note"} means:
-- FACTS: every believed row open at T is closed at T (valid_to = T's day) by the adapter's own sequenced cut,
-  Facts.put(..., insert=False), applied INSIDE the fold at the ruling's LOG position. The fold installed below is
-  the adapter's sleep.fold plus that one step, so every full sleep (a "full tidy") rebuilds FACTS with the reset
-  in place. A fold with no active reset is the adapter's fold, untouched.
-- EVENTS: LOG turns and EVENTS rows recorded before the reset (seq <= upto) are flagged before_reset. A question
-  whose date reaches before T (a date, period, "since X" or anchor starting before T's day) is answered from the
-  whole memory; every other question is answered from a view rebuilt from the records after the reset only
-  (store.Store._view, from after()), so nothing before T can reach it, through search, timeline or the INDEX page.
-- RULES and keepers from before T are not pinned: the whole-memory answer drops them from <rules>/<invariant>
-  (unpinned()); the after-reset view never had them. They stay in the data.
-A "reset_undo" ruling names the reset it reverses; the fold skips that cut and every view is rebuilt as before.
-So: a ruling the fold replays (facts), and a view chosen by the latest active ruling (retrieval).
-"""
+"""Reset: a ruling the fold replays (facts closed at T) and an after-reset view for retrieval. Nothing is deleted."""
 from __future__ import annotations
 
 import hashlib
@@ -26,7 +11,7 @@ from .core.facts import FOREVER, Facts
 from .core.recall import anchor_event, date_in  # the package's `recall` is the function, not the module
 from .core.sleep import tx_of
 
-PINNED = frozenset({"rule", "decision", "failed", "open"})  # the kinds the adapter pins in <invariant>
+PINNED = frozenset({"rule", "decision", "failed", "open"})  # the kinds <invariant> pins
 
 
 def _id(*parts) -> str:
@@ -34,7 +19,7 @@ def _id(*parts) -> str:
 
 
 def active(decisions: list[dict]) -> list[dict]:
-    """Reset rulings in force (not undone), in LOG order."""
+    """Reset rulings not undone, in LOG order."""
     on: list[dict] = []
     for d in decisions:
         if d["step"] == "reset":
@@ -59,7 +44,7 @@ def day(r: dict) -> date:
 
 
 def cut(facts: Facts, r: dict) -> None:
-    """Close every believed row open at T at T's day: the part before T stays, nothing is deleted."""
+    """Close every believed row open at T at T's day; nothing is deleted."""
     t, d = tx(r), tx(r)[:10]
     for attr, item in facts.db.execute("SELECT DISTINCT attribute, item FROM facts WHERE superseded_at=? AND valid_to>?"
                                        " ORDER BY 1, 2", (FOREVER, d)).fetchall():
@@ -74,7 +59,7 @@ def fold(decisions: list[dict]) -> Facts:
     cuts = sorted(active(decisions), key=lambda r: r["upto"])
     if not cuts:
         return _fold(decisions)
-    final = {}  # sleep.fold's selection: the final decision per item (a resolve beats its triage; triage only if fast)
+    final = {}  # sleep.fold's pick: a resolve beats its triage; a triage counts only if fast
     for d in decisions:
         if d["step"] in ("triage", "resolve") and (d["step"] == "resolve" or d["route"] == "fast"):
             final[(d["seq"], d["idx"])] = d
@@ -88,13 +73,12 @@ def fold(decisions: list[dict]) -> Facts:
     return facts
 
 
-# ponytail: patches the adapter module in this process (sleep.full looks fold up at call time). Upgrade path: the
-# adapter's own fold learns the "reset" step and this line goes.
+# ponytail: patches sleep.fold process-wide (sleep.full looks it up per call); goes when the adapter's fold knows resets
 sleep.fold = fold
 
 
 def _refold(mem) -> None:
-    mem.full_seq = -1  # settle() runs a full sleep only when the LOG grew; force one
+    mem.full_seq = -1  # settle() runs a full sleep only when the LOG grew
     mem.settle()
 
 
@@ -103,12 +87,12 @@ def _source(mem) -> str:
 
 
 def reset(mem, at: str, note: str = "") -> dict:
-    """Append one reset ruling at `at` and rebuild the views. `at` may not predate a turn already in the LOG."""
+    """`at` may not predate a turn already in the LOG."""
     t = tx_of(at, 0, 0)  # also validates the timestamp
     late = [e.ts for e in mem.log.events if tx_of(e.ts, 0, 0) > t]
     if late:
         raise ValueError(f"a reset at {at} would predate turns already recorded (latest {max(late)})")
-    mem.settle()  # judge what is pending first, so the ruling is the last line and those judgements fall before it
+    mem.settle()  # judge what is pending first, so those judgements fall before the ruling
     r = {"id": _id("reset", at, mem.log.last_seq, len(mem.log.decisions)), "step": "reset", "at": at,
          "upto": mem.log.last_seq, "note": note, "source": _source(mem), "created": at}
     mem.record(r)
@@ -117,7 +101,6 @@ def reset(mem, at: str, note: str = "") -> dict:
 
 
 def undo_reset(mem) -> dict:
-    """Append the reverse ruling for the latest active reset and rebuild the views."""
     r = latest(mem.log.decisions)
     if r is None:
         raise ValueError("no reset to undo")
@@ -131,14 +114,13 @@ def undo_reset(mem) -> dict:
 
 
 def before_reset(mem) -> set[str]:
-    """Hashes of the LOG turns flagged before_reset (an EVENTS row is flagged when its source_event is)."""
+    """Hashes of the LOG turns before the latest reset."""
     r = latest(mem.log.decisions)
     return {e.hash for e in mem.log.events if e.seq <= r["upto"]} if r else set()
 
 
 def admits(decisions: list[dict], ts: str) -> bool:
-    """A session said before the latest reset cannot enter after it: the fold applies it after the cut, and the
-    adapter's put() refuses a change recorded earlier than the rows it closes."""
+    """A session said before the latest reset cannot enter: put() refuses a change older than the rows it closes."""
     r = latest(decisions)
     return r is None or tx_of(ts, 0, 0) >= tx_of(r["at"], 0, 0)
 

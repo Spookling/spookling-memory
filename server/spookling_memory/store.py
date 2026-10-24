@@ -1,16 +1,4 @@
-"""One memory folder (`.memory/` in a project): the two append-only records, and the adapter's views rebuilt from them.
-
-    log.jsonl         the LOG: every turn, verbatim, once (the adapter's Log.lines() format)
-    judgements.jsonl  the judgement log: every adapter decision, plus this server's rulings (compact, reset, reset_undo)
-    lock              locked while the folder is open, so one process writes it (an OS lock: a crash never leaves it held)
-    vectors.sqlite    the local embedder's cache, when the vectors extra is installed (a cache, not a record: not archived)
-    cache.sqlite      the model replies (tagger, slow path, Jev), keyed by prompt (a cache too: not archived)
-
-The adapter keeps its SQLite in a temp dir that close() removes, so these two files are the only durable copy.
-Each change appends the new lines and fsyncs. The files are UTF-8 with \n line ends on every OS, so a folder copied
-between Windows, macOS and Linux opens unchanged. Opening a folder replays them into a fresh SpooklingMemory (load())
-and settle() rebuilds FACTS, EVENTS, the INDEX page and SEARCH; no model is called for what was already judged.
-"""
+"""One memory folder: log.jsonl and judgements.jsonl are the only durable records; every view is rebuilt from them."""
 from __future__ import annotations
 
 import json
@@ -32,11 +20,11 @@ from .subscription import backend
 
 LOG, JUDGEMENTS, VECTORS, CACHE = "log.jsonl", "judgements.jsonl", "vectors.sqlite", "cache.sqlite"
 WINDOWS = os.name == "nt"
-PART = re.compile(r"#(\d+)(?:-(\d+))?")  # a tail part's place in its conversation: "#<from>" or "#<from>-<to>"
+PART = re.compile(r"#(\d+)(?:-(\d+))?")  # a tail part: "#<from>" or "#<from>-<to>"
 
 
 class Busy(RuntimeError):
-    """The store cannot take this call yet: it is opening, or a rebuild holds its lock. The API's 503 with Retry-After."""
+    """Opening, or a rebuild holds the lock: the API's 503 with Retry-After."""
 
     retry_after = 5  # seconds
 
@@ -46,8 +34,7 @@ def now() -> str:
 
 
 def jsonl(text: str) -> list[str]:
-    """The lines of a JSONL text, split on \\n only (a \\r before it is dropped). str.splitlines() would also split on
-    U+2028, U+0085 and the like, which JSON keeps raw inside a string."""
+    """Split on newline only: str.splitlines() also splits on U+2028 and U+0085, which JSON keeps raw in strings."""
     return [x.removesuffix("\r") for x in text.split("\n")]
 
 
@@ -66,14 +53,13 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def lines(mem, start: tuple[int, int] = (0, 0)) -> tuple[list[str], list[str]]:
-    """The LOG and judgement lines from `start` on, serialised as the adapter's Log.lines() does."""
+    """The records from `start` on, serialised as Log.lines() does."""
     return ([json.dumps(asdict(e), ensure_ascii=False) for e in mem.log.events[start[0]:]],
             [json.dumps(d, ensure_ascii=False, sort_keys=True) for d in mem.log.decisions[start[1]:]])
 
 
 def load(mem, events: list[dict], decisions: list[dict]) -> None:
-    """Replay the two records into a fresh adapter: the LOG, then every judgement in order, with the side state the
-    adapter grows while it judges (key words, event classes, compaction keepers). The views come from settle()."""
+    """Replay the records into a fresh adapter, with the side state judging grows; settle() builds the views."""
     for e in events:
         ev = mem.log.append(e["agent"], e["session_id"], e["turn_index"], e["role"], e["ts"], e["text"])
         if ev is None or ev.hash != e["hash"]:
@@ -81,7 +67,7 @@ def load(mem, events: list[dict], decisions: list[dict]) -> None:
     for d in decisions:
         mem.record(d)
         replay(mem, d)
-    mem.tag_cursor = mem.log.last_seq  # every stored turn was tagged before it was stored (see Store.ingest)
+    mem.tag_cursor = mem.log.last_seq  # every stored turn was tagged before it was stored
 
 
 def replay(mem, d: dict) -> None:
@@ -113,8 +99,7 @@ def append(path: Path, new: list[str]) -> None:
 
 
 def lock(f) -> None:
-    """Lock f's first byte for this open file: fcntl.flock on macOS and Linux, msvcrt.locking on Windows. OSError if
-    another open file holds it. The OS drops the lock when the process ends, so a crash never leaves the folder stuck."""
+    """OSError if another open file holds it; the OS drops it when the process ends."""
     if WINDOWS:
         import msvcrt
 
@@ -127,8 +112,7 @@ def lock(f) -> None:
 
 
 def unlock(f) -> None:
-    """Release and close. Windows may free a closed handle's lock late, so it is unlocked first; a reopen right after
-    then works. Idempotent."""
+    """Windows may free a closed handle's lock late, so unlock before close."""
     if f.closed:
         return
     if WINDOWS:
@@ -140,12 +124,7 @@ def unlock(f) -> None:
 
 
 class Store:
-    """An open memory folder. Every call holds one lock (ponytail: one writer, one reader at a time; a per-view
-    read lock if retrieval latency under load matters). `adapter` kwargs go to SpooklingMemory (model, triage, ...).
-
-    background: the folder is locked at once, but the replay and the rebuild run in a thread, so a server answers
-    (Busy, 503) while it opens. wait: seconds a call waits for the open or the lock before Busy (None: as long as it
-    takes), so a long rebuild answers 503 instead of piling up requests behind the lock."""
+    """ponytail: one lock for every call; a per-view read lock if retrieval latency under load matters."""
 
     def __init__(self, folder: str | Path, background: bool = False, wait: float | None = None, **adapter):
         self.folder = Path(folder)
@@ -159,7 +138,7 @@ class Store:
         self.adapter, self.lock, self._post, self.mem = adapter, threading.RLock(), None, None
         self.wait, self.ready, self.failed = wait, threading.Event(), None
         vectors.CACHE = self.folder / VECTORS  # ponytail: process-wide, fine for one folder per server process
-        models.CACHE_PATH = self.folder / CACHE  # the tagger's and Jev's replies, likewise
+        models.CACHE_PATH = self.folder / CACHE  # likewise
         if background:
             threading.Thread(target=self._open, name="spookling-open", daemon=True).start()
         else:
@@ -168,7 +147,6 @@ class Store:
                 raise self.failed
 
     def _open(self) -> None:
-        """Replay the records and rebuild the views; on failure, release the folder and keep the reason."""
         try:
             with self.lock:
                 events, decisions = read_jsonl(self.folder / LOG), read_jsonl(self.folder / JUDGEMENTS)
@@ -176,9 +154,9 @@ class Store:
                 load(self.mem, events, decisions)
                 self.written = (len(events), len(decisions))
                 self.mem.settle()
-                self._flush()  # a full sleep may judge items left pending: those judgements are records too
+                self._flush()  # a full sleep may judge pending items: those judgements are records too
         except BaseException as e:
-            if self.mem is not None:  # its LOG is an open SQLite file in a temp dir, which Windows cannot delete open
+            if self.mem is not None:  # Windows cannot delete its open temp SQLite file
                 self.mem.close()
             unlock(self._lockfile)
             self.failed = e
@@ -187,9 +165,7 @@ class Store:
 
     @contextmanager
     def _busy(self, wait: float | None = None):
-        """The store's one lock, waited for at most `wait` seconds (None: as long as it takes), else Busy; and a model
-        layer that cannot stop the server: core.models calls sys.exit() when a provider key is missing, which in a
-        server thread kills the process."""
+        """The lock within `wait` seconds, else Busy; core.models' sys.exit() (no key) becomes a RuntimeError."""
         if not self.ready.wait(wait):
             raise Busy(f"{self.folder} is still opening: replaying its records and rebuilding the views")
         if self.failed is not None:
@@ -213,8 +189,7 @@ class Store:
         return [asdict(e) for e in self.mem.log.events], list(self.mem.log.decisions)
 
     def _logged(self, session_id: str) -> int:
-        """How many turns of session_id's conversation the LOG is past: a part "<id>#<a>" covers turns a.. (one LOG
-        turn each), "<id>#<a>-<b>" turns a to b (its empty turns were not logged), the session sent whole its turns."""
+        """How many turns of the conversation the LOG is past, from its "<id>#<a>" and "<id>#<a>-<b>" parts."""
         parts = Counter(e.session_id for e in self.mem.log.events
                         if e.session_id == session_id or e.session_id.startswith(session_id + "#"))
         upto = 0
@@ -225,11 +200,7 @@ class Store:
 
     def ingest(self, session_id: str, turns: list[dict], ts: str | None = None, agent: str = "user",
                tail: bool = False, patient: bool = False) -> int:
-        """Log one session's turns; returns how many were new. tail=True: `turns` is the whole conversation so far;
-        only the turns past those already logged for session_id are logged, as session "<id>#<n>" stamped now (so
-        the LOG's time order follows arrival, which the fold needs, and a retried call adds nothing). An empty tail
-        turn holds its place but is not logged; the part is then "<id>#<n>-<end>". patient: wait for the store as
-        long as it takes (a hook's background call, which nobody waits on)."""
+        """Returns how many turns were new. tail: turns is the whole conversation so far; patient: no wait limit."""
         with self._busy(None if patient else self.wait):
             m = self.mem
             if tail:
@@ -238,9 +209,9 @@ class Store:
                 if not new:
                     return 0
                 part = f"{session_id}#{have}" if len(new) == len(turns) - have else f"{session_id}#{have}-{len(turns)}"
-                turns, session_id, ts = new, part, None
+                turns, session_id, ts = new, part, None  # stamped now: the fold needs the LOG in arrival order
             ts = ts or now()
-            tx_of(ts, 0, 0)  # a bad timestamp is refused here: in the LOG it would fail every later sleep
+            tx_of(ts, 0, 0)  # a bad timestamp in the LOG would fail every later sleep
             if not R.admits(m.log.decisions, ts):
                 raise ValueError(f"session {session_id} at {ts} predates the reset at {R.latest(m.log.decisions)['at']}")
             n = len(m.log.events)
@@ -250,7 +221,7 @@ class Store:
             return len(m.log.events) - n
 
     def retrieve(self, question: str, ts: str | None = None) -> dict:
-        """{context, digest, strong}. After a reset, a question about now is answered from the after-reset view."""
+        """After a reset, a question about now is answered from the after-reset view."""
         ts = ts or now()
         with self._busy(self.wait):
             self.mem.settle()
@@ -262,23 +233,19 @@ class Store:
                 return self.mem.retrieve(question, "user", ts)
 
     def _view(self, r: dict) -> SpooklingMemory:
-        """The memory rebuilt from the records after reset r, cached until the records grow.
-        ponytail: rebuilt from zero after every change, as the adapter's own full sleep is; grow it in place (ingest the
-        new sessions into it) if a long after-reset history makes the first question after a change slow."""
+        """ponytail: rebuilt from zero on every change; grow it in place if the first question after one gets slow."""
         key = (r["id"], len(self.mem.log.events), len(self.mem.log.decisions))
         if self._post is None or self._post[0] != key:
             if self._post is not None:
                 self._post[1].close()
             post = SpooklingMemory(**self.adapter)
             load(post, *R.after(*self.records(), r))
-            post.settle()  # the main memory settled first, so nothing is left for a model here
+            post.settle()  # the main memory settled first, so no model is called here
             self._post = (key, post)
         return self._post[1]
 
     def compact(self, session_id: str) -> dict:
-        """Before the harness summarises a session: keep its rules, decisions, values, dates, paths and names verbatim
-        (the adapter's compact(), with session_id also matching its "<id>#<n>" tail parts), log what was kept as a
-        "compact" ruling, and return the survivor block: the <invariant> every later context leads with."""
+        """Keep the session's rules, decisions, values, dates, paths and names verbatim; returns <invariant>."""
         with self._busy(self.wait):
             m = self.mem
             evs = [e for e in m.log.events if e.session_id == session_id or e.session_id.startswith(session_id + "#")]
@@ -305,7 +272,6 @@ class Store:
             return out
 
     def restore(self, events: list[dict], decisions: list[dict]) -> dict:
-        """Load an archive's records into this (empty) memory and rebuild every view."""
         with self._busy(self.wait):
             if self.mem.log.events or self.mem.log.decisions:
                 raise ValueError("this memory is not empty: import into an empty folder")
@@ -329,7 +295,7 @@ class Store:
                                                   "decider": self.mem.decider and self.mem.decider.model}}
 
     def close(self) -> None:
-        """Waits for an open or a call in progress. Idempotent; after a failed open there is nothing left to close."""
+        """Idempotent; waits for an open or a call in progress."""
         self.ready.wait()
         if self.failed is not None:
             return

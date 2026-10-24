@@ -78,14 +78,14 @@ def test_a_bad_timestamp_is_refused_before_it_reaches_the_log(open_store):
     with pytest.raises(ValueError):
         s.ingest("s1", turns(["I drive a Toyota Corolla, nothing fancy."]), "last tuesday")
     assert s.mem.log.events == []
-    fill(s, HISTORY[:1])  # the memory still works
+    fill(s, HISTORY[:1])
     assert len(s.mem.log.events) == 4
 
 
 def test_a_line_separator_inside_a_turn_survives_a_reopen_and_an_archive(open_store, tmp_path):
     from spookling_memory.portability import read_archive
 
-    text = "Line one line two\u0085three, café — \U0001F47B"  # JSON keeps U+2028 and U+0085 raw
+    text = "Line one line two\u0085three, café \u2014 \U0001F47B"  # JSON keeps U+2028 and U+0085 raw
     s = open_store()
     s.ingest("s1", turns([text]), "2024-05-22T10:00:00Z")
     s.export(tmp_path / "a.spookling")
@@ -96,8 +96,7 @@ def test_a_line_separator_inside_a_turn_survives_a_reopen_and_an_archive(open_st
 
 
 def test_the_windows_lock_refuses_a_second_open_and_frees_on_close(monkeypatch, tmp_path):
-    """msvcrt exists only on Windows. A stand-in with its contract (LK_NBLCK raises PermissionError while another open
-    file holds the byte; LK_UNLCK frees it) runs the Windows branch here; the real one runs on Windows itself."""
+    """msvcrt exists only on Windows: a stand-in with its contract runs the Windows branch here."""
     import os
     import sys
     import types
@@ -124,11 +123,8 @@ def test_the_windows_lock_refuses_a_second_open_and_frees_on_close(monkeypatch, 
     Store(tmp_path / "w", triage=Stub(TAGS)).close()  # free at once
 
 
-# ---------------------------------------------------------------- opening without blocking (the 25-minute hang)
-
 def test_a_background_open_answers_busy_until_it_is_open(open_store, tmp_path, monkeypatch):
-    """serve opens the folder in a thread: until the replay and the rebuild are done, a call gets Busy (the API's 503
-    with Retry-After), not a wait behind the lock; a rebuild that holds the lock past `wait` gets Busy too."""
+    """Until the open is done a call gets Busy (a 503); so does a rebuild holding the lock past `wait`."""
     import threading
 
     from spookling_memory import store as store_mod
@@ -145,8 +141,8 @@ def test_a_background_open_answers_busy_until_it_is_open(open_store, tmp_path, m
         b.stats()
     go.set()
     assert b.ready.wait(10) and b.stats()["n_events"] == 4
-    assert vectors.CACHE == tmp_path / "m" / "vectors.sqlite"  # embeddings are cached in the memory folder
-    assert models.CACHE_PATH == tmp_path / "m" / "cache.sqlite"  # and the model replies
+    assert vectors.CACHE == tmp_path / "m" / "vectors.sqlite"
+    assert models.CACHE_PATH == tmp_path / "m" / "cache.sqlite"
     got = []
     with b.lock:  # a rebuild in progress on another thread
         t = threading.Thread(target=lambda: got.append(pytest.raises(store_mod.Busy, b.retrieve, "What car?", NOW)))

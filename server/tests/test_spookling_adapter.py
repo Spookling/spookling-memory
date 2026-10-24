@@ -1,12 +1,11 @@
-"""The memory algorithm (spookling_memory.core), offline: a stub Triage stands in for the writer model, so no test makes a model call.
-Run: uv run pytest tests/test_spookling_adapter.py"""
+"""The memory algorithm, offline: a stub Triage stands in for the writer model, so no test makes a model call."""
 import json
 import os
 from datetime import date
 
 import pytest
 
-os.environ["SPOOKLING_LOCAL_MODELS"] = "0"  # hermetic: no embedder or reranker in these tests
+os.environ["SPOOKLING_LOCAL_MODELS"] = "0"
 
 from spookling_memory.core import SpooklingMemory  # noqa: E402
 from spookling_memory.core import triage as triage_mod  # noqa: E402
@@ -93,8 +92,6 @@ def history(f: Facts, key="phone"):
     return [(r.value, r.valid_from, r.valid_to) for r in f.believed(key)]
 
 
-# ---------------------------------------------------------------- FACTS: the bitemporal apply rules
-
 def test_new_value_closes_the_old_row_and_history_stays_queryable():
     f = Facts()
     assert f.apply(d("assert", "Pixel 8", "2024-09-23", "2024-09-23", n=1)) == "insert"
@@ -158,8 +155,6 @@ def test_disputed_is_metadata_and_latest_statement_wins():
     assert m.stats()["n_disputed"] == 1
 
 
-# ---------------------------------------------------------------- triage, routing, sleep
-
 def test_routes_and_the_light_full_schedule():
     m = ingested(full_every=0)  # light only until questions
     routes = [(x["label"], x["value"] or x["old"], x["route"]) for x in m.log.decisions if x["step"] == "triage"]
@@ -169,7 +164,7 @@ def test_routes_and_the_light_full_schedule():
     assert m.n_full == 0 and m.search is None and m.index == ""  # light: no INDEX, no SEARCH
     assert [r.value for r in m.facts.at("phone", "2026-01-01")] == ["iPhone 16"]  # light applied the fast changes
     m.settle()
-    assert m.n_full == 1 and m.search is not None and m.index == ""  # v4: nothing here is confirmed twice
+    assert m.n_full == 1 and m.search is not None and m.index == ""  # nothing here is confirmed twice
     m2 = ingested(full_every=3)
     assert m2.n_full == 2  # after sessions 3 and 6
     m3 = ingested(sleep_every="10 turns", full_every=0)
@@ -234,8 +229,6 @@ def test_same_turn_twice_is_one_event():
     assert len(m.log.events) == n
 
 
-# ---------------------------------------------------------------- recall
-
 def test_recall_shows_the_version_in_force_on_the_date():
     m = ingested()
     ctx = m.context("Which phone was I using in mid-December 2024?", "A", NOW)
@@ -276,10 +269,8 @@ def test_view_bytes_stay_small_against_the_log():
     m.settle()
     st = m.stats()
     assert st["view_bytes"] < st["log_bytes"] < st["store_bytes"], st
-    assert st["view_bytes"] < 0.25 * st["log_bytes"], st  # PASS-MARKS 8's ratio, on a toy history
+    assert st["view_bytes"] < 0.25 * st["log_bytes"], st
 
-
-# ---------------------------------------------------------------- date_in: what time a question means
 
 def _store():
     m = ingested()
@@ -349,8 +340,6 @@ def test_dump_writes_the_store(tmp_path):
                for x in (tmp_path / "decisions.jsonl").read_text().splitlines())
 
 
-# ---------------------------------------------------------------- v1.1: neighbours, session fallback, noise control
-
 PLAY = ["I'm looking for Italian restaurants nearby.", "Here are some ideas.",
         "By the way, I recently went to a play at the local community theater.", "That's great to hear!",
         "The production was The Glass Menagerie.", "A classic by Tennessee Williams.",  # shares no word with the question
@@ -366,17 +355,17 @@ def play_store(**kw) -> SpooklingMemory:
 
 def test_neighbours_bring_the_turn_that_names_it():
     q = "What play did I attend at the local community theater?"
-    assert "Glass Menagerie" not in play_store(neighbours=0, events=False).context(q, "A", NOW)  # the hit alone: 58bf7951's miss
+    assert "Glass Menagerie" not in play_store(neighbours=0, events=False).context(q, "A", NOW)  # the hit alone
     narrow = play_store(neighbours=0, events=False).context(q, "A", NOW)
     assert "local community theater." in narrow and "[...]" in narrow  # two hits, a gap between them
-    ctx = play_store(neighbours=2, events=False).context(q, "A", NOW)  # the v1.1 window rule, without event units
+    ctx = play_store(neighbours=2, events=False).context(q, "A", NOW)  # without event units
     assert "The Glass Menagerie" in ctx and "[...]" not in ctx
     assert ctx.count("The production was") == 1 and ctx.count("local community theater.") == 1  # windows merge
     assert ctx.index("local community theater.") < ctx.index("Glass Menagerie") < ctx.index("acting classes")
 
 
 def test_neighbours_respect_the_budget():
-    m = play_store(neighbours=2, budget=40, events=False)  # room for the hit unit, not its window (v1.1 rule; a timeline line would fill 40)
+    m = play_store(neighbours=2, budget=40, events=False)  # room for the hit unit, not its window; a timeline line would fill 40
     ctx = m.context("What play did I attend at the local community theater?", "A", NOW)
     assert "local community theater." in ctx and "Glass Menagerie" not in ctx
 
@@ -406,7 +395,7 @@ def test_index_shows_facts_confirmed_twice_and_single_tastes_only_in_their_recor
     ctx = m.context("Where do I live?", "A", NOW)
     assert "<memory-index>" in ctx and "- city: Leeds" in ctx
     hobby = m.context("What's my hobby?", "A", NOW)
-    assert "The 100" not in m.index and "nothing on record" not in hobby  # v5: said once, so off the page...
+    assert "The 100" not in m.index and "nothing on record" not in hobby  # said once, so off the page...
     assert any(x.startswith("hobby: The 100 (") and x.endswith("; said once)") for x in hobby.splitlines())  # ...but in its record
 
 
@@ -432,14 +421,12 @@ def test_coverage_comes_before_context():
     assert "helmet" in ctx and "lights" in ctx and "filler" not in ctx
 
 
-# ---------------------------------------------------------------- v1.2: aggregation, latest mention, abstain rule
-
 def chat(m: SpooklingMemory, sid: str, ts: str, *pairs: str) -> None:
     m.ingest(Session(sid, "A", ts, [Turn("user" if i % 2 == 0 else "assistant", t) for i, t in enumerate(pairs)]))
 
 
 def test_aggregation_shows_each_hit_with_its_neighbours_in_rank_order():
-    """v1.3: the fact-bearing turn comes with its context; v1.2's one-unit-per-session order dropped both."""
+    """The fact-bearing turn comes with its context."""
     m = SpooklingMemory(triage=Stub({}), neighbours=1, agg_trim=0)
     chat(m, "s1", "2024-01-01T10:00:00Z", "Planning bike maintenance.", "Sure.", "Bought a bike helmet for 120 dollars.", "Nice.",
          "It is the Bell model.", "Good.")
@@ -473,8 +460,6 @@ def test_aggregation_prefers_units_with_quantities_and_has_its_own_budget():
     assert m2.context("Which pottery workshop did I go to?", "A", NOW).count("pottery") <= 1
 
 
-# ---------------------------------------------------------------- v1.4: tagging fixes (no re-tag; stubbed)
-
 def test_v14_mention_completed_to_a_stored_value_is_kept_as_its_verbatim_part():
     tags = {"I work at Quayside Health.": [dict(label="fact", key="employer", value="Quayside Health")],
             "Long day at Quayside, as usual.": [dict(label="fact", key="employer", value="Quayside Health")],
@@ -484,7 +469,7 @@ def test_v14_mention_completed_to_a_stored_value_is_kept_as_its_verbatim_part():
     m.ingest(sess(2, "2024-02-01T10:00:00Z", "Long day at Quayside, as usual.", "Visiting parks is my thing."))
     d = {x["raw"]["value"]: x for x in m.log.decisions if x["step"] == "triage" and x["seq"] > 2}
     assert d["Quayside Health"]["value"] == "Quayside" and "mention" in d["Quayside Health"]["flags"]
-    assert d["Quayside Health"]["route"] == "fast" and m.facts.stats_for("employer", "", "Quayside Health")[0] == 0  # v3.2
+    assert d["Quayside Health"]["route"] == "fast" and m.facts.stats_for("employer", "", "Quayside Health")[0] == 0
     assert d["visiting parks every week"]["route"] == "rejected"  # a paraphrase of nothing stored stays out
 
 
@@ -516,8 +501,6 @@ def test_v14_guide_is_off_by_default():
     chat(m, "s1", "2023-05-01T10:00:00Z", "I went to a play at the community theater last week.", "Sounds fun.")
     assert m.guide is False and "Answer from what is here" not in m.context("What play did I see at the community theater?", "A", NOW)
 
-
-# ---------------------------------------------------------------- v2 (13 Oct): all offline, models stubbed
 
 from spookling_memory.core import complex_triggers  # noqa: E402
 from spookling_memory.core import dates as dmod  # noqa: E402
@@ -597,7 +580,7 @@ def test_v2_complex_classifier():
 
 
 def mr_store(**kw):
-    kw = {"mapreduce": True, "selfcheck": True, "ladder_max": 3, "token_cap": 100000} | kw  # v2 features, off by default since v3
+    kw = {"mapreduce": True, "selfcheck": True, "ladder_max": 3, "token_cap": 100000} | kw  # off by default
     m = SpooklingMemory(triage=Stub({}), ladder=True, **kw)
     chat(m, "s1", "2023-04-02T10:00:00Z", "Bought a bike helmet for $120 today.", "Nice.", "The weather is grey.", "Indeed.")
     chat(m, "s2", "2023-05-01T10:00:00Z", "Got new bike lights for $40 last week.", "Bright!")
@@ -754,8 +737,6 @@ def test_v2_preferences_on_demand():
     assert "cuisine: spicy Thai food" not in plain.context("Can you recommend a restaurant for dinner?", "A", NOW)
 
 
-# ---------------------------------------------------------------- v2: fixes from docs/error-analysis-v1.3.md
-
 def test_fix1_when_did_is_not_an_anchor_and_a_named_day_keeps_later_turns():
     m = _store()
     now = date(2027, 3, 4)
@@ -814,8 +795,6 @@ def test_boolean_knobs_from_the_cli():
     assert SpooklingMemory(triage=Stub({}), vectors="auto", rerank=False).rerank is False
 
 
-# ---------------------------------------------------------------- v3 (13 Oct): compact(), safe defaults, cost caps
-
 from spookling_memory.core import compact as cmod  # noqa: E402
 
 
@@ -826,7 +805,7 @@ def test_v3_safe_defaults():
         (False, False, "off", False, 9000, 10000)
     import inspect
     sig = inspect.signature(SpooklingMemory).parameters
-    assert (sig["vectors"].default, sig["rerank"].default, sig["rerank_mode"].default) == ("auto", "auto", "order")  # v4: on
+    assert (sig["vectors"].default, sig["rerank"].default, sig["rerank_mode"].default) == ("auto", "auto", "order")  # on
     assert (c["vectors"], c["rerank"]) == (False, False) and c["local_models"] != "on"  # unless the local models are off
     assert c["date_fixes"] and c["agg_nodiv"] and c["trim_all"] and c["stale_label"] and c["event_dates"] and c["entities"]
     assert c["prefs_on_demand"] and c["compact_keep"] and c["pin_rules"]
@@ -843,7 +822,7 @@ def test_v3_compact_keeps_items_verbatim_with_pointers():
     assert {"rule", "decision", "path"} <= set(kinds) and all(k.seq > 0 for k in m.staging)
     assert not any("weather" in k.text for k in m.staging)
     ctx = m.context("Which branch do we deploy on?", "A", NOW)
-    inv = ctx.split("</invariant>")[0]  # algorithm v2: rules and decisions always in <invariant>, other kept items after
+    inv = ctx.split("</invariant>")[0]  # rules and decisions always in <invariant>, other kept items after
     assert ctx.startswith("<invariant>") and inv.index("Address me as Dr. Rao") < inv.index("feat/webhook-timeouts")
     assert ctx.index("</invariant>") < ctx.index("<kept-before-compaction>") < ctx.index("deploy/values.yaml")
     assert m.fork().staging == m.staging  # forks keep what was kept
@@ -892,8 +871,6 @@ def test_v3_only_instruction_shaped_tagged_rules_are_pinned():
     assert "always answer in metric" in ctx.split("</rules>")[0] and "- Quokka" not in ctx
 
 
-# ---------------------------------------------------------------- v3.2: confirm needs the value words; stricter pinning
-
 GYM = "7:00 pm on Mondays, Wednesdays, and Fridays"
 
 
@@ -908,8 +885,7 @@ def gym(*later: tuple[str, str, str]) -> SpooklingMemory:
 
 
 def test_v32_partial_mention_is_not_a_confirmation():
-    """59524333: a later turn says 6:00 pm but is tagged with only the unchanged words; the old row stays, unconfirmed,
-    and its record no longer reads "in force now" next to the later turn."""
+    """Tagged with only the unchanged words: the old row stays unconfirmed and no longer reads "in force now"."""
     m = gym(("2023-05-30T10:00:00Z", "These days I usually go to the gym at 6:00 pm on Mondays, Wednesdays, and Fridays, a better hour.",
              "on Mondays, Wednesdays, and Fridays"))
     assert [x["value"] for x in m.log.decisions if x["step"] == "triage"][-1] == "on Mondays, Wednesdays, and Fridays"
@@ -928,7 +904,7 @@ def test_v32_record_quotes_the_newest_turn_that_states_the_value():
 
 
 def test_v32_only_the_users_own_instruction_sentences_are_pinned():
-    """bf659f65: the tagger cut "keep it short ... always add my voice demo" out of a rule scoped to cover letters."""
+    """The tagger cut "keep it short ... always add my voice demo" out of a rule scoped to cover letters."""
     voice = ("whenever ask you for cover letter always remember to keep it short and simple and always add my voice demo "
              "attaching part unless i ask you for longer version")
     km = "Always give distances in kilometres, never miles."
@@ -940,8 +916,6 @@ def test_v32_only_the_users_own_instruction_sentences_are_pinned():
     assert m.rules() == [f"- {km} (said 2023-05-26)"]  # the whole sentence, in the user's words; no voice demo
 
 
-# ---------------------------------------------------------------- v4
-
 def test_v4_remind_me_is_never_an_aggregation():
     from spookling_memory.core.complex_triggers import categories
     q = "Can you remind me what was the average improvement in framerate in the HAMLET submission?"
@@ -951,7 +925,7 @@ def test_v4_remind_me_is_never_an_aggregation():
 
 
 def test_v4_a_lone_turn_between_two_shown_turns_is_shown():
-    """LoCoMo conv-48-q018: "I bought it a year ago in Paris" needs the turn before it ("my snake Seraphim")."""
+    """"I bought it a year ago in Paris" needs the turn before it ("my snake Seraphim")."""
     m = SpooklingMemory(triage=Stub({}), neighbours=0)
     m.ingest(Session("s1", "A", "2023-01-27T10:00:00Z", [Turn("user", "My second snake Seraphim slinked out of her cage."),
                                                           Turn("user", "Aww, so sweet."),
@@ -1022,8 +996,6 @@ def test_v31_event_dates_only_on_time_questions():
     plain = m.context("Where did I run the 5K?", "A", NOW)
     assert "I ran a 5K in the park last Sunday." in plain and "= 21 May 2023" not in plain
 
-
-# ---------------------------------------------------------------- algorithm v2 (research/37, 39): events, classes, activation
 
 import sqlite3  # noqa: E402
 
@@ -1212,7 +1184,7 @@ def test_v2_ppr_converges_to_the_closed_form_on_a_toy_graph():
     r = act.ppr(M, p, restart=0.5, iters=200, tol=1e-14)
     closed = 0.5 * np.linalg.solve(np.eye(5) - 0.5 * M.toarray(), p)
     assert np.allclose(r, closed, atol=1e-10) and abs(r.sum() - 1) < 1e-9
-    q = np.array([0, 0, 1.0, 0, 0])  # Haveliwala Eq. 9: PPR of a mix is the mix of PPRs
+    q = np.array([0, 0, 1.0, 0, 0])  # PPR of a mix is the mix of PPRs
     mix = act.ppr(M, 0.3 * p + 0.7 * q, iters=200, tol=1e-14)
     assert np.allclose(mix, 0.3 * act.ppr(M, p, iters=200, tol=1e-14) + 0.7 * act.ppr(M, q, iters=200, tol=1e-14), atol=1e-10)
 
@@ -1228,7 +1200,7 @@ def test_v2_activation_reaches_the_other_event_at_the_place_two_hops_away():
     j = lambda word: next(j for j, i in enumerate(on.search.einfo) if word in i["clause"])
     assert ("e", j("pottery")) in hits  # artist -> concert event -> Fillmore Hall -> the workshop: two hops
     assert ("e", j("album")) in hits  # one hop, ranked by activation; the reader reads the place
-    assert ("e", j("running shoes")) not in hits  # shares no entity or class with a seed: dropped, not shown (C&L p415)
+    assert ("e", j("running shoes")) not in hits  # shares no entity or class with a seed: dropped
     assert "pottery workshop" in on.context(q, "A", NOW)
 
 
@@ -1263,8 +1235,7 @@ def test_v2_model_events_prompt_parses_and_leaves_the_fact_cache_alone(monkeypat
 
 
 def test_v2_time_module_dates_events_and_its_block_comes_last():
-    """docs/timeline.md: events dated by timeline.anchor; for a time question the <time-computed> block is the last
-    line of the recalled data, counted against the budget and never trimmed; plans get no date."""
+    """Events are dated by timeline.anchor; <time-computed> comes last, counted, never trimmed; plans get no date."""
     m = users_store(("2023-03-01T10:00:00Z", "By the way, I cancelled my FarmFresh subscription today."),
                     ("2023-03-11T10:00:00Z", "Also, I did my online grocery shopping today."),
                     ("2023-03-12T10:00:00Z", "I'm planning to visit the Louvre next Friday."))
@@ -1310,8 +1281,7 @@ def test_v21_retrieve_returns_context_digest_and_strong():
 
 
 def test_v21_window_fallback_per_kind_keeps_turns_said_after_the_window():
-    """LongMemEval 0ea62687: every turn was said after the question's window, while "on or before" events passed it;
-    one shared fallback then dropped every turn. Turns fall back on their own; out-of-window events never show."""
+    """Turns said after the window fall back on their own; out-of-window events never show."""
     m = users_store(("2023-05-20T10:00:00Z", "My car gets about 30 miles per gallon these days, any tips to improve it?"),
                     ("2023-05-22T10:00:00Z", "I bought a new air filter for my car."))
     ctx = m.context("How many miles per gallon was my car getting a few months ago?", "A", "2023-05-30T10:00:00Z")
@@ -1319,7 +1289,7 @@ def test_v21_window_fallback_per_kind_keeps_turns_said_after_the_window():
 
 
 def test_texts_with_counts_exactly_like_a_substring_scan():
-    """build()'s alias support, counted in one pass (texts_with) instead of one scan of every text per name."""
+    """texts_with counts in one pass exactly what a scan of every text per name would."""
     texts = ["Met Ann at Annual Day", "ann", "A B", "Wells Fargo Center and Wells", "]x^", ""]
     names = ["Ann", "Annual Day", "A", "Wells", "Wells Fargo Center", "]", "^", "B", "Zed"]
     assert ex.texts_with(names, texts) == {n: sum(1 for t in texts if n in t) for n in names}

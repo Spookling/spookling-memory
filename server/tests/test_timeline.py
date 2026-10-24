@@ -1,9 +1,4 @@
-"""The time module (research/36): grammar, anchoring, the timeline, Allen relations, arithmetic, rendering. No model is
-called anywhere. The generated `temporal` suite, checked at the three levels of 36 D.1, is tested in memory-bench
-(tests/test_temporal_suite.py).
-
-    uv run pytest tests/test_timeline.py -q
-"""
+"""The time module: grammar, anchoring, the timeline, Allen relations, arithmetic and rendering; no model is called."""
 import json
 from datetime import date, timedelta
 
@@ -16,8 +11,7 @@ d = date
 ONE = timedelta(days=1)
 WED, SUN, SAT, TUE = d(2023, 11, 29), d(2022, 4, 10), d(2023, 5, 27), d(2023, 5, 23)
 
-# ------------------------------------------------------------------------------------------- B.1 normalisation
-# (text, chat day, tense, type, status, lo, hi, nominal, granule); lo/hi closed-open; for two readings lo/hi are the hull
+# (text, chat day, tense, type, status, lo, hi, nominal, granule); lo and hi closed-open, the hull for two readings
 TIMEX = [
     ("2023-05-01", SAT, None, "DATE", "ok", d(2023, 5, 1), d(2023, 5, 2), d(2023, 5, 1), "day"),
     ("1 May 2023", SAT, None, "DATE", "ok", d(2023, 5, 1), d(2023, 5, 2), d(2023, 5, 1), "day"),
@@ -34,7 +28,7 @@ TIMEX = [
     ("early 2024", SAT, None, "DATE", "ok", d(2024, 1, 1), d(2024, 5, 1), None, "season"),
     ("Easter 2024", SAT, None, "DATE", "ok", d(2024, 3, 31), d(2024, 4, 1), d(2024, 3, 31), "day"),
     ("Christmas 2023", SAT, None, "DATE", "ok", d(2023, 12, 25), d(2023, 12, 26), d(2023, 12, 25), "day"),
-    # phase 2: a month and day with no year, by the event's tense (bug A.4.2: the past "May 1st" is not 2024)
+    # a month and day with no year, read by the event's tense: the past "May 1st" is not 2024
     ("on May 1st", WED, "past", "DATE", "ok", d(2023, 5, 1), d(2023, 5, 2), d(2023, 5, 1), "day"),
     ("on May 1st", WED, "future", "DATE", "ok", d(2024, 5, 1), d(2024, 5, 2), d(2024, 5, 1), "day"),
     ("on May 1st", WED, None, "DATE", "ok", d(2024, 5, 1), d(2024, 5, 2), d(2024, 5, 1), "day"),
@@ -50,7 +44,6 @@ TIMEX = [
     ("on the 15th", WED, None, "DATE", "two_readings", d(2023, 11, 15), d(2023, 12, 16), None, "day"),
     ("on the 15th", WED, "past", "DATE", "ok", d(2023, 11, 15), d(2023, 11, 16), d(2023, 11, 15), "day"),
     ("in early May", d(2023, 8, 1), "past", "DATE", "ok", d(2023, 5, 1), d(2023, 5, 11), d(2023, 5, 5), "month"),
-    # weekdays: TimeML's "Thursday of the previous week" against everyday use (bug A.4.7)
     ("last Tuesday", TUE, "past", "DATE", "ok", d(2023, 5, 16), d(2023, 5, 17), d(2023, 5, 16), "day"),
     ("last Friday", SUN, "past", "DATE", "two_readings", d(2022, 4, 1), d(2022, 4, 9), None, "day"),
     ("last Thursday", SAT, "past", "DATE", "two_readings", d(2023, 5, 18), d(2023, 5, 26), None, "day"),
@@ -60,14 +53,13 @@ TIMEX = [
     ("on Friday", SUN, "past", "DATE", "ok", d(2022, 4, 8), d(2022, 4, 9), d(2022, 4, 8), "day"),
     ("on Friday", SUN, None, "DATE", "two_readings", d(2022, 4, 8), d(2022, 4, 16), None, "day"),
     ("this Saturday", SUN, None, "DATE", "ok", d(2022, 4, 9), d(2022, 4, 10), d(2022, 4, 9), "day"),
-    # weekends (bug A.4.6: "last weekend" said on a Sunday has two readings)
+    # "last weekend" said on a Sunday has two readings
     ("last weekend", SUN, "past", "DATE", "two_readings", d(2022, 4, 2), d(2022, 4, 11), None, "week"),
     ("last weekend", d(2022, 4, 13), "past", "DATE", "ok", d(2022, 4, 9), d(2022, 4, 11), None, "week"),
     ("this weekend", SUN, "past", "DATE", "ok", d(2022, 4, 9), d(2022, 4, 11), None, "week"),
     ("this weekend", d(2022, 4, 13), "future", "DATE", "ok", d(2022, 4, 16), d(2022, 4, 18), None, "week"),
     ("this weekend", d(2022, 4, 11), "past", "DATE", "ok", d(2022, 4, 9), d(2022, 4, 11), None, "week"),
     ("this weekend", SUN, None, "DATE", "two_readings", d(2022, 4, 9), d(2022, 4, 18), None, "week"),
-    # relative to the chat
     ("today", SAT, None, "DATE", "ok", SAT, SAT + ONE, SAT, "day"),
     ("yesterday", SAT, None, "DATE", "ok", SAT - ONE, SAT, SAT - ONE, "day"),
     ("the day before yesterday", SAT, None, "DATE", "ok", SAT - 2 * ONE, SAT - ONE, SAT - 2 * ONE, "day"),
@@ -94,7 +86,6 @@ TIMEX = [
     ("in the past two weeks", SAT, None, "DATE", "ok", d(2023, 5, 13), d(2023, 5, 28), None, "week"),
     ("last summer", SAT, None, "DATE", "ok", d(2022, 6, 1), d(2022, 9, 1), None, "season"),
     ("in the summer", SAT, "past", "DATE", "ok", d(2022, 6, 1), d(2022, 9, 1), None, "season"),
-    # holidays: fixed, computus, nth weekday
     ("last Christmas", SUN, None, "DATE", "ok", d(2021, 12, 25), d(2021, 12, 26), d(2021, 12, 25), "day"),
     ("at Easter", d(2024, 4, 20), "past", "DATE", "ok", d(2024, 3, 31), d(2024, 4, 1), d(2024, 3, 31), "day"),
     ("on Thanksgiving", d(2023, 12, 1), "past", "DATE", "ok", d(2023, 11, 23), d(2023, 11, 24), d(2023, 11, 23), "day"),
@@ -161,7 +152,6 @@ def test_dates_inside_names_are_names(text):
 
 @pytest.mark.parametrize("text", VAGUE + REFUSED)
 def test_refuse_list_gives_no_confident_date(text):
-    """36 D.1 L1: zero confident dates on the refuse list."""
     t = D.timex(f"I did it {text}.", SAT, "past")
     assert t is not None and t.status in ("vague", "refused") and t.lo is None and t.hi is None, t
 
@@ -172,7 +162,6 @@ def test_not_time_words(text):
 
 
 def test_two_phases_keep_the_underspecified_value():
-    """HeidelTime phase 1 (rule, underspecified value) then phase 2 (resolved against the chat date and tense)."""
     t = D.timex("on May 1st", WED, "past")
     assert (t.rule, t.under, t.value) == ("month_day", "XXXX-05-01", "2023-05-01")
     assert D.timex("last week", SAT).under == "UNDEF-last-week"
@@ -181,12 +170,10 @@ def test_two_phases_keep_the_underspecified_value():
 
 
 def test_old_grammar_untouched():
-    """parse()/find_all() keep their behaviour: the turn brackets, sleep and the events builder use them."""
+    """parse() and find_all() keep their behaviour: the turn brackets, sleep and the events builder use them."""
     assert D.parse("I did it last Tuesday.", TUE, "nearest").vf == d(2023, 5, 16)
     assert D.find_all("I did it recently.", TUE, "nearest") == []
 
-
-# ------------------------------------------------------------------------------------------------ B.2 anchoring
 
 def item(time=None, tense="past", status="happened", **kw):
     return T.Item(kw.pop("id", "x"), kw.pop("event", "did the thing"), "s1#0", time, tense, status, **kw)
@@ -215,7 +202,7 @@ def test_anchor_basis(x, now, how, lo, hi, nominal):
 ], ids=["plan", "negated", "hypothetical", "habit", "name", "set", "assistant", "lunar", "life", "duration_no_end",
         "after_said", "unparsed", "until"])
 def test_only_occurrences_get_dates(x):
-    """36 F rules 7 and 9: plans, wishes, habits, negations and names date nothing; only the user's turns date."""
+    """Plans, wishes, habits, negations and names date nothing; only the user's turns date."""
     a = T.anchor(x, SAT, {})
     assert a.how == "unknown" and a.lo is None and a.hi is None and a.why, a
 
@@ -263,8 +250,6 @@ def test_check_drops_what_is_not_verbatim_or_off_the_lists():
     assert T.check(item("today", event="got a smoker", rel="around"), turn) == "rel 'around'"
 
 
-# ----------------------------------------------------------------------------------------------- B.3 the timeline
-
 A = lambda lo, hi, how="explicit", nominal=None, gran="day", eid="e", **kw: T.Anchor(eid, f"event {eid}", f"src {eid}", lo, hi,
                                                                                  nominal, gran, how, **kw)
 
@@ -292,7 +277,6 @@ def test_merge_ignores_unknown_mentions_and_resolves_readings():
     assert T.merge([unknown]).how == "unknown"
 
 
-# ------------------------------------------------------------------------------------------- B.4 Allen and arithmetic
 X = lambda a, b: (A(d(2023, 5, a), d(2023, 5, a + 1)), A(d(2023, 5, b - 1), d(2023, 5, b)))  # extent [a, b) in May
 
 ALLEN = [
@@ -357,7 +341,6 @@ def test_since_is_a_range_to_now():
     assert T.window_of("How many days ago did I read the March 15th issue of The New Yorker?", d(2023, 4, 1)) is None
 
 
-# --------------------------------------------------------------------------------------------- reading the question
 KINDS = [
     ("How many days passed between the day I cancelled my FarmFresh subscription and the day I did my online grocery shopping?", "duration"),
     ("How many weeks ago did I attend the 'Summer Nights' festival?", "since"),
@@ -396,8 +379,6 @@ def test_unit_of():
                                    "How long had I been")] == ["week", "month", "age", None]
 
 
-# ----------------------------------------------------------------------------------------- per-question results
-
 def tl(q, as_of, anchors, rows=None):
     return T.timeline_for(q, as_of, anchors, rows)
 
@@ -418,7 +399,7 @@ def test_since_runs_to_the_question_date_and_a_when_clause_moves_it():
     cls = [A(d(2022, 3, 20), d(2022, 3, 21), "relative", eid="c")]
     cake = [A(d(2022, 4, 10), d(2022, 4, 11), "relative", eid="k")]
     q = "How many days ago did I attend a baking class when I made my friend's birthday cake?"
-    assert tl(q, d(2022, 4, 15), {"baking class": cls, "made the cake": cake}).value["value"] == 21  # 9a707b81
+    assert tl(q, d(2022, 4, 15), {"baking class": cls, "made the cake": cake}).value["value"] == 21
     assert tl(q, d(2022, 4, 15), {"baking class": cls}).value["value"] == 26
 
 
@@ -434,7 +415,7 @@ def test_undetermined_paths():
     fb = [A(None, d(2023, 3, 18), "mentioned", d(2023, 3, 17), eid="f")]
     plan = T.anchor(item("tomorrow", "future", "planned", id="t"), d(2023, 4, 23), {})
     r = tl(q, d(2023, 6, 1), {"got feedback": fb, "tested the suspension": [plan]})
-    assert r.status == "undetermined" and r.value["missing"] == ["t"] and r.value["if_planned"] == 38  # 4fc4f797
+    assert r.status == "undetermined" and r.value["missing"] == ["t"] and r.value["if_planned"] == 38
     assert "cannot be determined" in r.answer[0] and "If it happened on the planned day" in r.answer[1]
     two = tl(q, d(2023, 6, 1), {"got feedback": fb + [A(d(2023, 3, 1), d(2023, 3, 2), eid="g")], "tested the suspension": fb})
     assert two.status == "undetermined" and two.value["ambiguous"] and "matches 2 events" in two.answer[0]
@@ -478,7 +459,7 @@ def test_order_pick_and_count_before():
 def test_point_window_and_true_at():
     ev = {"cooking": [T.anchor(item("last weekend", id="cake"), SUN, {}), A(d(2022, 3, 1), d(2022, 3, 2), eid="old")]}
     r = tl("I mentioned cooking something for my friend a couple of days ago. What was it?", d(2022, 4, 12), ev)
-    assert r.kind == "point" and r.status == "ok" and r.value["inside"] == ["cake"]  # 9a707b82: only one reading fits
+    assert r.kind == "point" and r.status == "ok" and r.value["inside"] == ["cake"]  # only one reading fits
     rows = [{"value": "Dr Okafor", "valid_from": "2023-01-30", "valid_to": "2023-11-02", "from_precision": "on_or_before"},
             {"value": "Dr Brennan", "valid_from": "2023-11-02", "valid_to": "9999-12-31", "from_precision": "day"}]
     assert tl("Who was my GP in June 2023?", d(2024, 1, 1), {}, rows).value["values"] == ["Dr Okafor"]

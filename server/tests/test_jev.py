@@ -1,6 +1,4 @@
-"""The Jev decider (jev.py), offline: a stub Decisions API answers every typed question, so no test makes a call.
-One test per gate (fact tags, event clauses, slow rulings and classes, same-event links), each with its fallback
-below the threshold. Run: uv run pytest tests/test_jev.py"""
+"""The Jev decider, offline: a stub Decisions API answers every typed question; one test per gate."""
 import os
 
 import pytest
@@ -13,8 +11,7 @@ JEV = "typesafe/jev-1.14"
 
 
 class Api:
-    """Stub Decisions API. answers: gate -> a Noul p, or a Choice (pick, p_top); a callable gets (state, qid).
-    The gate is the question id's tail: f0_durable -> durable, e1_action -> action, r0 -> r, s0 -> s, class."""
+    """Stub Decisions API: gate -> a Noul p or a Choice (pick, p_top); the gate is the question id's tail."""
 
     def __init__(self, **answers):
         self.answers, self.requests = answers, []
@@ -58,8 +55,6 @@ def triaged(m):
     return [d for d in m.log.decisions if d["step"] == "triage"]
 
 
-# ---------------------------------------------------------------- 1. fact tags: three Nouls per tag, one request per message
-
 def test_durable_noul_replaces_the_taggers_confidence(api):
     stub = api(durable=lambda state, qid: 0.95 if "Lisbon" in state["message"] else 0.4)
     m = mem({"I live in Lisbon.": [dict(label="fact", key="city", value="Lisbon", confidence=0.2)],
@@ -99,8 +94,6 @@ def test_rule_noul_pins_a_rule_the_regex_misses_and_its_fallback(api):
     assert "Call me Sam." not in pinned  # 0.3: is_rule() alone decides, and it says no
 
 
-# ---------------------------------------------------------------- 2. event clauses: Choice for classes and polarity
-
 def test_event_choices_replace_the_class_guess_and_polarity(api):
     api(action=("sell", 0.9), polarity=("planned", 0.9))
     m = mem({})
@@ -124,8 +117,7 @@ def test_event_choices_below_the_gate_go_slow_and_polarity_falls_back(api):
 
 
 def test_a_clause_jev_sent_slow_settles_without_jev(api):
-    """Written with Jev, opened without it (serve with no --decider): the class Jev doubted is on the list, so the
-    rule tagger's class stands, disputed. Before, the open died: RuleEvents has no resolve_class."""
+    """Written with Jev, opened without it: the doubted class stands, disputed (RuleEvents has no resolve_class)."""
     api(action=("sell", 0.5))
     m = mem({})
     m.ingest(sess(1, "2025-05-10T10:00:00Z", "I bought a new bike at Decathlon last weekend."))
@@ -134,8 +126,6 @@ def test_a_clause_jev_sent_slow_settles_without_jev(api):
     (r,) = [r for r in m.log.decisions if r["step"] == "event_resolve"]
     assert (r["route"], r["action_class"], r["status"]) == ("fast", "purchase", "disputed")
 
-
-# ---------------------------------------------------------------- 3. slow path: Choice over same / new value / gone / unclear
 
 @pytest.mark.parametrize("pick,want", [
     (("new value", 0.9), [("Polo", "ok")]),
@@ -170,8 +160,6 @@ def test_new_class_choice_asks_the_writer_only_for_the_name(api):
     assert t.named == ("bought", "action") and r["action_class"] == "repair" and m.classes.closed("repair")
 
 
-# ---------------------------------------------------------------- 4. same-event linking: a Noul per rule candidate
-
 @pytest.mark.parametrize("p,linked", [(0.9, True), (0.3, False)])
 def test_same_event_noul_confirms_the_rule_link(api, p, linked):
     stub = api(action=("attend", 0.9), object=("concert", 0.9), s=p)
@@ -188,8 +176,6 @@ def test_same_event_noul_confirms_the_rule_link(api, p, linked):
     m.settle()  # the rebuild reads the recorded answer: no new request for the pair
     assert len(stub.requests) == asked
 
-
-# ---------------------------------------------------------------- off by default, and the client through the cache
 
 def test_decider_is_off_by_default(monkeypatch):
     monkeypatch.setattr(decisions, "ask", lambda *a: pytest.fail("no decider, no Decisions call"))

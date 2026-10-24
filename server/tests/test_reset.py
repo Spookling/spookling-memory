@@ -1,5 +1,4 @@
-"""Reset: one ruling; facts open at T closed at T; earlier turns hidden unless the question is dated before T; earlier
-rules and keepers not pinned; nothing deleted; undo restores; every rebuild keeps it."""
+"""Reset: facts closed at T, earlier turns hidden unless asked about, rules unpinned, nothing deleted, undo restores."""
 import pytest
 from conftest import AFTER, NOW, QUESTIONS, RESET_AT, believed, fill, turns
 

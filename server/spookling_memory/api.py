@@ -1,9 +1,4 @@
-"""The local HTTP API (FastAPI), bound to 127.0.0.1 only.
-
-Two guards, because a web page in the user's browser can reach 127.0.0.1 too: the Host header must be 127.0.0.1 or
-localhost (DNS rebinding), and a POST must say application/json (application/octet-stream for /v1/import), which a
-page can only send after a CORS preflight this server never grants. No CORS is configured.
-"""
+"""Local HTTP API. A browser page can reach 127.0.0.1 too, hence the Host check and JSON-only POSTs (no CORS)."""
 from __future__ import annotations
 
 import io
@@ -24,7 +19,7 @@ from .store import Busy, Store
 
 HOST, PORT = "127.0.0.1", 7447
 POST_TYPES = ("application/json", "application/octet-stream")
-WAIT = 10  # seconds a request waits for the store before a 503: under the hooks' 15 s, so they hear back
+WAIT = 10  # seconds before a 503: under the hooks' 15 s, so they hear back
 
 
 class TurnIn(BaseModel):
@@ -34,10 +29,10 @@ class TurnIn(BaseModel):
 
 class SessionIn(BaseModel):
     id: str
-    ts: str | None = None  # ISO 8601; default now
+    ts: str | None = None
     turns: list[TurnIn]
     agent: str = "user"
-    tail: bool = False  # turns is the whole conversation so far: log only what is new (Store.ingest)
+    tail: bool = False  # turns is the whole conversation so far
 
 
 class QuestionIn(BaseModel):
@@ -65,12 +60,12 @@ def create_app(store: Store) -> FastAPI:
 
     @app.exception_handler(ValueError)
     async def refused(request: Request, e: ValueError):
-        if isinstance(e, PydanticSerializationError):  # a ValueError too, but our bug, not a refusal: a 500, never a 409
+        if isinstance(e, PydanticSerializationError):  # a ValueError too, but our bug: a 500, not a 409
             raise e
         return JSONResponse({"detail": str(e)}, 409)
 
     @app.exception_handler(RuntimeError)
-    async def unavailable(request: Request, e: RuntimeError):  # the writer model (no key, provider down), or Busy
+    async def unavailable(request: Request, e: RuntimeError):  # the writer model failed, or Busy
         busy = {"Retry-After": str(Busy.retry_after)} if isinstance(e, Busy) else None
         return JSONResponse({"detail": str(e)}, 503, headers=busy)
 
@@ -110,12 +105,11 @@ def create_app(store: Store) -> FastAPI:
     def stats() -> dict:
         return store.stats()
 
-    said: set[str] = set()  # each kind of refused hook body is logged once
+    said: set[str] = set()
 
     @app.post("/v1/hook/{event}")
     async def hook(event: str, request: Request, tasks: BackgroundTasks):
-        """The body is read here, not declared as `payload: dict`: FastAPI answered 422 to an empty or unreadable body
-        and nothing said why. Now an empty body is {} and only a body that is not one JSON object is refused (400)."""
+        """Read by hand: as `payload: dict`, FastAPI answered an empty body 422 and said nothing."""
         if event not in hooks.EVENTS:
             raise HTTPException(404, f"hook events: {', '.join(hooks.EVENTS)}")
         body = await request.body()
@@ -128,7 +122,7 @@ def create_app(store: Store) -> FastAPI:
                 hooks.LOG.warning("hook %s: %d-byte body refused, logged once per kind: %s; it starts %r", event,
                                   len(body), e, body[:80])
             return JSONResponse({"detail": str(e)}, 400)
-        if event == "stop":  # reply at once; the tagging call runs after the response, so Claude is not held
+        if event == "stop":  # reply at once: the tagging runs after the response
             tasks.add_task(quietly, store, event, payload)
             return {}
         return await run_in_threadpool(hooks.handle, store, event, payload)
@@ -137,8 +131,7 @@ def create_app(store: Store) -> FastAPI:
 
 
 def quietly(store, event: str, payload: dict) -> None:
-    """The Stop hook's work after its reply: an error can no longer reach Claude, so it is one log line. The turns
-    stay in the transcript, and the next Stop of the session logs them."""
+    """After the reply an error cannot reach Claude: log it; the next Stop logs the turns."""
     try:
         hooks.handle(store, event, payload)
     except Exception as e:  # noqa: BLE001
@@ -146,8 +139,7 @@ def quietly(store, event: str, payload: dict) -> None:
 
 
 def serve(folder: str, port: int = PORT, **adapter) -> None:
-    """Listens at once; the folder opens in the background (503 with Retry-After until it is open). A failed open
-    stops the server with the reason, as before."""
+    """Listens at once; the folder opens in the background, 503 until then."""
     import uvicorn
 
     store = Store(folder, background=True, wait=WAIT, **adapter)
@@ -156,8 +148,7 @@ def serve(folder: str, port: int = PORT, **adapter) -> None:
     @asynccontextmanager
     async def lifespan(_):
         yield
-        # Here, not only in the finally: after a graceful shutdown on SIGINT or SIGTERM, uvicorn re-raises the signal,
-        # which ends the process before a finally runs. close() removes the adapter's temp copy of the LOG.
+        # here too: uvicorn re-raises SIGINT or SIGTERM after shutdown, which ends the process before a finally runs
         store.close()
 
     app.router.lifespan_context = lifespan
@@ -173,6 +164,6 @@ def serve(folder: str, port: int = PORT, **adapter) -> None:
     try:
         server.run()
     finally:
-        store.close()  # idempotent; covers a failed start
+        store.close()  # covers a failed start
     if store.failed is not None:
         raise store.failed

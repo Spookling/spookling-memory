@@ -1,5 +1,4 @@
-"""The Codex subscription tagger, offline: a fake `codex` on PATH records how it was run and answers like the CLI
-(the final message on stdout, errors on stderr), so the round trip goes through the real Store and adapter."""
+"""The Codex subscription tagger, offline: a fake `codex` on PATH records each run and answers like the CLI."""
 import json
 import os
 import sys

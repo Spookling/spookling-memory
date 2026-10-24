@@ -1,8 +1,4 @@
-"""Stdio MCP server: the HTTP API's operations as tools, for Claude Code, Codex or any MCP client.
-
-A thin client of the local server (SPOOKLING_MEMORY_URL, default http://127.0.0.1:7447): one process owns a memory
-folder, so the hooks and these tools share one memory. Start `spookling-memory serve` first.
-"""
+"""Stdio MCP tools: a thin client of `spookling-memory serve`, so the hooks and the tools share one memory."""
 from __future__ import annotations
 
 import json
