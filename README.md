@@ -273,7 +273,7 @@ It opens with a cutscene: the Spookling wordmark builds in block letters and the
 2. **Asks which harness you use.** Claude Code or Codex. Codex users review/trust the installed hooks through `/hooks`.
 3. **Asks how the tagger should run.** Three choices, in the table below. A key is typed hidden, saved to `.memory/keys.env`, and never printed.
 4. **Installs the local memory server.** It copies the server and the hooks to a folder per user and version: `~/.spookling-memory/<version>/`, or `%LOCALAPPDATA%\spookling-memory\<version>\` on Windows. It runs `uv sync` there and starts the server on 127.0.0.1:7447. Nothing Claude Code runs lives in the npx cache.
-5. **Wires Claude Code.** Three hooks that call the server: `Stop` saves the chat when it ends, `UserPromptSubmit` hands the right lines to each prompt, `PreCompact` copies the survivor block out before the squash. Plus the MCP server, so Claude can call the memory tools. `--scope project` (the default) writes this project's files; `--scope user` writes yours, for every project.
+5. **Wires Claude Code.** Three hooks that call the server: `Stop` saves the chat when it ends, `UserPromptSubmit` hands the right lines to each prompt, `PreCompact` copies the survivor block out before the squash. Plus the MCP server, so Claude can call the memory tools, and, if you say yes, the ghost in the status line. `--scope project` (the default) writes this project's files; `--scope user` writes yours, for every project.
 6. **Runs a smoke test.** It asks the server for its stats. You see it answer before you leave the wizard.
 7. **Shows a done screen.** The ghost flies once more. "Spookling Memory is in."
 
@@ -294,7 +294,7 @@ To switch, stop the server (`uninstall` offers to) and run `init` again. `status
 | Where | What |
 | --- | --- |
 | `~/.spookling-memory/<version>/` (`%LOCALAPPDATA%\spookling-memory\<version>\` on Windows) | the server and the hooks, copied from the package; `uv sync` makes the server's `.venv` there |
-| `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | three hooks merged in: `PreCompact`, `UserPromptSubmit`, `Stop` |
+| `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | three hooks merged in: `PreCompact`, `UserPromptSubmit`, `Stop`; and the ghost's `statusLine`, if you said yes |
 | `.mcp.json` (project) or Claude Code's user MCP list (user) | the `spookling-memory` server and its tools, `memory_retrieve` and `memory_reset` among them |
 | `.memory/` | your memory, your tagger's key in `keys.env`, the server's pid and log, and a `.gitignore` that keeps the key and the caches out of git |
 
@@ -303,6 +303,12 @@ Every other key in those files is kept. A file that is not valid JSON is left al
 ### Where it runs
 
 Windows (native PowerShell, no Git Bash needed), macOS and Linux, WSL included. Windows 11 and Linux (WSL2 Ubuntu 24.04) were run by hand. macOS runs the same code in CI. One server in WSL can serve Claude Code on both sides; `cli/README.md` has the steps.
+
+### The ghost
+
+![Claude Code with the ghost in its status line: "1 fact · 1 rule · 2 past chats recalled"](cli/renders/ghost-status-line.png)
+
+In Claude Code a small ghost sits in the status line under the prompt (`init` asks; `--no-ghost` skips it). It says what memory last did, in plain words: `3 facts · 1 rule recalled` while Claude answers, `saved` after, `kept your 2 rules and 38 lines` after a compaction, `remembering you` when nothing is new, `asleep, server off` when the server is down. Its arms go up and down between refreshes; the words change only when memory does something. When a prompt recalls something, one quiet line lands under it: `👻 3 facts and 1 rule from memory`. Standing rules alone, a save or a compaction add nothing to the conversation. Already have a status line? Yours stays first with the ghost after it, and `uninstall` puts yours back exactly.
 
 ---
 

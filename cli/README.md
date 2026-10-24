@@ -63,6 +63,7 @@ Windows sessions then log into the WSL project's `.memory/`; the server reads th
 ## Flags
 
 - `--scope project` (default) or `--scope user`, for `init` and `uninstall`. See the table below.
+- `--no-ghost` (init) skips the question about the ghost in the Claude Code status line, and leaves the status line alone.
 - `--no-anim` skips the animation: the wordmark prints as a still and the ghost's lines print as plain text.
 - `--fast` (demo only) drops the pauses. Without it the demo takes about a minute; any key cuts the current pause short.
 - `--frames N` (demo only) prints N frames from across the intro, one after another, and stops. Useful for checking the drawing without a live terminal.
@@ -101,9 +102,9 @@ Every write is shown before it happens; answer `n` to skip it. Every command it 
 | --- | --- |
 | `~/.spookling-memory/<version>/` (`%LOCALAPPDATA%\spookling-memory\<version>\` on Windows) | `server/` and `hooks/`, copied from the package (a clone's `.venv` and caches stay behind); `uv sync` then makes `server/.venv` there |
 | `.memory/keys.env` | the tagger's key: `OPENROUTER_API_KEY` for Jev or `ANTHROPIC_API_KEY` for Haiku; nothing for Codex. Taken from your environment, or typed at a hidden prompt; never printed. Mode 600 on macOS and Linux; on Windows it has the folder's own access rules. |
-| `.memory/.gitignore` | `keys.env`, `server.pid`, `server.log`, and the server's caches `cache.sqlite*` (model replies) and `vectors.sqlite*` (embeddings); missing lines are added to a file you already have |
+| `.memory/.gitignore` | `keys.env`, `server.pid`, `server.log`, the server's caches `cache.sqlite*` (model replies) and `vectors.sqlite*` (embeddings), and the hooks' `pulse.json*`; missing lines are added to a file you already have |
 | `.memory/server.pid`, `.memory/server.log` | the background server: `uv run --project <server> spookling-memory serve --folder .memory --port 7447 --model <tagger>` |
-| `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | three hooks merged in, `PreCompact`, `UserPromptSubmit` and `Stop`, each `{"type": "command", "command": "node", "args": ["<hooks>/<event>.js"]}` |
+| `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | three hooks merged in, `PreCompact`, `UserPromptSubmit` and `Stop`, each `{"type": "command", "command": "node", "args": ["<hooks>/<event>.js"]}`, the first two with a `statusMessage` for the spinner; if you said yes to the ghost, `statusLine` (see [The ghost](#the-ghost)) |
 | `.mcp.json` (project) | `mcpServers.spookling-memory`: stdio, `uv run --project <server> spookling-memory mcp`, with `SPOOKLING_MEMORY_URL` in its `env` |
 | user MCP list (user scope) | the same entry, added with `claude mcp add-json spookling-memory '<entry>' --scope user`. Claude Code keeps it in `~/.claude.json`, a file it writes itself, so the wizard only reads that file. |
 | `.codex/hooks.json` (Codex, project) or `$CODEX_HOME/hooks.json` (Codex, user; default `~/.codex/hooks.json`) | SessionStart, UserPromptSubmit, PreCompact and Stop hooks merged in; existing hooks stay |
@@ -120,9 +121,29 @@ Checked against the current Claude Code docs on 21 Oct 2026; [docs/claude-code-f
 - With the server down, the hooks print nothing and exit 0, within about a second, so a prompt is never blocked.
 - To see them: `/hooks` in Claude Code lists them; `claude --debug` writes each run to `~/.claude/debug/<session-id>.txt`.
 
+## The ghost
+
+What shows where, and when (facts 49 to 66 in [docs/claude-code-facts.md](../docs/claude-code-facts.md)):
+
+| Where | When | What |
+| --- | --- | --- |
+| spinner | while UserPromptSubmit or PreCompact runs | `👻 remembering`, `👻 keeping your rules` (the handler's `statusMessage`) |
+| transcript, under your prompt | the prompt recalled facts, timeline events or past chats | `👻 3 facts and 1 rule from memory` (UserPromptSubmit's `systemMessage`). Standing rules ride on every prompt, so they alone add no line. PreCompact's `systemMessage` is dropped by Claude Code, so it prints nothing; Stop stays silent so it can never keep Claude going. |
+| status line | Claude Code refreshes it: at session start, on each assistant message, after `/compact`, and every 5 s when the line is ours alone | the ghost and the last thing memory did: `3 facts · 1 rule recalled`, `listening` (nothing recalled), `saved`, `kept your 2 rules and 38 lines`, `asleep, server off`, or `remembering you` (nothing in this session yet, or nothing for 10 minutes) |
+
+How it works:
+
+- The three hooks write `.memory/pulse.json` after each call: `{at, session, event, up, ...counts}`. It goes in the project's `.memory/`, else `~/.memory/` (the folder `status` picks), and never creates either. `up` is false only when the server could not be reached.
+- The counts come from the server, in an `x-spookling-pulse` response header, so the hook bodies Claude Code and Codex read are unchanged: for a prompt, `facts` (fact records), `rules`, `events` (timeline lines), `chats` (dated past-chat blocks), `chars` and `cap` (the recall's size and the 10,000-character hook cap); for PreCompact, `kept`, `rules` and `lines` in the survivor block. An older server sends no header; the hooks then print its reply untouched.
+- `hooks/status-line.js` reads Claude Code's stdin JSON and `pulse.json`, prints one line and exits 0. No network, no server call: about 24 ms wall clock here, 19 of them node starting. A pulse from another session (`session_id`) is not shown.
+- The ghost is four cells: lilac arms, two big purple eyes on a lilac-white face. The arms are up on odd seconds and down on even ones, so it moves between refreshes while the words stay put; asleep it shows closed eyes. That needs 24-bit colour (`COLORTERM=truecolor` or `24bit`, or Windows Terminal); with 256 colours it is the 👻 emoji; `NO_COLOR` drops every escape.
+- Settings: with no status line, init writes `{"type": "command", "command": "node '<hooks>/status-line.js'", "refreshInterval": 5}`. With one, it only changes `command` to `node '<hooks>/status-line.js' --then '<yours>'`: your command runs first through the same shell Claude Code uses (`sh`; on Windows Git Bash, else PowerShell), and the ghost follows after two spaces; your `padding` and `refreshInterval` stay yours. Uninstall restores `command` from `--then`, or removes `statusLine` when there was none. On Windows the path goes in double quotes with forward slashes; a path or command holding `"`, `$`, a backtick or `!` (which Git Bash and PowerShell read differently) is refused, with a pointer to `--no-ghost`.
+- With any status line set, Claude Code hides most footer hints (`esc to interrupt`, `? for shortcuts`). The status line needs the folder's trust and is skipped under `disableAllHooks`, `allowManagedHooksOnly` and `--safe-mode`.
+- `--look emoji|pixel|meter` picks the ghost by hand (`pixel` is the default); `meter` adds six lilac cells showing how full the recall's 10,000-character room was. The three are rendered in the samples; the rest of the looks go once one is picked.
+
 ## Undo
 
-`npx spookling uninstall` (with `--scope user` for the user files) removes only the Spookling hooks and the `spookling-memory` MCP entry; everything else in those files stays exactly as it was. It also offers to stop the server named in `.memory/server.pid`: a SIGTERM to its process group on macOS and Linux, `taskkill /T /F` on Windows. Your memory in `.memory/` stays, keys included. To remove that too, delete the folder yourself. The server and hooks stay in `~/.spookling-memory/<version>/` (it says so); delete that folder, after uninstall in every project and scope that used it, to remove them.
+`npx spookling uninstall` (with `--scope user` for the user files) removes only the Spookling hooks, the ghost's status line (yours comes back) and the `spookling-memory` MCP entry; everything else in those files stays exactly as it was. It also offers to stop the server named in `.memory/server.pid`: a SIGTERM to its process group on macOS and Linux, `taskkill /T /F` on Windows. Your memory in `.memory/` stays, keys included. To remove that too, delete the folder yourself. The server and hooks stay in `~/.spookling-memory/<version>/` (it says so); delete that folder, after uninstall in every project and scope that used it, to remove them.
 
 On Windows the stop is forced, so the server cannot remove its temporary copy of the log: delete `%TEMP%\spookling-log-*` if you want it gone. On macOS and Linux the server removes it on the way out.
 
@@ -164,4 +185,4 @@ npm pack --dry-run                         # what the package ships
 
 `hooks/package.json` says `"type": "commonjs"`: the root one says `module`, and the hooks use `require`.
 
-The ghost is generated from `brand/logos/ghost-mark.png`, not drawn by hand: `python3 cli/tools/make-ghost.py` (Pillow) writes `src/ghost-sprite.js` (38 x 40 pixels, 20 text rows, downsampled from the logo with hand-placed eyes and smile; and two small ghosts drawn by hand in the script, 13 x 14 and 19 x 20, since a downsample that small turns the face into a smudge; 4 tail frames each, only the lilac streaks move) and renders them back to PNG in `renders/` beside the logo, to check by eye. `python3 cli/tools/render-frames.py` (POSIX) replays the CLI's own output through a small terminal interpreter and saves `renders/cutscene-frame.png`, `renders/cutscene-end.png` and `renders/wizard-frame.png` (80 x 24, 800 x 480 px), and `renders/wizard-frame-30.png` (80 x 30, 800 x 600 px). Neither tool ships in the package.
+The ghost is generated from `brand/logos/ghost-mark.png`, not drawn by hand: `python3 cli/tools/make-ghost.py` (Pillow) writes `src/ghost-sprite.js` (38 x 40 pixels, 20 text rows, downsampled from the logo with hand-placed eyes and smile; and two small ghosts drawn by hand in the script, 13 x 14 and 19 x 20, since a downsample that small turns the face into a smudge; 4 tail frames each, only the lilac streaks move) and renders them back to PNG in `renders/` beside the logo, to check by eye. `python3 cli/tools/render-frames.py` (POSIX) replays the CLI's own output through a small terminal interpreter and saves `renders/cutscene-frame.png`, `renders/cutscene-end.png` and `renders/wizard-frame.png` (80 x 24, 800 x 480 px), and `renders/wizard-frame-30.png` (80 x 30, 800 x 600 px); `raw FILE OUT 120x30` renders any byte stream at another size, with emoji in Noto Color Emoji. `node cli/tools/ghost-screen.mjs pixel 80 24` prints a Claude Code screen with the real status line and transcript wording, for `raw`; `renders/ghost-status-line.png` came from it. None of these tools ship in the package.
