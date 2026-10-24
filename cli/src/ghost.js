@@ -6,7 +6,7 @@ const grid = (f) => f.map((row) => [...row].map((p) => PALETTE[p]));
 export const BIG = { w: W, h: H, frames: FRAMES.map(grid) };
 export const LITTLE = { w: SMALL_W, h: SMALL_H, frames: SMALL.map(grid) };
 export const MID = { w: MID_W, h: MID_H, frames: MID_FRAMES.map(grid) };
-export const TAIL = 0.18; // seconds per tail frame
+const TAIL = 0.18; // seconds per tail frame
 
 export function draw(cv, g, x, y, s) {
   const f = g.frames[Math.floor(s / TAIL) % g.frames.length];

@@ -6,10 +6,10 @@ import { chmodSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readFile
 import { basename, delimiter, dirname, isAbsolute, join, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { C, DOWN, MODE, UP, askHidden, bail, choose, confirm, paint, press, setFeed, setRaw, sleep, write as out } from './term.js';
+import { C, DOWN, MODE, UP, askHidden, bail, choose, confirm, fits, paint, press, setFeed, setRaw, sleep, write as out } from './term.js';
 import { play } from './cutscene.js';
 import { flyOnce } from './ghost.js';
-import { fits, stage } from './stage.js';
+import { stage } from './stage.js';
 import {
   HOOK_FILES, MCP_NAME, addHooks, addMcp, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
   wiring, wslShare,
@@ -24,7 +24,7 @@ export const INSTALL_DIR = SHARE ? ROOT
   : WIN ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'spookling-memory', VERSION)
     : join(homedir(), '.spookling-memory', VERSION);
 export const SERVER_DIR = join(INSTALL_DIR, 'server'), HOOKS_DIR = join(INSTALL_DIR, 'hooks');
-export const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`, STATS = `${SERVER_URL}/v1/stats`;
+const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`, STATS = `${SERVER_URL}/v1/stats`;
 const STEPS = ['Checks', 'Harness', 'Tagger', 'Server', 'Wire Claude Code', 'Smoke test', 'Done'];
 export const DEMO_LABEL = 'demo, nothing is written';
 const IGNORE = ['keys.env', 'server.pid', 'server.log', 'cache.sqlite*', 'vectors.sqlite*'];
@@ -102,8 +102,6 @@ export const mcpJson = (entry) => ['{', '  "mcpServers": {', `    ${JSON.stringi
   ...Object.entries(entry).map(([k, v], i, all) => `      ${JSON.stringify(k)}: ${JSON.stringify(v)}${i < all.length - 1 ? ',' : ''}`),
   '    }', '  }', '}'].join('\n');
 
-const SAMPLE = { n_events: 0, n_facts: 0, n_rows: 0, reset: null };
-
 // the demo's script types into the same reader a user types into, so it walks the real prompts
 function demoInput(fast) {
   const { stdin } = process;
@@ -141,7 +139,7 @@ const version = (cmd) => {
   return r.status === 0 ? r.stdout.trim().split('\n')[0] : null;
 };
 
-export const stats = () => new Promise((res) => {
+const stats = () => new Promise((res) => {
   const req = http.get(STATS, { timeout: 1500 }, (r) => {
     let body = '';
     r.setEncoding('utf8');
@@ -483,7 +481,7 @@ async function steps(ctx, { anim, st }) {
   let res;
   if (ctx.dry) {
     for (let i = 0; i < 3; i++) { await ctx.beat(500); out(paint(C.GREY, '.')); }
-    res = SAMPLE;
+    res = { n_events: 0, n_facts: 0, n_rows: 0, reset: null };
   } else res = await waitForStats(ctx);
   out('\n');
   const short = (j) => (j.length > 50 ? `${j.slice(0, 49)}…` : j);

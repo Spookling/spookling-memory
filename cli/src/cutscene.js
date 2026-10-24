@@ -1,10 +1,10 @@
 // The intro. The tagline shows once in the whole flow: here, or in the still when there is no animation.
 import process from 'node:process';
-import { C, LEGACY, MODE, bail, canvas, dot, enterScreen, mix, paint, render, restore, setRaw, size, write } from './term.js';
+import { C, MODE, bail, canvas, dot, enterScreen, fits, mix, paint, render, restore, setRaw, size, write } from './term.js';
 import { BIG, LITTLE, draw, fly } from './ghost.js';
 
 export const TAGLINE = 'An AI assistant that works for you while you sleep';
-export const PROMISE = 'Memory that stays right for years.';
+const PROMISE = 'Memory that stays right for years.';
 
 const FONT = {
   S: ['.XXXX.', 'XX..XX', 'XX....', '.XXXX.', '....XX', 'XX..XX', '.XXXX.'],
@@ -18,7 +18,7 @@ const FONT = {
 };
 const WORD = 'SPOOKLING', GAP = 2, PAD = 4;
 const TEXT_W = [...WORD].reduce((n, ch) => n + FONT[ch][0].length, 0) + GAP * (WORD.length - 1);
-export const BAND_W = TEXT_W + PAD * 2, BAND_H = 12;
+const BAND_W = TEXT_W + PAD * 2, BAND_H = 12;
 
 function wordmark(cv, x, y, n, band) {
   if (band) for (let j = 0; j < BAND_H; j++) for (let i = 0; i < BAND_W; i++) dot(cv, x + i, y + j, band);
@@ -67,7 +67,7 @@ export function still({ tagline = true } = {}) {
   const out = [''];
   if (cols >= BAND_W + 2) {
     const cv = canvas(BAND_W, BAND_H);
-    wordmark(cv, 0, 0, WORD.length, MODE === 'none' ? null : C.PURPLE);
+    wordmark(cv, 0, 0, WORD.length, MODE === 'none' ? null : C.FIELD);
     out.push(...render(cv).filter((l) => l.trim()).map((l) => '  ' + l));
   } else {
     out.push('  ' + paint(C.GHOST, [...WORD].join(' '), true));
@@ -78,14 +78,9 @@ export function still({ tagline = true } = {}) {
   return out.join('\n') + '\n';
 }
 
-export const canAnimate = (anim) => {
-  const { cols, rows } = size();
-  return anim && MODE !== 'none' && !LEGACY && process.stdout.isTTY && cols >= 40 && rows >= 16;
-};
-
 // keep: stay in the alternate screen, as the install stage follows
 export function play({ anim = true, keep = false, label = '' } = {}) {
-  if (!canAnimate(anim)) {
+  if (!fits(anim, 40, 16)) {
     write(still());
     return Promise.resolve(false);
   }

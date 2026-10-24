@@ -4,13 +4,10 @@ import { release } from 'node:os';
 
 const { stdin, stdout, env } = process;
 
-export const C = {
-  PURPLE: '#4E19CF', PURPLE_MID: '#7F52EF', LILAC: '#B28AFF', GHOST: '#DFD4FF',
-  MINT: '#42C8A7', BLACK: '#020202', GREY: '#8A8A8A', FIELD: '#4E19CF',
-};
+export const C = { LILAC: '#B28AFF', GHOST: '#DFD4FF', MINT: '#42C8A7', BLACK: '#020202', GREY: '#8A8A8A', FIELD: '#4E19CF' };
 
 // a Windows console before 10 build 10586 takes no escape sequences at all
-export const LEGACY = process.platform === 'win32' && Number(release().split('.')[2] ?? 0) < 10586;
+const LEGACY = process.platform === 'win32' && Number(release().split('.')[2] ?? 0) < 10586;
 const forced = env.FORCE_COLOR && env.FORCE_COLOR !== '0';
 export const MODE = env.NO_COLOR || LEGACY ? 'none'
   : !stdout.isTTY && !forced ? 'none'
@@ -32,6 +29,8 @@ export const mix = (a, b, t) => {
 };
 
 export const size = () => ({ cols: stdout.columns || 80, rows: stdout.rows || 24 });
+export const fits = (anim = true, w = 80, h = 24) =>
+  anim && MODE !== 'none' && !LEGACY && !!stdout.isTTY && size().cols >= w && size().rows >= h;
 
 export const canvas = (w, h, fill = null) => ({ w, h, px: new Array(w * h).fill(fill) });
 export const dot = (cv, x, y, c) => {

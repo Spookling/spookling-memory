@@ -1,15 +1,10 @@
 // The install stage: the ghost on a band at the top of the alternate screen while the steps scroll below it.
 import process from 'node:process';
-import { C, LEGACY, MODE, canvas, cursor, enterScreen, mix, note, paint, record, render, restore, setOnPrompt, size, sleep, write } from './term.js';
+import { C, canvas, cursor, enterScreen, fits, mix, note, paint, record, render, restore, setOnPrompt, size, sleep, write } from './term.js';
 import { LITTLE, MID, bubble, draw } from './ghost.js';
 
 const layout = (rows) => (rows >= 30 ? { g: MID, band: 10, talk: 5 } : { g: LITTLE, band: 8, talk: 3 });
 const said = (line) => `   ${paint(C.LILAC, 'spookling:')} ${line}\n`;
-
-export const fits = (anim = true) => {
-  const { cols, rows } = size();
-  return anim && MODE !== 'none' && !LEGACY && !!process.stdout.isTTY && cols >= 80 && rows >= 24;
-};
 
 export function stage({ anim = true, label = '', hold = 1200 } = {}) {
   const plain = { live: false, async say(line) { write(said(line)); }, close() {} };
