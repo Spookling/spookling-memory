@@ -203,3 +203,18 @@ test('PreCompact and Stop: a pulse each, nothing printed; a dead server is "asle
   await hook('stop.js', 'http://127.0.0.1:9', bare, {});
   assert.ok(!existsSync(join(bare, '.memory')), 'a hook never creates .memory');
 });
+
+test('user scope: a project without .memory uses ~/.memory, for the hooks and the status line alike', async () => {
+  const home = project(), work = mkdtempSync(join(tmpdir(), 'spk-work-'));
+  await new Promise((res) => {
+    const c = spawn(process.execPath, [join(HOOKS, 'stop.js')], { env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, SPOOKLING_MEMORY_URL: 'http://127.0.0.1:9' } });
+    c.on('close', res);
+    c.stdin.end(JSON.stringify({ session_id: 's1', cwd: work }));
+  });
+  assert.equal(JSON.parse(readFileSync(join(home, '.memory', 'pulse.json'), 'utf8')).event, 'stop');
+  const out = spawnSync(process.execPath, [LINE], {
+    input: JSON.stringify({ session_id: 's1', workspace: { project_dir: work } }),
+    env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, NO_COLOR: '1' }, encoding: 'utf8',
+  }).stdout;
+  assert.equal(out, '👻 asleep, server off\n');
+});
