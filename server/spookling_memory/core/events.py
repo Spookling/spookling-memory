@@ -227,9 +227,6 @@ class Events:
     def entities_of(self, event_id: str) -> list[tuple[str, str]]:
         return [(r[0], r[1]) for r in self.db.execute("SELECT entity_id, role FROM event_entities WHERE event_id=?", (event_id,))]
 
-    def entity_ids_for(self, alias: str) -> set[str]:
-        return {r[0] for r in self.db.execute("SELECT entity_id FROM aliases WHERE lower(alias)=lower(?)", (alias,))}
-
     def all_aliases(self) -> list[tuple[str, str, int]]:
         return [(r[0], r[1], r[2]) for r in self.db.execute("SELECT alias, entity_id, support FROM aliases")]
 

@@ -144,7 +144,6 @@ TRIGGERS: list[tuple[str, str, str]] = [
     (r"\bfor me\b", "preference", "Can you pick a hike for me?"),
 ]
 COMPILED = [(re.compile(p, re.I), cat) for p, cat, _ in TRIGGERS]
-CATEGORIES = sorted({cat for _, cat, _ in TRIGGERS})
 
 
 RECALL_ASK = re.compile(r"\bremind me\b|\bwhat did i (?:say|tell you|mention|write|ask)\b", re.I)

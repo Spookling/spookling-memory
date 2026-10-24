@@ -42,7 +42,6 @@ import openai
 
 READER = "anthropic/claude-haiku-4.5"
 JUDGES = ("anthropic/claude-sonnet-5", "openai/gpt-6-sol")  # judge 1 is the headline (SPEC Rigor 3a)
-JUDGE = JUDGES[0]
 BASE_URL = "https://openrouter.ai/api/v1"
 KEY_FILE = Path.home() / "spookling-rig" / "openrouter.env"
 ANTHROPIC_KEY_FILE = Path.home() / "spookling-rig" / "anthropic.env"

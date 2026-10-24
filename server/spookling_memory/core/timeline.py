@@ -26,7 +26,6 @@ DAY = timedelta(days=1)
 STATUSES = ("happened", "ongoing", "planned", "hypothetical", "habitual", "negated")
 TENSES = ("past", "present", "future")
 RELS = ("on", "before", "after", "since", "until", "for", "in_advance")
-BASES = ("explicit", "relative", "for_now", "mentioned", "unknown")
 RANK = {"explicit": 0, "relative": 1, "for_now": 2, "mentioned": 3}  # which mention wins a conflict (36 B.2)
 UNIT_GRAN = {"day": "day", "week": "week", "month": "month", "year": "year", "age": "year"}
 INSTRUCTION = "Computed by code from the dated lines below. Phrase this result in your answer; do not compute it again."
