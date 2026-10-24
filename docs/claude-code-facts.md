@@ -35,7 +35,7 @@ Sources: [H] https://code.claude.com/docs/en/hooks , [G] https://code.claude.com
 
 19. `hooks` maps an event to a list of matcher groups, each with a `hooks` list of handlers `{type, command, ...}`. [H, Configuration] **matched**.
 20. A `matcher` of `"*"`, `""` or none matches everything. `UserPromptSubmit` and `Stop` have no matcher support (a matcher is ignored); `PreCompact` matches `manual` or `auto`. [H, Matcher patterns] **matched**: groups are written with no matcher, which covers both PreCompact triggers.
-21. Exec form: when `args` is set, `command` is spawned directly with `args` as its argv, no shell on any OS, so paths need no quoting; `node` plus a script path works on every platform because node.exe is a real executable, while `.cmd`/`.bat` shims cannot be exec'd. [H, Exec form and shell form] **changed**: handlers were the shell strings `SPOOKLING_MEMORY_URL=... <hooks>/x.sh` (POSIX only), then `node "<path>"`; now `{"command": "node", "args": ["<hooks>/x.js"]}`.
+21. Exec form: when `args` is set, `command` is spawned directly with `args` as its argv, no shell on any OS, so paths need no quoting; `node` plus a script path works on every platform because node.exe is a real executable, while `.cmd`/`.bat` shims cannot be exec'd. [H, Exec form and shell form] **changed**: handlers were the shell strings `SPOOKLING_MEMORY_URL=... <hooks>/x.sh` (POSIX only), then `node "<path>"`; now `{"command": "node", "args": ["<hooks>/x.js"]}`, `<hooks>` being `~/.spookling-memory/<version>/hooks` since 24 Oct 2026.
 22. Shell form (no `args`) runs `sh -c` on macOS and Linux, Git Bash on Windows, or PowerShell when Git Bash is missing; the `shell` field picks. [H, Exec form and shell form; Command hook fields] **changed** (shell form dropped). Inferred: Git Bash would turn `"\\wsl.localhost\..."` into `\wsl.localhost\...`, and PowerShell expands `$` inside double quotes.
 23. `args` arrived in Claude Code 2.1.139. [CL, 2.1.139] **noted**: the minimum version for our settings (here: 2.1.305 on Windows, 2.1.283 in WSL).
 24. A handler defined in more than one settings file runs once; hook entries from user, project and local settings merge. [H, Hook handler fields; Hook locations] **noted**: wiring both scopes does not fire twice.
@@ -60,7 +60,7 @@ Sources: [H] https://code.claude.com/docs/en/hooks , [G] https://code.claude.com
 37. `${VAR}` and `${VAR:-default}` expand in `command`, `args`, `env`, `url`, `headers`. [M, Environment variable expansion] **noted** (not used).
 38. Claude Code sets `CLAUDE_PROJECT_DIR` in a stdio server's environment. [M, Option 3] **noted**.
 39. Stdio shutdown: SIGINT, SIGTERM, SIGKILL within 500 ms on macOS and Linux; on Windows stdin is closed, then the tree is ended after 300 ms (2.1.296+). [M, How Claude Code stops a stdio server] **matched**: the MCP process is a stateless client of `serve`.
-40. Server startup timeout is 30 s (`MCP_TIMEOUT`, ms). [MQ; EV] **noted**: a first `uv run` on a fresh clone can exceed it; init runs `uv sync` first.
+40. Server startup timeout is 30 s (`MCP_TIMEOUT`, ms). [MQ; EV] **noted**: a first `uv run` on a fresh install can exceed it; init runs `uv sync` first, in the folder the MCP entry names (`~/.spookling-memory/<version>/server` since 24 Oct 2026, a copy out of the package, never the npx cache).
 41. The "Windows requires 'cmd /c' wrapper" MCP warning was a false positive and was removed; a real `.exe` such as `uv.exe` runs directly. [CL] **matched**.
 
 ## Transcripts

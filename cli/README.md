@@ -10,19 +10,13 @@ npx @spookling/memory status               # is the server up, what is wired (pr
 npx @spookling/memory uninstall            # remove the hooks and the MCP entry (add --scope user for the user files), keep .memory/
 ```
 
-Until the npm package exists, run the same commands from a clone: `node <clone>/cli/bin/spookling-memory.js init` (below).
+Until the npm package is published, run the same commands from a clone: `node <clone>/bin/spookling-memory.js init` (below).
+
+`init` copies the package's `server/` and `hooks/` to a folder per version, `~/.spookling-memory/<version>/` (`%LOCALAPPDATA%\spookling-memory\<version>\` on Windows), runs `uv sync` there and wires that folder, so nothing Claude Code runs lives in the npx cache, which npm may clear. A new version gets a new folder; `uninstall` leaves them.
 
 ## Install from a clone
 
-The server imports memory-bench through the path `../../memory-bench`, relative to `server/`. Clone the two repos side by side, in any folder:
-
-```text
-src/
-  spookling-memory/
-  memory-bench/
-```
-
-Neither repo has a public remote yet, so the clone URLs below are placeholders (to confirm with Mohammed). Run `init` from the project folder you want the memory in; `.memory/` is created there.
+One repo has everything: the wizard, the hooks and the server, the memory algorithm included (`server/spookling_memory/core/`; memory-bench is not needed). The repo is private for now, so the clone URL below is a placeholder. Run `init` from the project folder you want the memory in; `.memory/` is created there. `init` copies the clone's `server/` and `hooks/` as it does from the package, so after a `git pull`, run `init` again to wire the new code.
 
 ### macOS (zsh)
 
@@ -31,15 +25,14 @@ brew install node                                   # Node 18+, or the installer
 curl -LsSf https://astral.sh/uv/install.sh | sh     # uv, which runs the Python server
 mkdir -p ~/src && cd ~/src
 git clone <spookling-memory repo URL> spookling-memory
-git clone <memory-bench repo URL> memory-bench
 cd ~/code/your-project
-node ~/src/spookling-memory/cli/bin/spookling-memory.js init                 # this project
-node ~/src/spookling-memory/cli/bin/spookling-memory.js init --scope user    # or every project
+node ~/src/spookling-memory/bin/spookling-memory.js init                 # this project
+node ~/src/spookling-memory/bin/spookling-memory.js init --scope user    # or every project
 ```
 
 ### Linux and WSL (bash)
 
-The same commands as macOS, with Node from your package manager or nvm. In WSL, run everything in the WSL shell, with Claude Code installed in WSL, and keep the clones and the project on the Linux side (`~/...`), not under `/mnt/c`.
+The same commands as macOS, with Node from your package manager or nvm. In WSL, run everything in the WSL shell, with Claude Code installed in WSL, and keep the clone and the project on the Linux side (`~/...`), not under `/mnt/c`.
 
 ### Windows, native Claude Code (PowerShell)
 
@@ -49,10 +42,9 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 # open a new PowerShell window so node and uv are on PATH
 mkdir $HOME\src; cd $HOME\src
 git clone <spookling-memory repo URL> spookling-memory
-git clone <memory-bench repo URL> memory-bench
 cd $HOME\code\your-project
-node $HOME\src\spookling-memory\cli\bin\spookling-memory.js init                # this project
-node $HOME\src\spookling-memory\cli\bin\spookling-memory.js init --scope user   # or every project
+node $HOME\src\spookling-memory\bin\spookling-memory.js init                # this project
+node $HOME\src\spookling-memory\bin\spookling-memory.js init --scope user   # or every project
 ```
 
 Git for Windows is not needed: the hooks run `node` directly, with no shell. The first `uv sync` downloads Python 3.12 if you do not have it (about two minutes here).
@@ -61,10 +53,10 @@ Git for Windows is not needed: the hooks run `node` directly, with no shell. The
 
 With WSL's mirrored networking (`networkingMode=mirrored` in `%USERPROFILE%\.wslconfig`, the setup tested here), Windows and WSL share 127.0.0.1, so one server in WSL can serve both sides and both share one memory.
 
-1. In WSL, from your project: `node ~/src/spookling-memory/cli/bin/spookling-memory.js init` (or `--scope user`). This installs and starts the server.
+1. In WSL, from your project: `node ~/src/spookling-memory/bin/spookling-memory.js init` (or `--scope user`). This installs the server in WSL's `~/.spookling-memory/<version>/` and starts it.
 2. In PowerShell, point at the same clone through the WSL share:
-   `node \\wsl.localhost\Ubuntu-24.04\home\<you>\src\spookling-memory\cli\bin\spookling-memory.js init --scope user`
-   The wizard sees the clone is inside WSL. It skips `uv sync` (a Windows `.venv` would replace the one WSL runs), wires the hooks to the scripts on the share, and writes the MCP entry as `wsl.exe -d <distro> -- bash -lc "exec uv run --project '<path>' spookling-memory mcp"`, so the MCP tools run inside WSL too.
+   `node \\wsl.localhost\Ubuntu-24.04\home\<you>\src\spookling-memory\bin\spookling-memory.js init --scope user`
+   The wizard sees the clone is inside WSL. It copies nothing to Windows and skips `uv sync` (a Windows `.venv` would replace the one WSL runs), wires the hooks to the scripts on the share, and writes the MCP entry as `wsl.exe -d <distro> -- bash -lc "exec uv run --project '<path>' spookling-memory mcp"`, so the MCP tools run inside WSL too.
 
 Windows sessions then log into the WSL project's `.memory/`; the server reads their `C:\...` transcripts through `/mnt/c`. Starting a hook from the share took 1 to 3 seconds per event here. NAT networking (`localhostForwarding`) was not tested.
 
@@ -107,6 +99,7 @@ Every write is shown before it happens; answer `n` to skip it. Every command it 
 
 | Where | What |
 | --- | --- |
+| `~/.spookling-memory/<version>/` (`%LOCALAPPDATA%\spookling-memory\<version>\` on Windows) | `server/` and `hooks/`, copied from the package (a clone's `.venv` and caches stay behind); `uv sync` then makes `server/.venv` there |
 | `.memory/keys.env` | the tagger's key: `OPENROUTER_API_KEY` for Jev or `ANTHROPIC_API_KEY` for Haiku; nothing for Codex. Taken from your environment, or typed at a hidden prompt; never printed. Mode 600 on macOS and Linux; on Windows it has the folder's own access rules. |
 | `.memory/.gitignore` | `keys.env`, `server.pid`, `server.log`, and the server's caches `cache.sqlite*` (model replies) and `vectors.sqlite*` (embeddings); missing lines are added to a file you already have |
 | `.memory/server.pid`, `.memory/server.log` | the background server: `uv run --project <server> spookling-memory serve --folder .memory --port 7447 --model <tagger>` |
@@ -115,7 +108,7 @@ Every write is shown before it happens; answer `n` to skip it. Every command it 
 | user MCP list (user scope) | the same entry, added with `claude mcp add-json spookling-memory '<entry>' --scope user`. Claude Code keeps it in `~/.claude.json`, a file it writes itself, so the wizard only reads that file. |
 | `.memory/CODEX-TODO.md` | Codex only: a note that the Codex wiring is not built yet |
 
-It also runs `uv sync` in the server folder. `<server>` and `<hooks>` are the `server/` and `hooks/` folders next to `cli/` in the repo, or inside the package once they are bundled. `CLAUDE_CONFIG_DIR` moves the user files, as it does for Claude Code. On Windows, `~` is `%USERPROFILE%`. Every other key in each file is kept. A file that is not valid JSON is left untouched and reported, never overwritten.
+It also runs `uv sync` in the server folder. `<server>` and `<hooks>` are the `server/` and `hooks/` folders in `~/.spookling-memory/<version>/`, never the package itself (from Windows through `\\wsl.localhost`, the clone's own, on the share). `CLAUDE_CONFIG_DIR` moves the user files, as it does for Claude Code. On Windows, `~` is `%USERPROFILE%`. Every other key in each file is kept. A file that is not valid JSON is left untouched and reported, never overwritten.
 
 ## What Claude Code does with it
 
@@ -129,7 +122,7 @@ Checked against the current Claude Code docs on 21 Oct 2026; [docs/claude-code-f
 
 ## Undo
 
-`npx @spookling/memory uninstall` (with `--scope user` for the user files) removes only the Spookling hooks and the `spookling-memory` MCP entry; everything else in those files stays exactly as it was. It also offers to stop the server named in `.memory/server.pid`: a SIGTERM to its process group on macOS and Linux, `taskkill /T /F` on Windows. Your memory in `.memory/` stays, keys included. To remove that too, delete the folder yourself.
+`npx @spookling/memory uninstall` (with `--scope user` for the user files) removes only the Spookling hooks and the `spookling-memory` MCP entry; everything else in those files stays exactly as it was. It also offers to stop the server named in `.memory/server.pid`: a SIGTERM to its process group on macOS and Linux, `taskkill /T /F` on Windows. Your memory in `.memory/` stays, keys included. To remove that too, delete the folder yourself. The server and hooks stay in `~/.spookling-memory/<version>/` (it says so); delete that folder, after uninstall in every project and scope that used it, to remove them.
 
 On Windows the stop is forced, so the server cannot remove its temporary copy of the log: delete `%TEMP%\spookling-log-*` if you want it gone. On macOS and Linux the server removes it on the way out.
 
@@ -141,12 +134,19 @@ On 21 Oct 2026, on one PC: WSL2 Ubuntu 24.04 (Node 24.19, uv 0.12.5) and native 
 - Windows: `node --test test/hooks.test.js` (18 of 18) and the server suite (38 passed, 8 skipped: the `.sh` hooks and a WSL-only path test); `init`, `status` and `uninstall` (project scope) in a temp project, with the hooks and MCP entry it wrote driven the way Claude Code drives them, and the server tree gone after uninstall; `init` against the WSL clone through `\\wsl.localhost`.
 - Not run: macOS (no Mac to hand), Claude Code itself firing these hooks (that needs a model call), Windows without mirrored networking.
 
+On 24 Oct 2026, WSL only, after the move to one package: `npm test` (27) and the server suite (443) from a fresh clone; `npm pack`, the tarball unpacked, its `server/` and `hooks/` copied out by the wizard's `install()`, `uv sync` there and `serve` answering. CI (`.github/workflows/ci.yml`) runs the same on Linux, macOS and Windows with Node 20 and 24; not run yet.
+
 ## Develop
 
+From the repo root (`package.json` is there, so `npm pack` ships `bin/`, `cli/src/`, `hooks/` and `server/`):
+
 ```bash
-npm test                                   # node:test, no network
+npm test                                   # node:test, no network (also works from cli/)
 node bin/spookling-memory.js demo --fast   # the whole install, dry
 node bin/spookling-memory.js demo --frames 3
+npm pack --dry-run                         # what the package ships
 ```
 
-The ghost is generated from `brand/logos/ghost-mark.png`, not drawn by hand: `python3 tools/make-ghost.py` (Pillow) writes `src/ghost-sprite.js` (38 x 40 pixels, 20 text rows, downsampled from the logo with hand-placed eyes and smile; and two small ghosts drawn by hand in the script, 13 x 14 and 19 x 20, since a downsample that small turns the face into a smudge; 4 tail frames each, only the lilac streaks move) and renders them back to PNG in `renders/` beside the logo, to check by eye. `python3 tools/render-frames.py` (POSIX) replays the CLI's own output through a small terminal interpreter and saves `renders/cutscene-frame.png`, `renders/cutscene-end.png` and `renders/wizard-frame.png` (80 x 24, 800 x 480 px), and `renders/wizard-frame-30.png` (80 x 30, 800 x 600 px). Neither tool ships in the package.
+`hooks/package.json` says `"type": "commonjs"`: the root one says `module`, and the hooks use `require`.
+
+The ghost is generated from `brand/logos/ghost-mark.png`, not drawn by hand: `python3 cli/tools/make-ghost.py` (Pillow) writes `src/ghost-sprite.js` (38 x 40 pixels, 20 text rows, downsampled from the logo with hand-placed eyes and smile; and two small ghosts drawn by hand in the script, 13 x 14 and 19 x 20, since a downsample that small turns the face into a smudge; 4 tail frames each, only the lilac streaks move) and renders them back to PNG in `renders/` beside the logo, to check by eye. `python3 cli/tools/render-frames.py` (POSIX) replays the CLI's own output through a small terminal interpreter and saves `renders/cutscene-frame.png`, `renders/cutscene-end.png` and `renders/wizard-frame.png` (80 x 24, 800 x 480 px), and `renders/wizard-frame-30.png` (80 x 30, 800 x 600 px). Neither tool ships in the package.

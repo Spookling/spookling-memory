@@ -1,7 +1,8 @@
 # spookling-memory server
 
-The local memory server: memory-bench's `spookling` adapter behind an HTTP API on 127.0.0.1, a stdio MCP server, and the
-server side of three Claude Code hooks.
+The memory algorithm and its local server. `spookling_memory/core/` is the algorithm (moved from memory-bench on 24 Oct
+2026, `../docs/ORIGIN.md`; memory-bench runs it as its `spookling` adapter); the rest puts it behind an HTTP API on
+127.0.0.1, a stdio MCP server, and the server side of three Claude Code hooks.
 
 ## Run
 
@@ -14,7 +15,7 @@ uv run spookling-memory serve --folder .memory --model codex       # tag through
 uv run spookling-memory mcp                             # stdio MCP; talks to serve at SPOOKLING_MEMORY_URL
 uv run spookling-memory export --folder .memory memory.spookling   # server stopped
 uv run spookling-memory import --folder .memory memory.spookling   # into an empty folder
-uv run pytest                                           # offline: stub triage, no model calls
+uv run pytest                                           # offline: stub triage, no model calls (the server and core/)
 ```
 
 Tagging and the slow path call the tagger `--model` picks. `subscription.backend()` is the one place a model id is
@@ -22,8 +23,8 @@ mapped to a backend:
 
 | `--model` | backend | needs |
 |---|---|---|
-| `typesafe/jev-router` (Jev), or any OpenRouter id | memory-bench's `bench.models`, OpenRouter | `OPENROUTER_API_KEY` (or `~/spookling-rig/openrouter.env`) |
-| `anthropic/claude-haiku-4.5` (the default), any `anthropic/` id | the Anthropic API when `ANTHROPIC_API_KEY` is set (memory-bench's `BACKEND = "anthropic"`), else OpenRouter | `ANTHROPIC_API_KEY` |
+| `typesafe/jev-router` (Jev), or any OpenRouter id | `core/models.py`, OpenRouter | `OPENROUTER_API_KEY` (or `~/spookling-rig/openrouter.env`) |
+| `anthropic/claude-haiku-4.5` (the default), any `anthropic/` id | the Anthropic API when `ANTHROPIC_API_KEY` is set (`core.models.BACKEND = "anthropic"`), else OpenRouter | `ANTHROPIC_API_KEY` |
 | `codex` | your Codex subscription: `codex exec` per call, `gpt-6-luna`, read-only, from an empty temp folder | the `codex` CLI on PATH, logged in with ChatGPT (Plus or higher); check with `codex login status` |
 
 `codex` is a subprocess per call with the prompt on stdin, so it is slower (several seconds per chat), its replies are
@@ -34,24 +35,27 @@ missing, failing or timing out, a call that needs the model answers 503 with the
 `msvcrt.locking` on Windows, released if the process dies); run `serve` once and point the hooks and MCP at it.
 `serve` listens at once and opens the folder in the background (6 s for 3,201 turns and 1,152 judgements). A call
 waits up to 10 s for the open, or for a rebuild that holds the store, then answers 503 with `Retry-After: 5`; a
-failed open stops the server with the reason in its log. With the vectors extra, the embedder's cache is
-`vectors.sqlite` in the memory folder (a cache: not archived; keep it out of git).
+failed open stops the server with the reason in its log. Model replies (tagger, slow path, Jev) are cached in
+`cache.sqlite` in the memory folder, and with the vectors extra the embedder's in `vectors.sqlite` beside it (caches: not
+archived; the wizard's `.memory/.gitignore` keeps them out of git).
 
 ## Platforms
 
 macOS, Linux and Windows, Python 3.12 (uv fetches it if missing). Tested on WSL2 Ubuntu and native Windows 11; not
 run on macOS.
 
-- **memory-bench** is a path dependency, `../../memory-bench` from this folder: clone `spookling-memory` and
-  `memory-bench` side by side.
+- **Self-contained**: `uv sync` here needs nothing else; the algorithm is `spookling_memory/core/`. memory-bench depends
+  on this package, not the other way round. The npm package carries this folder (pyproject, uv.lock and the sources), and
+  `init` copies it to `~/.spookling-memory/<version>/server` (`%LOCALAPPDATA%\spookling-memory\<version>\server` on
+  Windows) and runs it from there.
 - **Records** are UTF-8 with `\n` line ends on every OS and split on `\n` only, so a `.memory/` folder copied between
   machines opens unchanged.
-- **Windows**: run the server with `PYTHONUTF8=1` (the wizard sets it). memory-bench reads its data files in the
-  locale encoding, cp1252 on Windows, which garbles words such as "café". uvicorn runs on asyncio (no uvloop is
+- **Windows**: run the server with `PYTHONUTF8=1` (the wizard sets it). Python reads files in the locale encoding
+  unless told otherwise (the core's `classes.json` included), cp1252 on Windows, which garbles words such as "café". uvicorn runs on asyncio (no uvloop is
   installed). Stop it with Ctrl-C, or `taskkill /PID <pid> /T /F`; the forced stop leaves the adapter's temporary
   copy of the log in `%TEMP%\spookling-log-*`.
-- **Local models** (sentence-transformers, memory-bench's `vectors` extra) are optional and not installed by
-  `uv sync`: the server runs keyword-only without them. `SPOOKLING_LOCAL_MODELS=0` turns them off when installed.
+- **Local models** (sentence-transformers, this package's `vectors` extra: `uv sync --extra vectors`) are optional
+  and not installed by `uv sync`: the server runs keyword-only without them. `SPOOKLING_LOCAL_MODELS=0` turns them off when installed.
 - **tiktoken** counts tokens for the recall budget and downloads its `cl100k_base` file (about 1.7 MB) on first use,
   into `TIKTOKEN_CACHE_DIR`, or `data-gym-cache` under the system temp dir (`%TEMP%` on Windows) when unset. On a
   machine without network, copy that cache over first, or set `TIKTOKEN_CACHE_DIR` to a folder that has it.

@@ -220,7 +220,7 @@ def main():
     # 80 x 24: the 13 x 14 ghost on a 9-row stage. 80 x 30: the 19 x 20 ghost on an 11-row stage.
     for rows, name in ((24, 'wizard-frame'), (30, 'wizard-frame-30')):
         with tempfile.TemporaryDirectory() as tmp:
-            stream = run_pty(['node', str(CLI / 'bin' / 'spookling-memory.js'), 'demo', '--fast'], env(_CWD=tmp, HOME=tmp), rows=rows)
+            stream = run_pty(['node', str(CLI.parent / 'bin' / 'spookling-memory.js'), 'demo', '--fast'], env(_CWD=tmp, HOME=tmp), rows=rows)
             left = os.listdir(tmp)
         log = Path(tempfile.gettempdir()) / f'spookling-{name}.log'  # for `snap`
         open(log, 'w', encoding='utf8', newline='').write(stream)
