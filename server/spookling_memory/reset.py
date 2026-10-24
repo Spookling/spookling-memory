@@ -14,6 +14,10 @@ from .core.sleep import tx_of
 PINNED = frozenset({"rule", "decision", "failed", "open"})  # the kinds <invariant> pins
 
 
+def now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _id(*parts) -> str:
     return hashlib.sha256("\x00".join(map(str, parts)).encode()).hexdigest()
 
@@ -105,9 +109,8 @@ def undo_reset(mem) -> dict:
     if r is None:
         raise ValueError("no reset to undo")
     mem.settle()
-    at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     u = {"id": _id("reset_undo", r["id"], len(mem.log.decisions)), "step": "reset_undo", "of": r["id"],
-         "source": _source(mem), "created": at}
+         "source": _source(mem), "created": now()}
     mem.record(u)
     _refold(mem)
     return u

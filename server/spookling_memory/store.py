@@ -8,10 +8,10 @@ import threading
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import asdict
-from datetime import datetime, timezone
 from pathlib import Path
 
 from . import reset as R
+from .reset import now
 from .core import SpooklingMemory, models, vectors
 from .core import compact as keep
 from .core.base import Session, Turn
@@ -27,10 +27,6 @@ class Busy(RuntimeError):
     """Opening, or a rebuild holds the lock: the API's 503 with Retry-After."""
 
     retry_after = 5  # seconds
-
-
-def now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def jsonl(text: str) -> list[str]:
@@ -50,12 +46,6 @@ def read_jsonl(path: Path) -> list[dict]:
         except ValueError as e:
             raise ValueError(f"{path} line {n} is not JSON ({e}); the file is left as it is") from None
     return out
-
-
-def lines(mem, start: tuple[int, int] = (0, 0)) -> tuple[list[str], list[str]]:
-    """The records from `start` on, serialised as Log.lines() does."""
-    return ([json.dumps(asdict(e), ensure_ascii=False) for e in mem.log.events[start[0]:]],
-            [json.dumps(d, ensure_ascii=False, sort_keys=True) for d in mem.log.decisions[start[1]:]])
 
 
 def load(mem, events: list[dict], decisions: list[dict]) -> None:
@@ -180,7 +170,7 @@ class Store:
             self.lock.release()
 
     def _flush(self) -> None:
-        log, dec = lines(self.mem, self.written)
+        log, dec = self.mem.log.lines(self.written)
         append(self.folder / LOG, log)  # the LOG first: judgements point into it
         append(self.folder / JUDGEMENTS, dec)
         self.written = (len(self.mem.log.events), len(self.mem.log.decisions))

@@ -7,7 +7,7 @@ import tarfile
 from pathlib import Path
 
 from .core import VERSION
-from .store import JUDGEMENTS, LOG, Store, jsonl, lines, now
+from .store import JUDGEMENTS, LOG, Store, jsonl, now
 
 FORMAT, ARCHIVE_VERSION = "spookling-memory", 1
 MEMBERS = ("manifest.json", LOG, JUDGEMENTS)
@@ -15,7 +15,7 @@ MEMBERS = ("manifest.json", LOG, JUDGEMENTS)
 
 def export(mem, path) -> dict:
     """path: a file path or a binary file object."""
-    log, dec = lines(mem)
+    log, dec = mem.log.lines()
     manifest = {"format": FORMAT, "version": ARCHIVE_VERSION, "created": now(), "adapter": VERSION,
                 "counts": {"log": len(log), "judgements": len(dec)}}
     files = {"manifest.json": json.dumps(manifest, indent=1) + "\n", LOG: "".join(x + "\n" for x in log),

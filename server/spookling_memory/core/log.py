@@ -91,10 +91,10 @@ class Log:
         """The verbatim turn text only, in bytes."""
         return sum(len(e.text.encode()) for e in self.events)
 
-    def lines(self) -> tuple[list[str], list[str]]:
-        """As JSON lines: what dump() writes and store_bytes counts."""
-        log = [json.dumps(asdict(e), ensure_ascii=False) for e in self.events]
-        return log, [json.dumps(d, ensure_ascii=False, sort_keys=True) for d in self.decisions]
+    def lines(self, start: tuple[int, int] = (0, 0)) -> tuple[list[str], list[str]]:
+        """As JSON lines from `start` on: what dump() writes and store_bytes counts."""
+        log = [json.dumps(asdict(e), ensure_ascii=False) for e in self.events[start[0]:]]
+        return log, [json.dumps(d, ensure_ascii=False, sort_keys=True) for d in self.decisions[start[1]:]]
 
     def dump(self, out: Path) -> None:
         log, dec = self.lines()
