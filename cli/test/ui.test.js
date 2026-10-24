@@ -75,6 +75,8 @@ test('demo walks every step, writes nothing, and shows the tagline once', () => 
   if (/so the server runs there/.test(o)) assert.doesNotMatch(o, /uv sync in/);
   else { assert.match(o, /copy server\/ and hooks\/ to .*spookling-memory/); assert.match(o, /demo: not copied/); assert.match(o, /uv sync in .*\n.*demo: skipped/); assert.match(o, /demo: not started/); }
   assert.match(o, /"hooks": \{/);
+  assert.match(o, /Show the ghost in your status line\? \[Y\/n\] y/);
+  assert.match(o, /"statusLine": \{\n.*"type": "command",\n.*"command": "node (?:'|\\").*status-line\.js(?:'|\\")",\n.*"refreshInterval": 5/);
   assert.match(o, /"mcpServers": \{/);
   assert.match(o, /demo: a sample reply/);
   assert.ok(o.includes(DEMO_LABEL));

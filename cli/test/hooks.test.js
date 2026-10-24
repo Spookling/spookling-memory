@@ -23,9 +23,11 @@ const user = {
   },
 };
 
-test('hooks run in exec form: node, then the script path as one argument', () => {
-  const h = (f) => ({ type: 'command', command: 'node', args: [`/opt/spookling-memory/hooks/${f}`] });
-  assert.deepEqual(cmds, { PreCompact: h('pre-compact.js'), UserPromptSubmit: h('user-prompt-submit.js'), Stop: h('stop.js') });
+test('hooks run in exec form: node, then the script path as one argument; the ghost names the spinner', () => {
+  const h = (f, statusMessage) => ({ type: 'command', command: 'node', args: [`/opt/spookling-memory/hooks/${f}`], ...(statusMessage && { statusMessage }) });
+  assert.deepEqual(cmds, {
+    PreCompact: h('pre-compact.js', '👻 keeping your rules'), UserPromptSubmit: h('user-prompt-submit.js', '👻 remembering'), Stop: h('stop.js'),
+  });
   assert.deepEqual(hookHandlers("/my spookling's $dir/hooks", path.posix).Stop.args, ["/my spookling's $dir/hooks/stop.js"]);
 });
 
@@ -65,11 +67,13 @@ const HOOKS = fileURLToPath(new globalThis.URL('../../hooks/', import.meta.url))
 const spaced = () => {
   const d = join(mkdtempSync(join(tmpdir(), 'spk-')), "Jane O'Neil $pace", 'spookling-memory', 'hooks');
   mkdirSync(d, { recursive: true });
-  for (const f of Object.values(HOOK_FILES)) copyFileSync(join(HOOKS, f), join(d, f));
+  for (const f of [...Object.values(HOOK_FILES), 'pulse.js']) copyFileSync(join(HOOKS, f), join(d, f));
   return hookHandlers(d);
 };
-const run = (h, url, input) => new Promise((res) => {
-  const c = spawn(h.command, h.args, { env: { ...process.env, SPOOKLING_MEMORY_URL: url } });
+// a home and project of their own: a hook writes .memory/pulse.json, never into the real ~/.memory
+const sandbox = () => { const d = mkdtempSync(join(tmpdir(), 'spk-home-')); return { HOME: d, USERPROFILE: d, CLAUDE_PROJECT_DIR: d }; };
+const run = (h, url, input, env = sandbox()) => new Promise((res) => {
+  const c = spawn(h.command, h.args, { env: { ...process.env, SPOOKLING_MEMORY_URL: url, ...env } });
   let out = '';
   c.stdout.on('data', (d) => { out += d; });
   c.on('close', (code) => res({ code, out }));
@@ -81,7 +85,8 @@ test('exec form: with no server the hooks print nothing and exit 0, within secon
   // 10.255.255.1 is not routed: the connect hangs, as a dead port on WSL's mirrored network does
   for (const h of Object.values(hs)) assert.deepEqual(await run(h, 'http://10.255.255.1:7447', '{"prompt":"hi"}'), { code: 0, out: '' });
   assert.ok(Date.now() - t < 10000);
-  assert.equal(spawnSync(hs.Stop.command, hs.Stop.args, { input: 'not json', timeout: 20000 }).status, 0);
+  const env = { ...process.env, ...sandbox(), SPOOKLING_MEMORY_URL: 'http://127.0.0.1:9' };
+  assert.equal(spawnSync(hs.Stop.command, hs.Stop.args, { input: 'not json', timeout: 20000, env }).status, 0);
 });
 
 test('in place, under the package\'s ESM package.json, the hooks still run as CommonJS (hooks/package.json)', async () => {

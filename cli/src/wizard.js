@@ -12,7 +12,7 @@ import { flyOnce } from './ghost.js';
 import { stage } from './stage.js';
 import {
   HOOK_FILES, MCP_NAME, addHooks, addMcp, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
-  wiring, wslShare, CODEX_EVENTS, codexHandlers, codexHooksPath,
+  wiring, wslShare, CODEX_EVENTS, codexHandlers, codexHooksPath, STATUS_FILE, addStatusLine, removeStatusLine, isOurStatus,
 } from './hooks.js';
 
 const WIN = process.platform === 'win32';
@@ -27,7 +27,7 @@ export const SERVER_DIR = join(INSTALL_DIR, 'server'), HOOKS_DIR = join(INSTALL_
 const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`, STATS = `${SERVER_URL}/v1/stats`;
 const STEPS = ['Checks', 'Harness', 'Tagger', 'Server', 'Wire harness', 'Smoke test', 'Done'];
 export const DEMO_LABEL = 'demo, nothing is written';
-const IGNORE = ['keys.env', 'server.pid', 'server.log', 'cache.sqlite*', 'vectors.sqlite*'];
+const IGNORE = ['keys.env', 'server.pid', 'server.log', 'cache.sqlite*', 'vectors.sqlite*', 'pulse.json*'];
 
 // at most 52 characters each, so the bubble fits beside the ghost at 80 columns (tested)
 export const SAY = {
@@ -285,10 +285,10 @@ async function waitForStats(ctx) {
   return null;
 }
 
-export async function init({ anim = true, project = process.cwd(), scope = 'project', dry = false, fast = false } = {}) {
+export async function init({ anim = true, project = process.cwd(), scope = 'project', dry = false, fast = false, ghost = true } = {}) {
   const label = dry ? DEMO_LABEL : '';
   await play({ anim: anim && !fast, keep: fits(anim), label });
-  const ctx = newCtx(project, scope);
+  const ctx = { ...newCtx(project, scope), ghost };
   const demo = dry ? demoInput(fast) : null;
   const st = stage({ anim, label, hold: fast ? 0 : 1200 });
   Object.assign(ctx, { dry, say: st.say, beat: demo?.beat ?? ctx.beat });
@@ -454,7 +454,7 @@ async function steps(ctx, { anim, st }) {
   }
   else {
     const handlers = hookHandlers(HOOKS_DIR), hooksAt = ctx.dry ? join(ROOT, 'hooks') : HOOKS_DIR; // the demo copies nothing
-    for (const f of Object.values(HOOK_FILES)) {
+    for (const f of [...Object.values(HOOK_FILES), 'pulse.js', STATUS_FILE]) {
       if (!existsSync(join(hooksAt, f))) {
         warn(`${join(hooksAt, f)} is missing; Claude Code will report it on each event.`);
         await fail(ctx, `hook script ${f} missing`);
@@ -462,11 +462,16 @@ async function steps(ctx, { anim, st }) {
     }
     if (!version('node')) warn('`node` is not on your PATH here. The hooks run `node`, so Claude Code needs it on its PATH.');
     const sp = settingsPath(project, scope);
-    await mergeFile(ctx, sp, (s) => addHooks(s, handlers), {
-      what: 'hooks: PreCompact, UserPromptSubmit, Stop',
-      preview: `${hooksJson(handlers)}\n  merged in; nothing else in the file changes`,
-      same: `${rel(ctx, sp)} already has the hooks`,
+    const ghost = ctx.ghost && await confirm('   Show the ghost in your status line?');
+    let line = '';
+    try { line = ghost ? addStatusLine(ctx.dry ? {} : readJson(sp), HOOKS_DIR).statusLine : ''; } catch {} // mergeFile reports it
+    await mergeFile(ctx, sp, (s) => (ghost ? addStatusLine(addHooks(s, handlers), HOOKS_DIR) : addHooks(s, handlers)), {
+      what: `hooks: PreCompact, UserPromptSubmit, Stop${ghost ? '; the ghost in the status line' : ''}`,
+      preview: `${hooksJson(handlers)}${line ? `\n"statusLine": ${JSON.stringify(line, null, 2)}` : ''}\n  merged in; nothing else in the file changes`
+        + (line && / --then /.test(line.command) ? '\n  your status line stays first; uninstall puts it back as it was' : ''),
+      same: `${rel(ctx, sp)} already has the hooks${ghost ? ' and the ghost' : ''}`,
     });
+    if (!ghost) info('No ghost in the status line. npx spookling init again adds it.');
     const entry = mcpEntry(SERVER_DIR, SERVER_URL);
     if (scope === 'project') {
       await mergeFile(ctx, mcpPath(project), (c) => addMcp(c, entry), {
@@ -539,6 +544,9 @@ export async function status(project = process.cwd(), get = stats) {
   }
   const events = [...got];
   line('hooks', where.events.join('; ') || 'none in .claude/settings.json or ~/.claude/settings.json', events.length === 3);
+  const ghostIn = ['project', 'user'].filter((sc) => { try { return isOurStatus(readJson(settingsPath(project, sc)).statusLine); } catch { return false; } });
+  line('ghost', ghostIn.length ? `in the status line (${ghostIn.map((sc) => rel(ctx, settingsPath(project, sc))).join(', ')})`
+    : 'not in the status line (init asks; --no-ghost skips it)', true);
   line('mcp', where.mcp.join('; ') || 'no entry in .mcp.json or ~/.claude.json', where.mcp.length > 0);
   const missing = Object.values(HOOK_FILES).filter((f) => !existsSync(join(HOOKS_DIR, f)));
   if (events.length && missing.length) line('scripts', `missing in ${HOOKS_DIR}: ${missing.join(', ')}`, false);
@@ -580,9 +588,9 @@ export async function uninstall(project = process.cwd(), { scope = 'project', ha
   const ctx = newCtx(project, scope);
   const sp = harness === 'codex' ? codexHooksPath(project, scope) : settingsPath(project, scope);
   out(`${paint(C.GHOST, 'Removing Spookling Memory wiring', true)}  ${paint(C.GREY, scope === 'user' ? `${project} (user scope)` : project)}\n`);
-  await mergeFile(ctx, sp, removeHooks, {
+  await mergeFile(ctx, sp, harness === 'codex' ? removeHooks : (s) => removeStatusLine(removeHooks(s)), {
     what: 'removed the Spookling hooks',
-    preview: 'drop only the Spookling hooks; everything else stays',
+    preview: `drop only the Spookling hooks${harness === 'codex' ? '' : ' and the ghost (your own status line comes back)'}; everything else stays`,
     same: `no Spookling hooks in ${rel(ctx, sp)}`,
   });
   if (harness === 'codex') info('Codex hooks removed; memory and unrelated configuration stay.');

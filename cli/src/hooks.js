@@ -27,9 +27,10 @@ export const codexHandlers = (hooksDir, p = path) => {
 export const codexHooksPath = (project, scope = 'project', env = process.env) =>
   join(scope === 'user' ? (env.CODEX_HOME || join(homedir(), '.codex')) : join(project, '.codex'), 'hooks.json');
 
-// exec form (Claude Code v2.1.139+): no shell on any OS, so the path needs no quoting
+// exec form (Claude Code v2.1.139+): no shell on any OS, so the path needs no quoting; statusMessage is the spinner's text
+const SPINNER = { UserPromptSubmit: '👻 remembering', PreCompact: '👻 keeping your rules' };
 export const hookHandlers = (hooksDir, p = path) => Object.fromEntries(Object.entries(HOOK_FILES)
-  .map(([ev, f]) => [ev, { type: 'command', command: 'node', args: [p.join(hooksDir, f)] }]));
+  .map(([ev, f]) => [ev, { type: 'command', command: 'node', args: [p.join(hooksDir, f)], ...(SPINNER[ev] && { statusMessage: SPINNER[ev] }) }]));
 
 // \\wsl.localhost\<distro>\... or \\wsl$\<distro>\... -> { distro, path }
 export const wslShare = (dir) => {
@@ -98,6 +99,45 @@ export function removeHooks(settings) {
     else delete out.hooks[ev];
   }
   if (!Object.keys(out.hooks).length) delete out.hooks;
+  return out;
+}
+
+// statusLine.command always runs in a shell (sh, Git Bash or PowerShell); the status line you had rides along as --then
+export const STATUS_FILE = 'status-line.js';
+const WIN_BAD = /["$`!\r\n]/; // what double quotes do not keep literal in Git Bash or PowerShell
+const posixQuote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
+export function statusCommand(hooksDir, prev, p = path) {
+  if (p !== path.win32) return `node ${posixQuote(p.join(hooksDir, STATUS_FILE))}${prev ? ` --then ${posixQuote(prev)}` : ''}`;
+  const script = p.join(hooksDir, STATUS_FILE).replaceAll('\\', '/'); // Git Bash eats unquoted backslashes
+  if ([script, prev ?? ''].some((s) => WIN_BAD.test(s))) {
+    throw new Error('the status line path or your current status line command has a character Git Bash and PowerShell read differently ("$`!); run init with --no-ghost');
+  }
+  return `node "${script}"${prev ? ` --then "${prev}"` : ''}`;
+}
+export const isOurStatus = (sl) => isObj(sl) && typeof sl.command === 'string' && /spookling/i.test(sl.command)
+  && /[\\/]hooks[\\/]status-line\.js\b/.test(sl.command);
+const previous = (cmd) => {
+  const m = / --then (?:'((?:[^']|'\\'')*)'|"([^"]*)")$/.exec(cmd);
+  return m ? m[1]?.replaceAll("'\\''", "'") ?? m[2] : null;
+};
+
+// a status line of your own keeps everything but command; with none we refresh every 5 s so the ghost moves while idle
+export function addStatusLine(settings, hooksDir, p = path) {
+  checkShape(settings);
+  const sl = settings.statusLine;
+  if (sl !== undefined && !isObj(sl)) throw new Error('"statusLine" in settings.json is not an object');
+  const prev = isOurStatus(sl) ? previous(sl.command) : sl?.command || null;
+  const out = structuredClone(settings);
+  out.statusLine = sl ? { ...sl, type: 'command', command: statusCommand(hooksDir, prev, p) }
+    : { type: 'command', command: statusCommand(hooksDir, null, p), refreshInterval: 5 };
+  return out;
+}
+
+export function removeStatusLine(settings) {
+  if (!isOurStatus(settings?.statusLine)) return settings;
+  const out = structuredClone(settings), prev = previous(out.statusLine.command);
+  if (prev) out.statusLine.command = prev;
+  else delete out.statusLine;
   return out;
 }
 
