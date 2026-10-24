@@ -17,12 +17,12 @@ Install Spookling Memory in this project.
 
 ## Codex
 
-Codex can run the same install. It wires Claude Code: the Codex hooks are not built yet, so Codex itself gets no memory yet.
+Run `npx spookling init` in your own terminal and choose **Codex**. Add `--scope user` to wire user hooks and keep memory in your home folder. The default harness is still Claude Code, so an unattended install that takes every default does not select Codex.
 
 ```text
-Install Spookling Memory here.
-1. Run `npx spookling init` in the foreground and wait for it to finish. If your sandbox blocks the network, ask me to run it myself. Do not answer its prompts yourself; with no answer it takes each default after 20 seconds. Never type, print or repeat my API keys.
-2. Run `npx spookling status`.
-3. Check that the hooks line lists PreCompact, UserPromptSubmit and Stop, and the mcp line lists spookling-memory.
-4. If both are there, reply "Spookling Memory is in." and three lines: what went into the Claude Code settings file, the MCP config and `.memory/`. If not, quote the status lines marked ! instead.
+Install Spookling Memory here for Codex.
+1. Have me run `npx spookling init` in my terminal and choose Codex; do not answer the wizard's prompts or repeat my keys.
+2. When it finishes, run `npx spookling status` and report the Codex hooks and server lines.
+3. Tell me to open /hooks and review/trust the installed commands. Do not claim they are live until trusted and actually invoked.
+4. The ghost reports ready after a successful server health check, active after successful recall, or unavailable if either fails. The hooks use the same local server and .memory/ data as Claude Code.
 ```

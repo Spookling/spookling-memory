@@ -12,7 +12,7 @@ import { flyOnce } from './ghost.js';
 import { stage } from './stage.js';
 import {
   HOOK_FILES, MCP_NAME, addHooks, addMcp, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
-  wiring, wslShare,
+  wiring, wslShare, CODEX_EVENTS, codexHandlers, codexHooksPath,
 } from './hooks.js';
 
 const WIN = process.platform === 'win32';
@@ -25,7 +25,7 @@ export const INSTALL_DIR = SHARE ? ROOT
     : join(homedir(), '.spookling-memory', VERSION);
 export const SERVER_DIR = join(INSTALL_DIR, 'server'), HOOKS_DIR = join(INSTALL_DIR, 'hooks');
 const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`, STATS = `${SERVER_URL}/v1/stats`;
-const STEPS = ['Checks', 'Harness', 'Tagger', 'Server', 'Wire Claude Code', 'Smoke test', 'Done'];
+const STEPS = ['Checks', 'Harness', 'Tagger', 'Server', 'Wire harness', 'Smoke test', 'Done'];
 export const DEMO_LABEL = 'demo, nothing is written';
 const IGNORE = ['keys.env', 'server.pid', 'server.log', 'cache.sqlite*', 'vectors.sqlite*'];
 
@@ -36,7 +36,7 @@ export const SAY = {
   3: 'A small model tags each chat for me. Pick one.',
   4: 'Moving in. Everything I remember goes in .memory/',
   5: 'I will remind Claude of what you told it before.',
-  codex: 'Nothing to wire for Codex yet. I will wait.',
+  codex: 'I will show Codex when memory is ready.',
   6: 'A quick knock, to check I am home.',
   7: 'That is all. Carry on as you always do.',
   fail: 'Sorry, that failed. The line marked ! says why.',
@@ -94,8 +94,7 @@ const run = (cmd, args, { cwd, timeout }) => new Promise((res) => {
 
 export const hooksJson = (handlers) => ['{', '  "hooks": {', Object.entries(handlers).map(([ev, h]) => [
   `    ${JSON.stringify(ev)}: [{ "hooks": [{`,
-  `      "type": ${JSON.stringify(h.type)}, "command": ${JSON.stringify(h.command)},`,
-  `      "args": ${JSON.stringify(h.args)}`,
+  ...Object.entries(h).map(([k, v], i, all) => `      ${JSON.stringify(k)}: ${JSON.stringify(v)}${i < all.length - 1 ? ',' : ''}`),
   '    }] }]',
 ].join('\n')).join(',\n'), '  }', '}'].join('\n');
 export const mcpJson = (entry) => ['{', '  "mcpServers": {', `    ${JSON.stringify(MCP_NAME)}: {`,
@@ -335,21 +334,13 @@ async function steps(ctx, { anim, st }) {
   await ctx.beat(1200);
 
   await step(ctx, 2);
-  const pick = await choose('   Which one?', ['Claude Code', 'Codex (wiring comes later)', 'Spookling app']);
+  const pick = await choose('   Which one?', ['Claude Code', 'Codex', 'Spookling app']);
   ctx.harness = ['claude', 'codex', 'app'][pick];
   if (ctx.harness === 'app') {
     ok('Spookling Memory ships with the app. Nothing to install here.');
     return 0;
   }
   ok(ctx.harness === 'claude' ? 'Claude Code' : 'Codex');
-  if (ctx.harness === 'codex') {
-    await write(ctx, join(ctx.mem, 'CODEX-TODO.md'), [
-      '# Codex: not wired yet', '',
-      `Spookling Memory runs for this project (server on 127.0.0.1:${PORT}, data in .memory/),`,
-      'but the Codex hooks are not built yet. When they land, run `npx spookling init`',
-      'again and pick Codex.', '',
-    ].join('\n'), { what: 'Codex TODO note' });
-  }
 
   // the demo reads neither the environment nor keys.env, so the key prompt shows
   await step(ctx, 3);
@@ -450,7 +441,17 @@ async function steps(ctx, { anim, st }) {
   }
 
   await step(ctx, 5, ctx.harness === 'claude' ? SAY[5] : SAY.codex);
-  if (ctx.harness !== 'claude') info('Codex: nothing to wire yet (see .memory/CODEX-TODO.md).');
+  if (ctx.harness === 'codex') {
+    if (!existsSync(join(ctx.dry ? join(ROOT, 'hooks') : HOOKS_DIR, 'spookling-codex.cjs'))) await fail(ctx, 'Codex hook script missing');
+    const handlers = codexHandlers(HOOKS_DIR), sp = codexHooksPath(project, scope);
+    await mergeFile(ctx, sp, (s) => addHooks(s, handlers), {
+      what: 'Codex hooks: SessionStart, UserPromptSubmit, PreCompact, Stop',
+      preview: `${hooksJson(handlers)}\n  merged in; existing hooks stay`,
+      same: `${rel(ctx, sp)} already has the hooks`,
+    });
+    info('Open /hooks in Codex and review/trust the Spookling hooks before they can run.');
+    info('The ghost appears in hook activity; ready/active messages follow successful server checks or recall.');
+  }
   else {
     const handlers = hookHandlers(HOOKS_DIR), hooksAt = ctx.dry ? join(ROOT, 'hooks') : HOOKS_DIR; // the demo copies nothing
     for (const f of Object.values(HOOK_FILES)) {
@@ -502,6 +503,10 @@ async function steps(ctx, { anim, st }) {
       wired = w.events.length === 3 && w.mcp;
     } catch { wired = false; }
   }
+  if (ctx.harness === 'codex' && !ctx.dry) {
+    try { wired = CODEX_EVENTS.every((ev) => wiring(readJson(codexHooksPath(project, scope)), {}).events.includes(ev)); }
+    catch { wired = false; }
+  }
   st.close();
   await flyOnce(wired && !ctx.problems.length ? SAY[7] : SAY.fail, { anim });
   for (const [name, what] of ctx.written) out(`   ${paint(C.MINT, `✓ ${name.padEnd(24)}`)} ${paint(C.GREY, what)}\n`);
@@ -537,9 +542,22 @@ export async function status(project = process.cwd(), get = stats) {
   line('mcp', where.mcp.join('; ') || 'no entry in .mcp.json or ~/.claude.json', where.mcp.length > 0);
   const missing = Object.values(HOOK_FILES).filter((f) => !existsSync(join(HOOKS_DIR, f)));
   if (events.length && missing.length) line('scripts', `missing in ${HOOKS_DIR}: ${missing.join(', ')}`, false);
-  const codex = existsSync(join(project, '.memory', 'CODEX-TODO.md'));
+  const codexGot = new Set(), codexWhere = [];
+  for (const scope of ['project', 'user']) {
+    const cp = codexHooksPath(project, scope);
+    try {
+      const w = wiring(readJson(cp), {});
+      if (w.events.length) codexWhere.push(`${w.events.join(', ')} in ${rel(ctx, cp)}`);
+      w.events.forEach((ev) => codexGot.add(ev));
+    } catch (e) { line('config', e.message, false); }
+  }
+  const codex = CODEX_EVENTS.every((ev) => codexGot.has(ev));
+  line('codex', codexWhere.join('; ') || 'no Spookling hooks in project/user hooks.json', codex);
+  if (codexGot.size) line('trust', 'review /hooks in Codex; configured hooks are not proof of trust or execution', false);
+  const codexScript = existsSync(join(HOOKS_DIR, 'spookling-codex.cjs'));
+  if (codexGot.size && !codexScript) line('scripts', `missing ${join(HOOKS_DIR, 'spookling-codex.cjs')}`, false);
   const claude = events.length === 3 && where.mcp.length > 0;
-  line('harness', claude ? 'Claude Code' : codex ? 'Codex (TODO note only, no wiring yet)' : 'none wired', claude || codex);
+  line('harness', [claude && 'Claude Code', codex && 'Codex (configured; trust checked in /hooks)'].filter(Boolean).join(', ') || 'none wired', claude || codex);
   line('tagger', s?.tagger ? taggerText(s.tagger) : 'unknown (the server is down, or older than this wizard)', !!s?.tagger);
   const need = { openrouter: 'OPENROUTER_API_KEY', anthropic: 'ANTHROPIC_API_KEY' }[s?.tagger?.via];
   const envPath = join(project, '.memory', 'keys.env');
@@ -549,7 +567,7 @@ export async function status(project = process.cwd(), get = stats) {
     line('keys', `${names.join(', ') || 'none'} in .memory/keys.env${mode && mode !== 0o600 ? ` (mode ${mode.toString(8)}, should be 600)` : ''}`,
       (!need || names.includes(need)) && (!mode || mode === 0o600));
   } else line('keys', need ? `no .memory/keys.env (the tagger needs ${need})` : 'no .memory/keys.env', !need);
-  return s && (claude || codex) && !missing.length ? 0 : 1;
+  return s && ((claude && !missing.length) || (codex && codexScript)) ? 0 : 1;
 }
 
 // the whole tree: started detached, its pid leads a process group; on Windows taskkill /T
@@ -558,16 +576,17 @@ function stopServer(pid) {
   try { process.kill(-pid, 'SIGTERM'); return true; } catch { try { process.kill(pid, 'SIGTERM'); return true; } catch { return false; } }
 }
 
-export async function uninstall(project = process.cwd(), { scope = 'project' } = {}) {
+export async function uninstall(project = process.cwd(), { scope = 'project', harness = 'claude' } = {}) {
   const ctx = newCtx(project, scope);
-  const sp = settingsPath(project, scope);
+  const sp = harness === 'codex' ? codexHooksPath(project, scope) : settingsPath(project, scope);
   out(`${paint(C.GHOST, 'Removing Spookling Memory wiring', true)}  ${paint(C.GREY, scope === 'user' ? `${project} (user scope)` : project)}\n`);
   await mergeFile(ctx, sp, removeHooks, {
     what: 'removed the Spookling hooks',
-    preview: 'drop the Spookling PreCompact, UserPromptSubmit and Stop hooks; everything else stays',
+    preview: 'drop only the Spookling hooks; everything else stays',
     same: `no Spookling hooks in ${rel(ctx, sp)}`,
   });
-  if (scope === 'project') {
+  if (harness === 'codex') info('Codex hooks removed; memory and unrelated configuration stay.');
+  else if (scope === 'project') {
     await mergeFile(ctx, mcpPath(project), removeMcp, {
       what: `removed MCP server ${MCP_NAME}`,
       preview: `drop mcpServers.${MCP_NAME}; other servers stay`,

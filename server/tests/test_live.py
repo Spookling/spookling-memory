@@ -100,6 +100,32 @@ def test_hook_scripts(live, tmp_path, runner):
     assert "Toyota Corolla" in ctx and "Postgres 16" in ctx  # the decision leads every context
 
 
+@pytest.mark.skipif(not shutil.which("node"), reason="no node")
+def test_codex_ghost_and_memory_hooks_use_the_existing_server(live, tmp_path):
+    url, store = live
+    from test_codex import message
+
+    path = tmp_path / "rollout.jsonl"
+    path.write_text("\n".join(json.dumps(e) for e in [
+        message("user", "I drive a Toyota Corolla, nothing fancy."),
+        message("assistant", "Noted.", "final_answer"),
+        message("user", "From now on, always answer in metric units."),
+    ]), encoding="utf-8")
+    base = {"session_id": "codex-live", "transcript_path": str(path)}
+    runner = ("node", ".cjs")
+    start = hook(runner, "spookling-codex", {**base, "hook_event_name": "SessionStart"}, url)
+    assert start.returncode == 0 and "👻 Spookling memory ready" in json.loads(start.stdout)["systemMessage"]
+    for event in ("Stop", "PreCompact"):
+        result = hook(runner, "spookling-codex", {**base, "hook_event_name": event}, url)
+        assert (result.returncode, result.stdout, result.stderr) == (0, "", "")
+    assert len(store.mem.log.events) == 3 and all(e.agent == "codex" for e in store.mem.log.events)
+    result = hook(runner, "spookling-codex", {**base, "hook_event_name": "UserPromptSubmit", "prompt": "What car do I drive?"}, url)
+    reply = json.loads(result.stdout)
+    assert "👻 Spookling memory active" in reply["systemMessage"]
+    assert "Toyota Corolla" in reply["hookSpecificOutput"]["additionalContext"]
+    assert "metric" in reply["hookSpecificOutput"]["additionalContext"]
+
+
 @pytest.mark.parametrize("runner", RUNNERS)
 def test_hook_scripts_do_nothing_inside_a_tagging_call(live, tmp_path, runner):
     """SPOOKLING_TAGGING, set for a tagging CLI that may fire these hooks, makes every script exit at once."""

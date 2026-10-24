@@ -10,6 +10,22 @@ export const HOOK_FILES = {
 };
 export const MCP_NAME = 'spookling-memory';
 
+export const CODEX_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreCompact', 'Stop'];
+// Codex command hooks use a shell command, not Claude Code's command + args form.
+// Single quotes protect spaces, apostrophes and shell substitutions in POSIX paths.
+export const codexHandlers = (hooksDir, p = path) => {
+  const script = p.join(hooksDir, 'spookling-codex.cjs');
+  const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
+  // Use a quoted native Windows path; reject shell expansion/control characters rather than misquote them.
+  if (p === path.win32 && /["%$`!\r\n]/.test(script)) throw new Error('Codex hook path contains unsupported Windows shell characters');
+  const command = p === path.win32 ? `node "${script}"` : `node ${quote(script)}`;
+  return Object.fromEntries(CODEX_EVENTS.map((ev) => [ev, {
+    type: 'command', command, timeout: ev === 'PreCompact' ? 65 : 20, statusMessage: '👻 Spookling memory',
+  }]));
+};
+export const codexHooksPath = (project, scope = 'project', env = process.env) =>
+  join(scope === 'user' ? (env.CODEX_HOME || join(homedir(), '.codex')) : join(project, '.codex'), 'hooks.json');
+
 // exec form (Claude Code v2.1.139+): no shell on any OS, so the path needs no quoting
 export const hookHandlers = (hooksDir, p = path) => Object.fromEntries(Object.entries(HOOK_FILES)
   .map(([ev, f]) => [ev, { type: 'command', command: 'node', args: [p.join(hooksDir, f)] }]));
@@ -32,7 +48,7 @@ export const mcpEntry = (serverDir, url) => {
 };
 
 // ours: one of our scripts (.js, or .sh from an older install) under a spookling path
-const SCRIPT = /[\\/]hooks[\\/](pre-compact|user-prompt-submit|stop)\.(js|sh)\b/;
+const SCRIPT = /[\\/]hooks[\\/](?:(pre-compact|user-prompt-submit|stop)\.(js|sh)|spookling-codex\.cjs)\b/;
 export const isOurs = (h) => {
   const s = typeof h === 'string' ? h : [h?.command, ...(Array.isArray(h?.args) ? h.args : [])].filter((x) => typeof x === 'string').join(' ');
   return /spookling/i.test(s) && SCRIPT.test(s);

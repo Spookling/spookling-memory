@@ -1,7 +1,7 @@
 {
   "name": "spookling",
   "version": "0.1.1",
-  "description": "Spookling Memory for Claude Code: the install wizard, the local memory server and the hooks.",
+  "description": "Spookling Memory for Claude Code and Codex: the install wizard, the local memory server and the hooks.",
   "type": "module",
   "bin": {
     "spookling": "bin/spookling-memory.js"
@@ -18,7 +18,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test cli/test/hooks.test.js cli/test/ui.test.js"
+    "test": "node --test cli/test/hooks.test.js cli/test/ui.test.js cli/test/codex.test.js"
   },
   "repository": {
     "type": "git",
