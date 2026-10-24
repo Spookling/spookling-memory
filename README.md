@@ -241,9 +241,11 @@ Behind each number: the result file, the judge logs, both judges' verdicts, the 
 
 ## Early access
 
-**Claude Code first. One command. Your data stays yours.**
+**Claude Code and Codex. One command. Your data stays yours.**
 
-Spookling Memory is out as `spookling` 0.1.1, early access. Claude Code users go first; Codex and the Spookling app follow. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
+In Codex, the CLI shows `👻 Spookling memory` during hook activity, `ready` after a successful server health check, and `active` after successful recall (including a search with no matching facts). Failed health checks or recall show `unavailable` and do not block Codex. This is a hook indicator, not a permanent widget; [setup and removal](cli/README.md#codex) use the same local server and `.memory/` data.
+
+Spookling Memory is out as `spookling` 0.1.1, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
 
 ```bash
 npx spookling init
@@ -268,7 +270,7 @@ You need Node 18 or newer and Claude Code v2.1.139 or later. The server runs on 
 It opens with a cutscene: the Spookling wordmark builds in block letters and the ghost flies across your terminal. Any key skips it. Then seven steps:
 
 1. **Checks your machine.** Node, then uv. No uv? It shows the one-line install for your OS and offers to run it.
-2. **Asks which harness you use.** Claude Code. Codex wiring comes later; pick it and you get the server and a note.
+2. **Asks which harness you use.** Claude Code or Codex. Codex users review/trust the installed hooks through `/hooks`.
 3. **Asks how the tagger should run.** Three choices, in the table below. A key is typed hidden, saved to `.memory/keys.env`, and never printed.
 4. **Installs the local memory server.** It copies the server and the hooks to a folder per user and version: `~/.spookling-memory/<version>/`, or `%LOCALAPPDATA%\spookling-memory\<version>\` on Windows. It runs `uv sync` there and starts the server on 127.0.0.1:7447. Nothing Claude Code runs lives in the npx cache.
 5. **Wires Claude Code.** Three hooks that call the server: `Stop` saves the chat when it ends, `UserPromptSubmit` hands the right lines to each prompt, `PreCompact` copies the survivor block out before the squash. Plus the MCP server, so Claude can call the memory tools. `--scope project` (the default) writes this project's files; `--scope user` writes yours, for every project.
@@ -346,7 +348,7 @@ GET  /v1/export    # the same over HTTP, on 127.0.0.1:7447
 POST /v1/import    # the archive, as application/octet-stream
 ```
 
-Import into a fresh install, before its first chat. The archive is the same for every harness. Start in Claude Code. Carry the same memory to a new machine today, and to Codex or the Spookling app when they land. Same facts, same rules, same history. No re-teaching. No vendor holding your past hostage.
+Import into a fresh install, before its first chat. The archive is the same for every harness. Start in Claude Code or Codex. Carry the same memory between them or to a new machine today, and to the Spookling app when it lands. Same facts, same rules, same history. No re-teaching. No vendor holding your past hostage.
 
 ---
 

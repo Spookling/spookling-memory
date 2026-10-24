@@ -2,7 +2,7 @@
 
 The memory algorithm and its local server. `spookling_memory/core/` is the algorithm (moved from memory-bench on 24 Oct
 2026, `../docs/ORIGIN.md`; memory-bench runs it as its `spookling` adapter); the rest puts it behind an HTTP API on
-127.0.0.1, a stdio MCP server, and the server side of three Claude Code hooks.
+127.0.0.1, a stdio MCP server, and the server side of Claude Code and Codex hooks.
 
 ## Run
 
@@ -72,7 +72,7 @@ run on macOS.
 | `GET /v1/export` | | the archive (`application/gzip`) |
 | `POST /v1/import` | the archive, `application/octet-stream` | `{events, judgements}`; the memory must be empty |
 | `GET /v1/stats` | | store counts, `reset`, `before_reset`, `tagger` (`{model, via}`, via `openrouter`, `anthropic` or `codex`) |
-| `POST /v1/hook/{user-prompt-submit,pre-compact,stop}` | the Claude Code hook's stdin JSON | what the hook prints |
+| `POST /v1/hook/{user-prompt-submit,pre-compact,stop}` | the host hook's stdin JSON (`harness: "codex"` for Codex) | what the hook prints |
 
 `ts` is ISO 8601, default now. A refused change (a reset that predates the log, an import into a memory that is not
 empty, nothing to undo, a bad timestamp) is 409 with the reason; a store still opening or rebuilding is 503 with
@@ -108,6 +108,13 @@ to nothing (a task notification) keeps its place but is not logged; its tail par
 The hook contract was checked against the Claude Code docs on 21 Oct 2026: `../docs/claude-code-facts.md`. The
 transcript line format `hooks.turns()` reads is internal to Claude Code and changes between versions; it was checked
 against what 2.1.283 writes.
+
+`../hooks/spookling-codex.cjs` uses these same endpoints, adding `harness: "codex"` so capture reads Codex rollout messages
+instead of Claude Code's transcript format. It skips duplicate event records, developer context, reasoning,
+commentary and tool output, then uses the existing `clean()` and tail deduplication. SessionStart checks `/v1/stats`;
+only checked health/recall responses produce ready/active ghost messages. Stop and PreCompact stay silent. Install,
+trust and uninstall details: [Codex](../cli/README.md#codex).
+
 
 ## Reset
 

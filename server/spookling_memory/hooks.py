@@ -106,9 +106,44 @@ def payload(body: bytes) -> dict:
     return p
 
 
+def codex_turns(path: Path) -> list[dict]:
+    """Codex rollout response_item messages only; never developer context, tool output, reasoning or commentary.
+    The rollout format is internal (observed with codex-cli 0.164.0); event_msg duplicates are deliberately skipped.
+    Use the same cleaning and whole-transcript tail deduplication as Claude Code.
+    """
+    out: list[dict] = []
+    for line in jsonl(path.read_text(encoding="utf-8", errors="replace")):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(e, dict) or e.get("type") != "response_item":
+            continue
+        p = e.get("payload")
+        if not isinstance(p, dict) or p.get("type") != "message" or p.get("role") not in ("user", "assistant"):
+            continue
+        role = p["role"]
+        if role == "assistant" and p.get("phase") not in (None, "final_answer"):
+            continue
+        content = p.get("content") or []
+        text = content if isinstance(content, str) else "\n".join(
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") in ("input_text", "output_text"))
+        # Codex writes its bootstrap instructions and environment as user messages, too.
+        if text.lstrip().startswith(("# AGENTS.md instructions", "<environment_context>", "<permissions instructions>")):
+            continue
+        text = clean(text)
+        if out and out[-1]["role"] == role:
+            if text:
+                out[-1]["content"] = (out[-1]["content"] + "\n\n" + text).strip()
+        else:
+            out.append({"role": role, "content": text})
+    return out
+
+
 def handle(store, event: str, p: dict) -> dict:
     """What the hook prints. Stop and PreCompact log new turns; PreCompact then keeps the session's rules."""
-    sid = str(p.get("session_id") or "claude-code")
+    agent = "codex" if p.get("harness") == "codex" else "claude-code"
+    sid = str(p.get("session_id") or agent)
     if event == "user-prompt-submit":
         prompt = p.get("prompt") or ""
         ctx = store.retrieve(prompt)["context"] if prompt.strip() else ""
@@ -117,7 +152,7 @@ def handle(store, event: str, p: dict) -> dict:
         return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": cap(ctx)}}
     path = local_path(str(p.get("transcript_path") or ""))
     if path.suffix == ".jsonl" and path.is_file():
-        conversation = turns(path)
+        conversation = codex_turns(path) if agent == "codex" else turns(path)
         last = clean(str(p.get("last_assistant_message") or ""))
         if conversation and last and event == "stop":  # the file can lag the final reply at Stop
             if conversation[-1]["role"] != "assistant":
@@ -125,7 +160,7 @@ def handle(store, event: str, p: dict) -> dict:
             else:
                 conversation[-1]["content"] = last
         if conversation:  # Stop is after the reply: it may wait for a rebuild
-            store.ingest(sid, conversation, agent="claude-code", tail=True, patient=event == "stop")
+            store.ingest(sid, conversation, agent=agent, tail=True, patient=event == "stop")
     if event == "pre-compact":
         store.compact(sid)
     return {}

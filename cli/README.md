@@ -106,7 +106,7 @@ Every write is shown before it happens; answer `n` to skip it. Every command it 
 | `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | three hooks merged in, `PreCompact`, `UserPromptSubmit` and `Stop`, each `{"type": "command", "command": "node", "args": ["<hooks>/<event>.js"]}` |
 | `.mcp.json` (project) | `mcpServers.spookling-memory`: stdio, `uv run --project <server> spookling-memory mcp`, with `SPOOKLING_MEMORY_URL` in its `env` |
 | user MCP list (user scope) | the same entry, added with `claude mcp add-json spookling-memory '<entry>' --scope user`. Claude Code keeps it in `~/.claude.json`, a file it writes itself, so the wizard only reads that file. |
-| `.memory/CODEX-TODO.md` | Codex only: a note that the Codex wiring is not built yet |
+| `.codex/hooks.json` (Codex, project) or `$CODEX_HOME/hooks.json` (Codex, user; default `~/.codex/hooks.json`) | SessionStart, UserPromptSubmit, PreCompact and Stop hooks merged in; existing hooks stay |
 
 It also runs `uv sync` in the server folder. `<server>` and `<hooks>` are the `server/` and `hooks/` folders in `~/.spookling-memory/<version>/`, never the package itself (from Windows through `\\wsl.localhost`, the clone's own, on the share). `CLAUDE_CONFIG_DIR` moves the user files, as it does for Claude Code. On Windows, `~` is `%USERPROFILE%`. Every other key in each file is kept. A file that is not valid JSON is left untouched and reported, never overwritten.
 
@@ -125,6 +125,21 @@ Checked against the current Claude Code docs on 21 Oct 2026; [docs/claude-code-f
 `npx spookling uninstall` (with `--scope user` for the user files) removes only the Spookling hooks and the `spookling-memory` MCP entry; everything else in those files stays exactly as it was. It also offers to stop the server named in `.memory/server.pid`: a SIGTERM to its process group on macOS and Linux, `taskkill /T /F` on Windows. Your memory in `.memory/` stays, keys included. To remove that too, delete the folder yourself. The server and hooks stay in `~/.spookling-memory/<version>/` (it says so); delete that folder, after uninstall in every project and scope that used it, to remove them.
 
 On Windows the stop is forced, so the server cannot remove its temporary copy of the log: delete `%TEMP%\spookling-log-*` if you want it gone. On macOS and Linux the server removes it on the way out.
+
+## Codex
+
+Run `node <clone>/bin/spookling-memory.js init` and select **Codex** (add `--scope user` for user hooks). The wizard uses the same server, `.memory/` folder and tagger choices as Claude Code. It merges native hooks into `.codex/hooks.json` for this project, or `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) for user scope. No Codex executable or source files are patched, and no MCP entry is needed for automatic hooks.
+
+In Codex, open `/hooks` and review/trust the new commands; project hooks also require a trusted project. Installation does not grant trust. Changed hook definitions require another review. `status` reports configuration and server availability; it does not claim to verify Codex's trust or that hooks ran.
+
+- **SessionStart:** check `/v1/stats`; show `👻 Spookling memory ready` only when the memory server answers successfully.
+- **UserPromptSubmit:** recall through the existing `/v1/hook/user-prompt-submit` endpoint, pass its bounded `additionalContext` to Codex, then show `👻 Spookling memory active`. A successful search with no matches still counts as completed recall.
+- **Stop / PreCompact:** reuse the existing background capture and compaction endpoints, reading Codex's rollout transcript on the server. No Stop continuation decisions or extra model turns.
+- **Unavailable:** report `👻 Spookling memory unavailable` on a failed health check or recall; continue Codex normally. `SPOOKLING_TAGGING=1` skips the hooks to avoid recursion when Codex itself is the tagger.
+
+The ghost appears in hook activity and informational messages (Codex surfaces `systemMessage` as a warning), not as a permanent screen widget. It confirms the stated operation, not that the model used every recalled fact or that future tagging will succeed. The integration uses [Codex's documented hook contract](https://learn.chatgpt.com/docs/hooks), checked 24 Oct 2026. Transcript parsing follows the internal `response_item` format observed with codex-cli 0.164.0; that format can change. Native Windows hook execution has not been verified.
+
+Remove only Codex's hooks with `node <clone>/bin/spookling-memory.js uninstall --harness codex` (add `--scope user` for user hooks). Memory and other hooks remain. The existing optional server-stop prompt still applies.
 
 ## Tested
 
