@@ -1,8 +1,8 @@
 """The tagger behind `serve --model`: the one place a model id is mapped to its backend, and the subscription backend.
 
     codex           your Codex subscription: the `codex` CLI, logged in with ChatGPT, run once per call (`codex exec`)
-    anthropic/...   the Anthropic API when ANTHROPIC_API_KEY is set (memory-bench's "anthropic" backend)
-    anything else   OpenRouter with OPENROUTER_API_KEY (memory-bench's default)
+    anthropic/...   the Anthropic API when ANTHROPIC_API_KEY is set (core.models' "anthropic" backend)
+    anything else   OpenRouter with OPENROUTER_API_KEY (core.models' default)
 
 A subscription backend is a function (messages) -> reply text. Subscription is the adapter's ModelTriage with its one
 model call swapped for that function, so judge, resolve, events and resolve_class all go through it with the same
@@ -16,8 +16,8 @@ import signal
 import subprocess
 import tempfile
 
-from bench import models
-from bench.adapters.spookling.triage import FIX, WRITER, ModelTriage, Spent
+from .core import models
+from .core.triage import FIX, WRITER, ModelTriage, Spent
 
 TIMEOUT = 90  # seconds per call; the whole process tree is killed after it
 WINDOWS = os.name == "nt"
@@ -91,7 +91,7 @@ BACKENDS = {"codex": codex}
 
 
 class Subscription(ModelTriage):
-    """ModelTriage with bench.models swapped for a subscription CLI. Replies are not cached, and the token counts are
+    """ModelTriage with core.models swapped for a subscription CLI. Replies are not cached, and the token counts are
     unknown (0)."""
 
     def __init__(self, model: str):
@@ -99,7 +99,7 @@ class Subscription(ModelTriage):
         self.name, self.ask = model, BACKENDS[model]
 
     def _ask(self, messages, parse):
-        # ModelTriage._ask with the call swapped: keep in step with memory-bench's triage.py
+        # ModelTriage._ask with the call swapped: keep in step with core/triage.py
         spent = Spent()
         for _ in range(2):
             text = self.ask(messages)
@@ -122,7 +122,7 @@ def backend(model: str) -> str:
 
 def adapter(model: str | None = None, decider: str | None = None, decide_threshold: float = 0.8) -> dict:
     """SpooklingMemory kwargs for `serve --model [--decider]` (default: the adapter's writer, Haiku 4.5, no decider).
-    For the API backends it sets memory-bench's routing, a process-wide switch: without it an anthropic/ id goes to
+    For the API backends it sets core.models' routing, a process-wide switch: without it an anthropic/ id goes to
     OpenRouter. A decider (Jev) answers every gate as a typed question through the Decisions API on the OpenRouter key."""
     model = model or WRITER
     b = backend(model)

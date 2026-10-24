@@ -6,13 +6,13 @@ import sys
 import time
 
 import pytest
-from bench import models
-from bench.adapters.spookling.triage import SYSTEM, WRITER
 from conftest import turns
 from fastapi.testclient import TestClient
 
 from spookling_memory import subscription as S
 from spookling_memory.api import create_app
+from spookling_memory.core import models
+from spookling_memory.core.triage import SYSTEM, WRITER
 from spookling_memory.store import Store
 
 FAKE = r'''

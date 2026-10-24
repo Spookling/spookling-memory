@@ -1,13 +1,12 @@
-"""Offline fixtures: a stub Triage stands in for the writer model (as memory-bench's own tests do), local models are
+"""Offline fixtures: a stub Triage stands in for the writer model (as test_spookling_adapter.py does), local models are
 off, and any model call fails the test."""
 import os
 
 os.environ["SPOOKLING_LOCAL_MODELS"] = "0"  # no embedder or reranker
 
 import pytest  # noqa: E402
-from bench.adapters.spookling import triage as triage_mod  # noqa: E402
-from bench.adapters.spookling.triage import Item, Ruling, Spent, Triage  # noqa: E402
-
+from spookling_memory.core import triage as triage_mod  # noqa: E402
+from spookling_memory.core.triage import Item, Ruling, Spent, Triage  # noqa: E402
 from spookling_memory.store import Store  # noqa: E402
 
 

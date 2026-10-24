@@ -4,6 +4,7 @@
     judgements.jsonl  the judgement log: every adapter decision, plus this server's rulings (compact, reset, reset_undo)
     lock              locked while the folder is open, so one process writes it (an OS lock: a crash never leaves it held)
     vectors.sqlite    the local embedder's cache, when the vectors extra is installed (a cache, not a record: not archived)
+    cache.sqlite      the model replies (tagger, slow path, Jev), keyed by prompt (a cache too: not archived)
 
 The adapter keeps its SQLite in a temp dir that close() removes, so these two files are the only durable copy.
 Each change appends the new lines and fsyncs. The files are UTF-8 with \n line ends on every OS, so a folder copied
@@ -22,16 +23,14 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from bench.adapters.spookling import SpooklingMemory
-from bench.adapters.spookling import compact as keep
-from bench.adapters.spookling import vectors
-from bench.adapters.spookling.sleep import tx_of
-from bench.schema import Session, Turn
-
 from . import reset as R
+from .core import SpooklingMemory, models, vectors
+from .core import compact as keep
+from .core.base import Session, Turn
+from .core.sleep import tx_of
 from .subscription import backend
 
-LOG, JUDGEMENTS, VECTORS = "log.jsonl", "judgements.jsonl", "vectors.sqlite"
+LOG, JUDGEMENTS, VECTORS, CACHE = "log.jsonl", "judgements.jsonl", "vectors.sqlite", "cache.sqlite"
 WINDOWS = os.name == "nt"
 PART = re.compile(r"#(\d+)(?:-(\d+))?")  # a tail part's place in its conversation: "#<from>" or "#<from>-<to>"
 
@@ -160,6 +159,7 @@ class Store:
         self.adapter, self.lock, self._post, self.mem = adapter, threading.RLock(), None, None
         self.wait, self.ready, self.failed = wait, threading.Event(), None
         vectors.CACHE = self.folder / VECTORS  # ponytail: process-wide, fine for one folder per server process
+        models.CACHE_PATH = self.folder / CACHE  # the tagger's and Jev's replies, likewise
         if background:
             threading.Thread(target=self._open, name="spookling-open", daemon=True).start()
         else:
@@ -188,7 +188,7 @@ class Store:
     @contextmanager
     def _busy(self, wait: float | None = None):
         """The store's one lock, waited for at most `wait` seconds (None: as long as it takes), else Busy; and a model
-        layer that cannot stop the server: bench.models calls sys.exit() when a provider key is missing, which in a
+        layer that cannot stop the server: core.models calls sys.exit() when a provider key is missing, which in a
         server thread kills the process."""
         if not self.ready.wait(wait):
             raise Busy(f"{self.folder} is still opening: replaying its records and rebuilding the views")

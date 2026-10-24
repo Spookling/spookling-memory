@@ -20,11 +20,11 @@ import hashlib
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 
-import bench.adapters.spookling.sleep as sleep
-from bench.adapters.spookling.dates import day_of
-from bench.adapters.spookling.facts import FOREVER, Facts
-from bench.adapters.spookling.recall import anchor_event, date_in  # the package's `recall` is the function, not the module
-from bench.adapters.spookling.sleep import tx_of
+from .core import sleep
+from .core.dates import day_of
+from .core.facts import FOREVER, Facts
+from .core.recall import anchor_event, date_in  # the package's `recall` is the function, not the module
+from .core.sleep import tx_of
 
 PINNED = frozenset({"rule", "decision", "failed", "open"})  # the kinds the adapter pins in <invariant>
 

@@ -1,4 +1,4 @@
-"""Spookling Memory: the local memory server over memory-bench's spookling adapter. See README.md.
+"""Spookling Memory: the local memory server over the memory algorithm in core/. See README.md.
 
     spookling-memory serve  [--folder .memory] [--port 7447] [--model M] [--decider D]   HTTP API on 127.0.0.1 (M: a model id, or codex; D: typesafe/jev-1.14)
     spookling-memory mcp                                                    stdio MCP tools (client of serve)

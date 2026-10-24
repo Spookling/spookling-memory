@@ -23,8 +23,7 @@ import os
 import re
 from pathlib import Path
 
-from bench.adapters.spookling.recall import ABSTAIN
-
+from .core.recall import ABSTAIN
 from .store import jsonl
 
 EVENTS = ("user-prompt-submit", "pre-compact", "stop")

@@ -131,9 +131,8 @@ def test_a_background_open_answers_busy_until_it_is_open(open_store, tmp_path, m
     with Retry-After), not a wait behind the lock; a rebuild that holds the lock past `wait` gets Busy too."""
     import threading
 
-    from bench.adapters.spookling import vectors
-
     from spookling_memory import store as store_mod
+    from spookling_memory.core import models, vectors
 
     s = open_store()
     fill(s, HISTORY[:1])
@@ -147,6 +146,7 @@ def test_a_background_open_answers_busy_until_it_is_open(open_store, tmp_path, m
     go.set()
     assert b.ready.wait(10) and b.stats()["n_events"] == 4
     assert vectors.CACHE == tmp_path / "m" / "vectors.sqlite"  # embeddings are cached in the memory folder
+    assert models.CACHE_PATH == tmp_path / "m" / "cache.sqlite"  # and the model replies
     got = []
     with b.lock:  # a rebuild in progress on another thread
         t = threading.Thread(target=lambda: got.append(pytest.raises(store_mod.Busy, b.retrieve, "What car?", NOW)))
@@ -171,7 +171,7 @@ def test_a_failed_background_open_says_why_and_frees_the_folder(open_store, tmp_
 
 def test_a_reopen_with_the_decider_asks_jev_nothing_already_judged(tmp_path, monkeypatch):
     """The decider's same-event answers are judgements on disk: a second open reads them, it does not ask again."""
-    from bench import decisions
+    from spookling_memory.core import decisions
 
     asked = []
 

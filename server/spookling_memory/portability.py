@@ -13,8 +13,7 @@ import json
 import tarfile
 from pathlib import Path
 
-from bench.adapters.spookling import VERSION
-
+from .core import VERSION
 from .store import JUDGEMENTS, LOG, Store, jsonl, lines, now
 
 FORMAT, ARCHIVE_VERSION = "spookling-memory", 1

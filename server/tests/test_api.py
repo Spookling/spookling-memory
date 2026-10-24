@@ -3,12 +3,12 @@ import json
 import os
 
 import pytest
-from bench.adapters.spookling.recall import ABSTAIN
 from conftest import HISTORY, NOW, TAGS, Stub, turns
 from fastapi.testclient import TestClient
 
 from spookling_memory import hooks
 from spookling_memory.api import create_app
+from spookling_memory.core.recall import ABSTAIN
 
 
 def client(store):
@@ -123,7 +123,7 @@ def test_an_empty_prompt_injects_nothing(open_store, prompt):
 def test_a_missing_model_key_is_a_503_and_the_server_lives(open_store):
     class NoKey(Stub):
         def judge(self, turns, date, known):
-            raise SystemExit("OPENROUTER_API_KEY is not set")  # what bench.models does
+            raise SystemExit("OPENROUTER_API_KEY is not set")  # what core.models does
 
     store = open_store()
     c = client(store)

@@ -1,11 +1,11 @@
 """Reset: one ruling; facts open at T closed at T; earlier turns hidden unless the question is dated before T; earlier
 rules and keepers not pinned; nothing deleted; undo restores; every rebuild keeps it."""
-import bench.adapters.spookling.sleep as sleep
 import pytest
-from bench.adapters.spookling.recall import ABSTAIN
 from conftest import AFTER, NOW, QUESTIONS, RESET_AT, believed, fill, turns
 
 from spookling_memory import reset as R
+from spookling_memory.core import sleep
+from spookling_memory.core.recall import ABSTAIN
 
 CLOSED = [("car", "Toyota Corolla", "2024-05-22", "2025-01-01"), ("phone", "Pixel 8", "2024-09-23", "2025-01-01")]
 
