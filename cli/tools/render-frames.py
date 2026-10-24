@@ -4,16 +4,18 @@
 Dev only, not shipped. Needs Pillow; POSIX (it runs the CLI under a pseudo-terminal).
   python3 tools/render-frames.py                  renders/cutscene-frame.png, cutscene-end.png, wizard-frame.png (80x24),
                                                   wizard-frame-30.png (80x30)
-  python3 tools/render-frames.py raw FILE OUT     any captured byte stream (for example from `script`) to OUT
+  python3 tools/render-frames.py raw FILE OUT [COLSxROWS]   any captured byte stream (for example from `script`) to OUT
   python3 tools/render-frames.py snap FILE TEXT OUT   the same, stopped at the first TEXT (and the next stage redraw)
   python3 tools/render-frames.py video OUT.mp4 [ROOT] [COLSxROWS]  `demo` (intro, then the steps) from ROOT, every
                                                   frame at 20 fps, 80x24 by default: OUT/ holds the PNGs, OUT.mp4 is
                                                   H.264 yuv420p (needs ffmpeg)
 
-Each cell is 10 x 20 px: a half block is two 10 x 10 pixels, any other character is drawn in DejaVu Sans Mono.
+Each cell is 10 x 20 px: a half block is two 10 x 10 pixels, left and eighth blocks are drawn as rectangles,
+a wide character (emoji) takes two cells in Noto Color Emoji, any other character is drawn in DejaVu Sans Mono
+(Segoe UI Symbol, then DejaVu Sans, for glyphs it lacks, when fontTools is installed).
 Default colours are a dark terminal's (#0C0C0C on #CCCCCC).
 """
-import codecs, functools, os, pty, re, select, subprocess, sys, time, fcntl, struct, tempfile, termios
+import codecs, functools, os, pty, re, select, subprocess, sys, time, fcntl, struct, tempfile, termios, unicodedata
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
@@ -23,6 +25,23 @@ COLS, ROWS = 80, 24
 CW, CH = 10, 20
 BG, FG = (12, 12, 12), (204, 204, 204)
 FONT = next((p for p in ('/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',) if os.path.exists(p)), None)
+FALLBACK = [p for p in ('/mnt/c/Windows/Fonts/seguisym.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf') if os.path.exists(p)]
+EMOJI = next((p for p in ('/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf',) if os.path.exists(p)), None)
+LEFT = {'▏': 1, '▎': 2, '▍': 3, '▌': 4, '▋': 5, '▊': 6, '▉': 7}  # eighths of the cell, from the left
+wide = lambda ch: unicodedata.east_asian_width(ch) in 'WF'
+
+
+def font_for(ch, cache={}):
+    """DejaVu Sans Mono, or the first fallback that has the glyph."""
+    if ch not in cache:
+        cache[ch] = FONT
+        try:
+            from fontTools.ttLib import TTFont
+            maps = cache.setdefault('maps', {p: TTFont(p).getBestCmap() for p in [FONT] + FALLBACK if p})
+            cache[ch] = next((p for p in [FONT] + FALLBACK if p and ord(ch) in maps[p]), FONT)
+        except ImportError:
+            pass
+    return cache[ch]
 
 
 def xterm256(n):
@@ -71,11 +90,16 @@ class Screen:
             self.y += 1
 
     def put(self, ch):
+        if unicodedata.category(ch) in ('Mn', 'Cf') or ch == '️':
+            return  # zero width: variation selectors, joiners
         if self.wrap:
             self.x = 0
             self.lf()
             self.wrap = False
         self.buf[self.y][self.x] = (ch, self.fg, self.bg)
+        if wide(ch) and self.x < self.cols - 1:
+            self.x += 1
+            self.buf[self.y][self.x] = ('', self.fg, self.bg)  # the wide character's right half
         if self.x == self.cols - 1:
             self.wrap = True
         else:
@@ -152,7 +176,8 @@ class Screen:
     def png(self, path):
         im = Image.new('RGB', (self.cols * CW, self.rows * CH), BG)
         d = ImageDraw.Draw(im)
-        font = _font()
+        font = _font
+        glyphs = []
         for r, row in enumerate(self.buf):
             for c, (ch, fg, bg) in enumerate(row):
                 fg, bg = fg or FG, bg or BG
@@ -160,15 +185,30 @@ class Screen:
                 top, bottom = {'▀': (fg, bg), '▄': (bg, fg), '█': (fg, fg), ' ': (bg, bg)}.get(ch, (bg, bg))
                 d.rectangle([x, y, x + CW - 1, y + CH // 2 - 1], fill=top)
                 d.rectangle([x, y + CH // 2, x + CW - 1, y + CH - 1], fill=bottom)
-                if ch not in '▀▄█ ':
-                    d.text((x, y + 1), ch, font=font, fill=fg)
+                if ch in LEFT:
+                    d.rectangle([x, y, x + CW * LEFT[ch] // 8 - 1, y + CH - 1], fill=fg)
+                elif ch == '▐':
+                    d.rectangle([x + CW // 2, y, x + CW - 1, y + CH - 1], fill=fg)
+                elif ch and ch not in '▀▄█ ':
+                    glyphs.append((x, y, ch, fg))
+        for x, y, ch, fg in glyphs:  # after every background, so a wide glyph is not painted over by its right half
+            if wide(ch) and EMOJI:
+                e = ImageFont.truetype(EMOJI, 109)  # the only size the bitmap font has
+                g = Image.new('RGBA', (136, 128))
+                ImageDraw.Draw(g).text((0, 0), ch, font=e, embedded_color=True)
+                g = g.crop(g.getbbox() or (0, 0, 1, 1))
+                s = min(2 * CW / g.width, (CH - 2) / g.height)
+                g = g.resize((max(1, round(g.width * s)), max(1, round(g.height * s))), Image.LANCZOS)
+                im.paste(g, (x + (2 * CW - g.width) // 2, y + (CH - g.height) // 2), g)
+            else:
+                d.text((x, y + 1), ch, font=font(font_for(ch)), fill=fg)
         im.save(path)
         return im.size
 
 
 @functools.cache
-def _font():
-    return ImageFont.truetype(FONT, 16) if FONT else ImageFont.load_default()
+def _font(path):
+    return ImageFont.truetype(path, 16) if path else ImageFont.load_default()
 
 
 def run_pty(args, env, until=None, timeout=60, cols=COLS, rows=ROWS, stamps=False):
@@ -241,9 +281,10 @@ def main():
         return video(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else CLI.parent, 20, *size)
     if len(sys.argv) > 1 and sys.argv[1] in ('raw', 'snap'):
         stream = open(sys.argv[2], encoding='utf8', errors='replace', newline='').read()  # keep \r\n as written
-        sc = Screen()
+        size = re.fullmatch(r'(\d+)x(\d+)', sys.argv[-1]) if sys.argv[1] == 'raw' and len(sys.argv) > 4 else None
+        sc = Screen(int(size[1]), int(size[2])) if size else Screen()
         sc.feed(upto(stream, sys.argv[3]) if sys.argv[1] == 'snap' else stream)
-        out = sys.argv[-1]
+        out = sys.argv[-2] if size else sys.argv[-1]
         print(out, sc.png(out))
         return
     for name, s in (('cutscene-frame', 1.2), ('cutscene-end', 7.0)):
