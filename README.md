@@ -1,6 +1,6 @@
 # Spookling Memory
 
-*Algorithm v2.1 · October 2026*
+*Algorithm v2.1 · `@spookling/memory` 0.1.0 · October 2026*
 
 **Your AI forgets you every session. It brings back the car you sold. It drops your rules the moment the chat gets long.**
 
@@ -8,7 +8,11 @@ Spookling Memory is built to end all three. A word-for-word log that is never ed
 
 **[Get early access](#early-access)** · [See how it works, step by step](https://claude.ai/artifact/MpjJEgJmviijeVTo3S3GhY)
 
-Every number we measured has a result file behind it; every paper and vendor number carries its source. See the [Show-Your-Work Guarantee](#the-show-your-work-guarantee) below.
+```bash
+npx @spookling/memory init
+```
+
+Every number we measured has a result file behind it in our benchmark repo; every paper and vendor number carries its source. See the [Show-Your-Work Guarantee](#the-show-your-work-guarantee) below.
 
 | The number | What it means | The detail |
 | --- | --- | --- |
@@ -47,7 +51,7 @@ You said "always use pnpm" and "never touch the migrations folder". The chat got
 
 **Eight pieces, each one built on a published result or our own measurement.**
 
-Every piece exists because a paper or a measurement of ours said it had to. Pseudocode, papers and worked examples are on the [step-by-step page](https://claude.ai/artifact/MpjJEgJmviijeVTo3S3GhY).
+Every piece exists because a paper or a measurement of ours said it had to. Pseudocode, papers and worked examples are on the [step-by-step page](https://claude.ai/artifact/MpjJEgJmviijeVTo3S3GhY). The code is in this repo, in plain Python: `server/spookling_memory/core/`.
 
 ### 01. The Never-Edited Log
 
@@ -118,7 +122,7 @@ The algorithm, trimmed to the bones:
 ```text
 # 1. SAVE (when a chat ends)
 FOR each message: APPEND to LOG
-tags <- SMALL_MODEL.tag(user messages)          # exact words + labels
+tags <- TAGGER.tag(user messages)               # exact words + labels
 FOR each tag:
   IF words not in message letter-for-letter: DROP, record it
   date <- DATE_RULES(time words)                # code, never a model
@@ -130,7 +134,7 @@ FOR each tag:
 
 # 2. SORT OUT (before the next question, if anything new was saved)
 FOR each item in SLOW_PATH:
-  ruling <- BIG_MODEL.rule(message, proposal, history); check its words; record it
+  ruling <- TAGGER.rule(message, proposal, history); check its words; record it
 FACTS  <- REPLAY(JUDGEMENT_LOG)
 IF a key has two values on one day: STOP, keep last good, tell a human
 EVENTS <- BUILD(LOG)
@@ -157,13 +161,15 @@ PUT SURVIVOR on top of the next prompt
 
 | Who | Does what | Runs on |
 | --- | --- | --- |
-| Small model | points at words, adds labels | Haiku 4.5, cloud |
-| Big model | rules on one flagged item | Sonnet 5, cloud |
-| Reader | answers from the lines we hand it | the harness's model |
-| Scorers | meaning search + rerank | two tiny local models, optional |
+| Tagger | points at words, adds labels, after each chat ends; rules on a flagged item | the one you pick at install: Jev, Haiku 4.5, or your Codex subscription |
+| Jev (if you pick it) | answers every gate as a typed question, with a probability; code keeps only answers above the gate | OpenRouter, on your key |
+| Reader | answers from the lines we hand it | the harness's model (Claude Code's own) |
+| Scorers | meaning search + rerank | two tiny local models, optional, not installed by default |
 | Code | every date, count, check, decision | your machine |
 
-**No model ever** computes a date, counts, writes to Facts, or turns an answer into a refusal. The small model points, the big model rules on surprises, the reader quotes. Code does the rest.
+**No model ever** computes a date, counts, writes to Facts, or turns an answer into a refusal. The tagger points and rules on surprises, the reader quotes. Code does the rest.
+
+**Read it yourself.** The algorithm lives in this repo, in plain Python, in `server/spookling_memory/core/`. Anyone can read it. The benchmark harness, our research notes and the result files live in a private repo.
 
 ---
 
@@ -171,7 +177,7 @@ PUT SURVIVOR on top of the next prompt
 
 **Measured, not claimed. Same questions, same reader, both arms.**
 
-We ran Spookling Memory and the standard cheap baseline (keyword search over the same log) on the same questions with the same answering model, Claude Sonnet 5, and one strict judge that counts a wrong detail as wrong. Pass marks were written down before the runs. Percentages are over the answerable questions.
+We ran Spookling Memory and the standard cheap baseline (keyword search over the same log) on the same questions with the same answering model, Claude Sonnet 5, and one strict judge that counts a wrong detail as wrong. Pass marks were written down before the runs. Percentages are over the answerable questions. We measured every number here ourselves, with our own harness, which is private. The tagger in these runs was Haiku 4.5.
 
 | Test | Spookling | Search | Result |
 | --- | --- | --- | --- |
@@ -220,96 +226,131 @@ The other systems are good at what they do. None of them, as far as they say, do
 
 ## The Show-Your-Work Guarantee
 
-**Every number we measured has a file behind it. If one does not reproduce, we print the correction at the top of this page.**
+**Every number we measured on this page has a result file behind it in our benchmark repo. If one does not reproduce, we print the correction at the top of this page.**
 
-Result files, judge logs, both judges' verdicts, the pass marks written before the runs, and the misses we traced. The harness ships with the package, so you can run it on your own memory setup. We publish our losses next to our wins; they are in the "straight talk" box below.
+Behind each number: the result file, the judge logs, both judges' verdicts, the pass marks written before the runs, and the misses we traced. They sit in our private benchmark repo, and we measured them with our own harness. What is public is the algorithm and the plugin, both in this repo. We publish our losses next to our wins; they are in the "straight talk" box below.
 
 ### Bonuses
 
-- **Bonus 1: The benchmark harness.** Two public suites run and a third built, plus three of our own, with a strict judge, bootstrap intervals and paired comparisons. Point it at any memory system.
-- **Bonus 2: The step-by-step algorithm.** Every step as pseudocode, who does what, two worked examples, and the fifteen sources (papers and books) that shaped it. Built to be rebuilt by anyone.
-- **Bonus 3: The research library.** Twenty-seven papers and ten books on memory, retrieval and time, read end to end, with notes on what each one gave the design.
-- **Bonus 4: The pass marks.** Ten marks written before the v2 runs, with pass, fail or still open next to each. You will know what we aimed at before you see what we hit.
+- **Bonus 1: The step-by-step algorithm.** Every step as pseudocode, who does what, two worked examples, and the fifteen sources (papers and books) that shaped it. Built to be rebuilt by anyone.
+- **Bonus 2: The research-backed design.** Twenty-seven papers and ten books on memory, retrieval and time, read end to end. The pieces above name the results they rest on, and the [sources](#sources) are listed at the bottom. Our reading notes stay in the private repo.
+- **Bonus 3: The pass marks.** Ten marks written before the v2 runs, with pass, fail or still open next to each. You will know what we aimed at before you see what we hit.
+- **Bonus 4: The full method write-up.** Which questions, which reader, which judges, the intervals, the floors and ceilings, and what every run cost. It is all in [Method, pass marks and cost](#method-pass-marks-and-cost) below.
 
 ---
 
 ## Early access
 
-**Claude Code first. One folder in your repo. Your data stays yours.**
+**Claude Code first. One command. Your data stays yours.**
 
-A `.memory/` folder, one plugin, the tagger and reader models you already pay for. Early access opens with the npm package; Claude Code users go first, Codex and the Spookling app follow. Until then, run it from source.
+Spookling Memory is out as `@spookling/memory` 0.1.0, early access. Claude Code users go first; Codex and the Spookling app follow. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
 
 ```bash
-npx @spookling/memory init     # the published plugin, coming with early access
-git clone <memory-bench>       # today: run the memory server from source, see docs/operations.md
+npx @spookling/memory init
 ```
 
 ---
 
 ## Install
 
-*The wizard is coming with early access. Until then, run from source as above.*
-
 One command. One wizard. No config files to hand-edit.
 
 ```bash
-npx @spookling/memory init
+npx @spookling/memory init                 # this project
+npx @spookling/memory init --scope user    # every project you open in Claude Code
+npx @spookling/memory demo                 # the whole install, answered for you; writes nothing
+npx @spookling/memory status               # is the server up, what is wired, which tagger
+npx @spookling/memory uninstall            # remove the hooks and the MCP entry; keep .memory/
 ```
 
-It opens with the Spookling wordmark in block letters and the ghost flying across your terminal. Then it gets to work:
+You need Node 18 or newer and Claude Code v2.1.139 or later. The server runs on uv, which fetches Python 3.12 if you do not have it.
 
-1. **Checks your machine.** Node, plus uv or Python.
-2. **Asks which harness you use.** Claude Code first. Codex follows.
-3. **Asks for your keys.** Anthropic for the models. OpenRouter too, if you want the tagger routed there.
-4. **Installs the local memory server.** It runs on your machine. Your harness talks to it over HTTP and MCP.
-5. **Writes the Claude Code wiring.** Three hooks that call the server: `Stop` saves the chat when it ends, `UserPromptSubmit` hands the right lines to each prompt, `PreCompact` copies the survivor block out before the squash. Plus the MCP config, so Claude Code can see the memory tools.
-6. **Runs a one-line test.** You see memory answer before you leave the wizard.
-7. **Shows a done screen.** That is it.
+It opens with a cutscene: the Spookling wordmark builds in block letters and the ghost flies across your terminal. Any key skips it. Then seven steps:
 
-What it writes, in plain terms:
+1. **Checks your machine.** Node, then uv. No uv? It shows the one-line install for your OS and offers to run it.
+2. **Asks which harness you use.** Claude Code. Codex wiring comes later; pick it and you get the server and a note.
+3. **Asks how the tagger should run.** Three choices, in the table below. A key is typed hidden, saved to `.memory/keys.env`, and never printed.
+4. **Installs the local memory server.** It copies the server and the hooks to a folder per user and version: `~/.spookling-memory/<version>/`, or `%LOCALAPPDATA%\spookling-memory\<version>\` on Windows. It runs `uv sync` there and starts the server on 127.0.0.1:7447. Nothing Claude Code runs lives in the npx cache.
+5. **Wires Claude Code.** Three hooks that call the server: `Stop` saves the chat when it ends, `UserPromptSubmit` hands the right lines to each prompt, `PreCompact` copies the survivor block out before the squash. Plus the MCP server, so Claude can call the memory tools. `--scope project` (the default) writes this project's files; `--scope user` writes yours, for every project.
+6. **Runs a smoke test.** It asks the server for its stats. You see it answer before you leave the wizard.
+7. **Shows a done screen.** The ghost flies once more. "Spookling Memory is in."
+
+Every file is shown before it is written, and `n` skips it. Without a terminal (an assistant's shell, a pipe), the wizard never hangs: a question nobody answers for 20 seconds takes its default.
+
+### The three taggers
+
+| Choice | What runs | Cost | Needs |
+| --- | --- | --- | --- |
+| **1. Jev through an OpenRouter key** (the default) | A cheap router model picks the words. Jev decides every gate in its Choice and Noul modes, each answer with a probability. Code takes a yes only at 0.8 or higher, and a pick from a list only at 0.6 or higher. | the cheapest: about $0.002 a chat | `OPENROUTER_API_KEY` |
+| **2. An Anthropic API key** | Haiku 4.5 | Anthropic's API price | `ANTHROPIC_API_KEY` |
+| **3. Your Codex subscription** | the `codex` CLI, one `codex exec` per call | a little of your plan's allowance; several seconds a chat | `codex`, logged in with ChatGPT (Plus or higher) |
+
+To switch, stop the server (`uninstall` offers to) and run `init` again. `status` shows which tagger is running.
+
+### What it writes
 
 | Where | What |
 | --- | --- |
-| Claude Code hooks | `PreCompact`, `UserPromptSubmit`, `Stop` |
-| Claude Code MCP config | the Spookling Memory server and its tools, including `memory_reset` |
-| Your machine | the local memory server |
-| Your repo | the `.memory/` folder |
+| `~/.spookling-memory/<version>/` (`%LOCALAPPDATA%\spookling-memory\<version>\` on Windows) | the server and the hooks, copied from the package; `uv sync` makes the server's `.venv` there |
+| `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | three hooks merged in: `PreCompact`, `UserPromptSubmit`, `Stop` |
+| `.mcp.json` (project) or Claude Code's user MCP list (user) | the `spookling-memory` server and its tools, `memory_retrieve` and `memory_reset` among them |
+| `.memory/` | your memory, your tagger's key in `keys.env`, the server's pid and log, and a `.gitignore` that keeps the key and the caches out of git |
+
+Every other key in those files is kept. A file that is not valid JSON is left alone and reported, never overwritten. In an interactive session, Claude Code runs the hooks once you trust the folder, and asks you once to approve a project `.mcp.json` server. `/hooks` and `/mcp` show what is wired. With the server down, the hooks print nothing and exit 0 within about a second, so a prompt is never blocked.
+
+### Where it runs
+
+Windows (native PowerShell, no Git Bash needed), macOS and Linux, WSL included. Windows 11 and Linux (WSL2 Ubuntu 24.04) were run by hand. macOS runs the same code in CI. One server in WSL can serve Claude Code on both sides; `cli/README.md` has the steps.
+
+---
+
+## Reader and tagger
+
+**Two models touch your memory. Only one of them is ours.**
+
+- **The reader is your harness's own model.** In Claude Code, that is the model Claude Code already runs. We hand it the lines; it answers. There is no reader of ours to pay for.
+- **The tagger is ours. It runs after each chat ends.** It reads the chat once, points at facts and events in your exact words, and code checks every quote. Retrieval never calls it. A flagged item goes back to it once for a ruling.
+- **With Jev,** a cheap router model picks the words and Jev makes every decision, with a probability we gate on.
+- **There is no Claude subscription tagger.** Anthropic's terms do not allow a third-party product to route requests through a Claude Free, Pro or Max plan. Use an Anthropic API key instead.
+- **A Codex subscription is allowed.** Codex's docs cover `codex exec` signed in with ChatGPT. The server runs it read-only, from an empty temp folder, with web search off, and keeps API keys out of its environment so the bill stays on your plan. Your plan's terms and limits apply.
+
+**What Claude sees.** A hook can hand Claude at most 10,000 characters per prompt; that is Claude Code's cap, and the server cuts the recalled block there. The full block is one tool call away: `memory_retrieve`.
+
+---
 
 ## Paste this into Claude Code
 
-*The block lands with the wizard, coming with early access.*
-
-One block you paste into Claude Code (or Codex). It will tell your assistant to run the wizard in the foreground, so the ghost plays in your terminal, then confirm the hooks are live and say "Spookling Memory is in". It will also ship as `PASTE-ME.md` in this repo.
+Rather have your assistant do it? [`PASTE-ME.md`](PASTE-ME.md) has one block for Claude Code and one for Codex. Each has your assistant run `init` in the foreground, never answer the wizard's questions itself, check `status`, and reply "Spookling Memory is in." Claude Code's shell has no live terminal, so the ghost does not fly there. Run `npx @spookling/memory demo` in your own terminal to see it.
 
 ---
 
 ## Your memory moves with you
 
-*Coming with early access.*
+Your memory is not locked inside a tool. It is a folder of plain files.
 
-Your memory is not locked inside a tool. It is a folder.
+`.memory/` goes in the folder you run `init` in. With `--scope project`, that is the project. With `--scope user`, it is your home folder: run `init` there, and every project talks to that one memory.
 
-`.memory/` holds two records. Both are append-only. Nothing in them is ever rewritten.
+It holds two records. Both are append-only. Nothing in them is ever rewritten.
 
-- **The log.** Every message, word for word, with its time.
-- **The judgement log.** Every call a model made, written before it changes anything.
+- **`log.jsonl`, the log.** Every message, word for word, with its time.
+- **`judgements.jsonl`, the judgement log.** Every call a model made, and every reset, written before it changes anything.
 
-Everything else is a view: facts, events, rules, names, the profile page, the survivor block, the search index. Views are rebuilt from the two records. Facts are rebuilt by replaying the judgement log, so past calls are reused, not re-guessed. A view is never the only copy of anything.
+Everything else rebuilds: facts, events, rules, names, the profile page, the survivor block, the search index. Facts are rebuilt by replaying the judgement log, so past calls are reused, not re-guessed. A view is never the only copy of anything. Beside them sit caches, your key, and the server's pid and log.
 
-So moving is one file:
+So moving is one file. Export writes a `.spookling` archive of the two records. Import restores it into an empty memory and rebuilds every view. The same question gets the same context before and after.
 
-```bash
-spookling-memory export                        # one .spookling archive of the two records
-spookling-memory import <archive>.spookling    # restore it anywhere; the views rebuild
+```text
+memory_export      # MCP tool in Claude Code: writes the archive to a path you name
+memory_import      # MCP tool: restores it into an empty memory; the views rebuild
+GET  /v1/export    # the same over HTTP, on 127.0.0.1:7447
+POST /v1/import    # the archive, as application/octet-stream
 ```
 
-Start in Claude Code. Carry the same memory to Codex or the Spookling app when they land. Same facts, same rules, same history. No re-teaching. No vendor holding your past hostage.
+Import into a fresh install, before its first chat. The archive is the same for every harness. Start in Claude Code. Carry the same memory to a new machine today, and to Codex or the Spookling app when they land. Same facts, same rules, same history. No re-teaching. No vendor holding your past hostage.
 
 ---
 
 ## Reset without regret
-
-*Coming with early access.*
 
 New job. New project. A month you would rather your assistant stopped bringing up. One click makes everything before now irrelevant.
 
@@ -329,15 +370,15 @@ POST /v1/reset         # one "reset" ruling at now
 POST /v1/reset/undo    # the reverse ruling; everything returns
 ```
 
-The same reset is a `memory_reset` MCP tool in Claude Code. The reset button in the Spookling app calls `POST /v1/reset`. This repo ships the endpoint; the button lives in the app.
+The same reset is the `memory_reset` MCP tool in Claude Code (`undo: true` reverses it). The reset button in the Spookling app calls `POST /v1/reset`. This repo ships the endpoint; the button lives in the app.
 
-Reset is not delete. If you need data gone for good, that is the purge command, which is planned (see Privacy).
+Reset is not delete. If you need data gone for good, that is the purge command, which is on the list (see Privacy).
 
 ---
 
 ## Straight talk
 
-- **Not published yet.** The package and the Claude Code wiring of the no-guessing rule are being finished. The numbers come from our benchmark runner, build 6.0, re-scored with the v2.1 rule (the "derive it" re-asks re-run, the look-again re-asks pending).
+- **Out now, as 0.1.0 early access.** The package is published. The Claude Code wiring of the decision rule's re-ask is still in progress, and our compaction test cannot yet show the survivor block's effect. The numbers come from our benchmark runner, build 6.0, re-scored with the v2.1 rule (the "derive it" re-asks re-run, the look-again re-asks pending).
 - **Where search still beats us:** time questions on LongMemEval (92 vs 106 of 127; the fix is built and in the pending run) and fewer refusals (42 to our 57). Our weakest spot is two-hop by a person's other name, 12 of 35.
 - **Tagging costs money up front.** On a one-question-per-history benchmark that made our run cost 2.2x search; where thirty questions share a history, 1.06x. Real use reads each memory many times.
 - **The leaders self-report 94 to 96%** with the benchmarks' yes/no judges and their own readers. We score with a strict judge; we will publish a lenient-judge pass beside it. Our fixes were made after seeing the misses on every suite here; a held-out split is next.
@@ -346,7 +387,7 @@ Reset is not delete. If you need data gone for good, that is the purge command, 
 
 ## Method, pass marks and cost
 
-For the people who want the file names.
+For the people who want the detail. The result files sit in our private benchmark repo; the method is all here.
 
 - Reader Claude Sonnet 5 in both arms; strict three-way judge on Sonnet 5; second judge Haiku 4.5 (agreement 0.85 to 0.94; 0.56 on the two-hop suite). Intervals from 1,000 bootstrap resamples.
 - Updates: 120 questions (106 answerable), our generated suite. LongMemEval: all 500 (470 answerable). LoCoMo: 300 of 1,986 sampled with seed 7 (239 answerable, 61 traps); its answer key is about 6.4% wrong (Penfield audit, April 2026). Compaction: 50 (44 answerable). Two-hop: 150, no search control yet.
@@ -354,17 +395,26 @@ For the people who want the file names.
 - Pass marks (13 October 2026): stale under 5% pass (0); retired facts as gone pass (9 of 9); unanswerable refused 90%+ pass on every suite; early facts within 10 of late pass; instructions 90%+ fail (8 of 10); store under 25% of log pass (22%); reader tokens under 25% of everything pass (12%); judge agreement pass except two-hop; human audit open; the pre-registered target (beat the leaders with the lower interval bound) not met.
 - Run cost, list price, search first: updates $0.65 / $2.73 (4.2x); compaction $1.17 / $1.75 (1.5x); LoCoMo $9.94 / $10.55 (1.06x); LongMemEval $42.19 / $94.60 (2.2x). Our runs include tagging every history once (about 105,000 tagger tokens per 115k-token history).
 - The numbers come from benchmark build 6.0 (algorithm v2 stores) re-scored with the v2.1 decision rule; a fresh v2.1 run is 108 of 500 in.
+- Tagger in these runs: Haiku 4.5. The Jev and Codex taggers have no scores on this page yet.
 
 ### Privacy
 
-Each message goes to the tagger's API once; recalled lines go to the reader's API per question; a flagged tag (a contradiction, a rule, a correction, a doubtful date, a low-confidence tag, an unlisted class) goes to a stronger model once, with its message. The log is append-only; a purge command is planned. Keep `.memory/` out of shared repos until then.
+What leaves your machine, and when:
+
+- **Each chat goes to the tagger's API once, after it ends.** OpenRouter for Jev (Jev's decisions go there too, on the same key), Anthropic for Haiku, OpenAI through your own `codex` login for Codex.
+- **The reader is your harness.** Recalled lines ride along with your prompt to the model Claude Code already talks to. We send them nowhere else.
+- **A flagged item goes once more,** to the same tagger (or to Jev), with its message: a contradiction, a rule, a correction, a doubtful date, a low-confidence tag, an unlisted class.
+
+The server listens on 127.0.0.1 only. Pasted secrets can land in the log. Each new turn has its keys and tokens masked before it is logged (`sk-` keys, AWS key IDs, GitHub tokens, `NAME_TOKEN=value` lines), but a secret in another shape gets through, and the log is append-only. A purge command is on the list. Keep `.memory/` out of shared repos until then.
 
 ---
 
 ## Sources
 
-Spookling Memory is built by Spookling, a personal AI assistant company: an AI assistant that works for you while you sleep. Benchmarks, pass marks and every result file are in `memory-bench/`; the algorithm is on the [step-by-step page](https://claude.ai/artifact/MpjJEgJmviijeVTo3S3GhY).
+Spookling Memory is built by Spookling, a personal AI assistant company: an AI assistant that works for you while you sleep. The algorithm is in this repo (`server/spookling_memory/core/`) and on the [step-by-step page](https://claude.ai/artifact/MpjJEgJmviijeVTo3S3GhY). Benchmarks, pass marks and every result file are in our private benchmark repo.
 
 Vendor numbers, checked 18 October 2026: Agent Zero Memory (arXiv 2608.29606), Mastra (mastra.ai/research/observational-memory), Mem0 (mem0.ai/blog/ai-memory-benchmarks; MemDelta, June 2026), Zep (arXiv 2501.13956 and third-party quotes), Penfield, "We audited LoCoMo" (April 2026).
 
 Papers named above: NoLiMa 2025; STAIR and TISER 2025 to 2026; Delivery, Not Storage 2026; Kadavath et al. 2022.
+
+License: see LICENSE.

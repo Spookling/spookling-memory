@@ -77,7 +77,7 @@ Step 3 asks how the tagger runs: the small model that reads each chat once, afte
 
 | Choice | Server started with | Needs | Checked by |
 | --- | --- | --- | --- |
-| 1 Jev through an OpenRouter key (the default) | `--model typesafe/jev-router` | `OPENROUTER_API_KEY` | the first tag. About $0.0015 a chat: OpenRouter bills the router per call, and 199 chats cost $0.30 on 19 Oct 2026 |
+| 1 Jev through an OpenRouter key (the default) | `--model typesafe/jev-router` | `OPENROUTER_API_KEY` | the first tag. About $0.002 a chat: the router is billed per call (199 chats cost $0.30 on 19 Oct 2026) and Jev itself is $0.042 per million input tokens |
 | 2 Anthropic API key | `--model anthropic/claude-haiku-4.5` | `ANTHROPIC_API_KEY` (starts `sk-ant-`) | the first tag. Haiku 4.5 at Anthropic's API price |
 | 3 Your Codex subscription | `--model codex` | the `codex` CLI on the server's PATH, logged in with ChatGPT (Plus or higher) | `codex login status`, run by the wizard, its line shown |
 
