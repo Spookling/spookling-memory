@@ -86,6 +86,10 @@ test('exec form: with no server the hooks print nothing and exit 0, within secon
   assert.equal(spawnSync(hs.Stop.command, hs.Stop.args, { input: 'not json', timeout: 20000 }).status, 0);
 });
 
+test('in place, under the package\'s ESM package.json, the hooks still run as CommonJS (hooks/package.json)', async () => {
+  for (const h of Object.values(hookHandlers(HOOKS))) assert.deepEqual(await run(h, 'http://127.0.0.1:9', '{}'), { code: 0, out: '' });
+});
+
 test('exec form: UserPromptSubmit prints the server reply whole; Stop and PreCompact print nothing', async () => {
   const reply = JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'x'.repeat(9990) } });
   const seen = [];
