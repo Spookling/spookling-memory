@@ -21,6 +21,7 @@ export const codexHandlers = (hooksDir, p = path) => {
   const command = p === path.win32 ? `node "${script}"` : `node ${quote(script)}`;
   return Object.fromEntries(CODEX_EVENTS.map((ev) => [ev, {
     type: 'command', command, timeout: ev === 'PreCompact' ? 65 : 20, statusMessage: '👻 Spookling memory',
+    ...(ev === 'UserPromptSubmit' && { additionalContextLimit: 4000 }),
   }]));
 };
 export const codexHooksPath = (project, scope = 'project', env = process.env) =>
