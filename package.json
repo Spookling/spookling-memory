@@ -1,10 +1,10 @@
 {
-  "name": "@spookling/memory",
-  "version": "0.1.0",
+  "name": "spookling",
+  "version": "0.1.1",
   "description": "Spookling Memory for Claude Code: the install wizard, the local memory server and the hooks.",
   "type": "module",
   "bin": {
-    "spookling-memory": "bin/spookling-memory.js"
+    "spookling": "bin/spookling-memory.js"
   },
   "files": [
     "bin/",

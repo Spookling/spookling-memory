@@ -133,7 +133,7 @@ test('addHooks twice is a no-op', () => {
 });
 
 test('addHooks replaces a Spookling hook from an older install path', () => {
-  const old = addHooks(user, hookHandlers('/old/npx/@spookling/memory/hooks', path.posix));
+  const old = addHooks(user, hookHandlers('/old/npx/spookling/hooks', path.posix));
   const out = addHooks(old, cmds);
   const all = Object.values(out.hooks).flat().flatMap((g) => g.hooks);
   assert.ok(!all.some((h) => JSON.stringify(h).includes('/old/')));

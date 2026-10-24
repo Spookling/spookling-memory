@@ -1,6 +1,6 @@
 # Spookling Memory
 
-*Algorithm v2.1 · `@spookling/memory` 0.1.0 · October 2026*
+*Algorithm v2.1 · `spookling` 0.1.1 · October 2026*
 
 **Your AI forgets you every session. It brings back the car you sold. It drops your rules the moment the chat gets long.**
 
@@ -9,7 +9,7 @@ Spookling Memory is built to end all three. A word-for-word log that is never ed
 **[Get early access](#early-access)** · [See how it works, step by step](https://claude.ai/artifact/MpjJEgJmviijeVTo3S3GhY)
 
 ```bash
-npx @spookling/memory init
+npx spookling init
 ```
 
 Every number we measured has a result file behind it in our benchmark repo; every paper and vendor number carries its source. See the [Show-Your-Work Guarantee](#the-show-your-work-guarantee) below.
@@ -243,10 +243,10 @@ Behind each number: the result file, the judge logs, both judges' verdicts, the 
 
 **Claude Code first. One command. Your data stays yours.**
 
-Spookling Memory is out as `@spookling/memory` 0.1.0, early access. Claude Code users go first; Codex and the Spookling app follow. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
+Spookling Memory is out as `spookling` 0.1.1, early access. Claude Code users go first; Codex and the Spookling app follow. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
 
 ```bash
-npx @spookling/memory init
+npx spookling init
 ```
 
 ---
@@ -256,11 +256,11 @@ npx @spookling/memory init
 One command. One wizard. No config files to hand-edit.
 
 ```bash
-npx @spookling/memory init                 # this project
-npx @spookling/memory init --scope user    # every project you open in Claude Code
-npx @spookling/memory demo                 # the whole install, answered for you; writes nothing
-npx @spookling/memory status               # is the server up, what is wired, which tagger
-npx @spookling/memory uninstall            # remove the hooks and the MCP entry; keep .memory/
+npx spookling init                 # this project
+npx spookling init --scope user    # every project you open in Claude Code
+npx spookling demo                 # the whole install, answered for you; writes nothing
+npx spookling status               # is the server up, what is wired, which tagger
+npx spookling uninstall            # remove the hooks and the MCP entry; keep .memory/
 ```
 
 You need Node 18 or newer and Claude Code v2.1.139 or later. The server runs on uv, which fetches Python 3.12 if you do not have it.
@@ -320,7 +320,7 @@ Windows (native PowerShell, no Git Bash needed), macOS and Linux, WSL included. 
 
 ## Paste this into Claude Code
 
-Rather have your assistant do it? [`PASTE-ME.md`](PASTE-ME.md) has one block for Claude Code and one for Codex. Each has your assistant run `init` in the foreground, never answer the wizard's questions itself, check `status`, and reply "Spookling Memory is in." Claude Code's shell has no live terminal, so the ghost does not fly there. Run `npx @spookling/memory demo` in your own terminal to see it.
+Rather have your assistant do it? [`PASTE-ME.md`](PASTE-ME.md) has one block for Claude Code and one for Codex. Each has your assistant run `init` in the foreground, never answer the wizard's questions itself, check `status`, and reply "Spookling Memory is in." Claude Code's shell has no live terminal, so the ghost does not fly there. Run `npx spookling demo` in your own terminal to see it.
 
 ---
 

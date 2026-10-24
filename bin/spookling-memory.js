@@ -8,10 +8,10 @@ import { init, status, uninstall } from '../cli/src/wizard.js';
 
 const HELP = `Spookling Memory
 
-  npx @spookling/memory init        intro, then the step-by-step install
-  npx @spookling/memory demo        the whole install as you would see it, answered for you; writes nothing
-  npx @spookling/memory status      is the server up, which harness is wired (project and user files)
-  npx @spookling/memory uninstall   remove the hooks and MCP entry, keep .memory/
+  npx spookling init        intro, then the step-by-step install
+  npx spookling demo        the whole install as you would see it, answered for you; writes nothing
+  npx spookling status      is the server up, which harness is wired (project and user files)
+  npx spookling uninstall   remove the hooks and MCP entry, keep .memory/
 
   --scope project   init and uninstall: .claude/settings.json and .mcp.json in this folder (the default)
   --scope user      init and uninstall: ~/.claude/settings.json and the user MCP list, for every project

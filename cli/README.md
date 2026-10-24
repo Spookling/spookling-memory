@@ -1,13 +1,13 @@
-# @spookling/memory
+# spookling
 
 The install wizard for Spookling Memory. Node 18 or newer, no dependencies. Works on macOS, Linux (WSL included) and native Windows; what was run on which is listed under [Tested](#tested).
 
 ```bash
-npx @spookling/memory init                 # the intro, then the step-by-step install, for this project
-npx @spookling/memory init --scope user    # the same, wired for every project you open in Claude Code
-npx @spookling/memory demo                 # the whole install as you would see it, answered for you; writes nothing
-npx @spookling/memory status               # is the server up, what is wired (project and user files), which tagger; exit 0 when all is well
-npx @spookling/memory uninstall            # remove the hooks and the MCP entry (add --scope user for the user files), keep .memory/
+npx spookling init                 # the intro, then the step-by-step install, for this project
+npx spookling init --scope user    # the same, wired for every project you open in Claude Code
+npx spookling demo                 # the whole install as you would see it, answered for you; writes nothing
+npx spookling status               # is the server up, what is wired (project and user files), which tagger; exit 0 when all is well
+npx spookling uninstall            # remove the hooks and the MCP entry (add --scope user for the user files), keep .memory/
 ```
 
 Until the npm package is published, run the same commands from a clone: `node <clone>/bin/spookling-memory.js init` (below).
@@ -122,7 +122,7 @@ Checked against the current Claude Code docs on 21 Oct 2026; [docs/claude-code-f
 
 ## Undo
 
-`npx @spookling/memory uninstall` (with `--scope user` for the user files) removes only the Spookling hooks and the `spookling-memory` MCP entry; everything else in those files stays exactly as it was. It also offers to stop the server named in `.memory/server.pid`: a SIGTERM to its process group on macOS and Linux, `taskkill /T /F` on Windows. Your memory in `.memory/` stays, keys included. To remove that too, delete the folder yourself. The server and hooks stay in `~/.spookling-memory/<version>/` (it says so); delete that folder, after uninstall in every project and scope that used it, to remove them.
+`npx spookling uninstall` (with `--scope user` for the user files) removes only the Spookling hooks and the `spookling-memory` MCP entry; everything else in those files stays exactly as it was. It also offers to stop the server named in `.memory/server.pid`: a SIGTERM to its process group on macOS and Linux, `taskkill /T /F` on Windows. Your memory in `.memory/` stays, keys included. To remove that too, delete the folder yourself. The server and hooks stay in `~/.spookling-memory/<version>/` (it says so); delete that folder, after uninstall in every project and scope that used it, to remove them.
 
 On Windows the stop is forced, so the server cannot remove its temporary copy of the log: delete `%TEMP%\spookling-log-*` if you want it gone. On macOS and Linux the server removes it on the way out.
 

@@ -346,7 +346,7 @@ async function steps(ctx, { anim, st }) {
     await write(ctx, join(ctx.mem, 'CODEX-TODO.md'), [
       '# Codex: not wired yet', '',
       `Spookling Memory runs for this project (server on 127.0.0.1:${PORT}, data in .memory/),`,
-      'but the Codex hooks are not built yet. When they land, run `npx @spookling/memory init`',
+      'but the Codex hooks are not built yet. When they land, run `npx spookling init`',
       'again and pick Codex.', '',
     ].join('\n'), { what: 'Codex TODO note' });
   }
@@ -591,6 +591,6 @@ export async function uninstall(project = process.cwd(), { scope = 'project' } =
   } else if (p && !p.alive) rmSync(pidFile(project), { force: true });
   for (const prob of ctx.problems) warn(prob);
   if (!SHARE && existsSync(INSTALL_DIR)) info(`The server and hooks stay in ${rel(ctx, INSTALL_DIR)}; delete that folder to remove them too.`);
-  out(`\n   Your memory stays in .memory/. Run ${paint(C.GHOST, `npx @spookling/memory init${scope === 'user' ? ' --scope user' : ''}`)} to wire it back.\n`);
+  out(`\n   Your memory stays in .memory/. Run ${paint(C.GHOST, `npx spookling init${scope === 'user' ? ' --scope user' : ''}`)} to wire it back.\n`);
   return ctx.problems.length ? 1 : 0;
 }
