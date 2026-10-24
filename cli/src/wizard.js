@@ -287,7 +287,6 @@ async function waitForStats(ctx) {
 }
 
 export async function init({ anim = true, project = process.cwd(), scope = 'project', dry = false, fast = false } = {}) {
-  if (scope === 'user') project = homedir(); // user scope: the memory lives in the home folder, wherever init ran
   const label = dry ? DEMO_LABEL : '';
   await play({ anim: anim && !fast, keep: fits(anim), label });
   const ctx = newCtx(project, scope);
@@ -518,7 +517,6 @@ async function steps(ctx, { anim, st }) {
 }
 
 export async function status(project = process.cwd(), get = stats) {
-  if (!existsSync(join(project, '.memory')) && existsSync(join(homedir(), '.memory'))) project = homedir();
   const line = (label, text, good) => out(`   ${good ? paint(C.MINT, '✓') : paint(C.LILAC, '!')} ${label.padEnd(8)} ${text}\n`);
   const ctx = newCtx(project);
   out(`${paint(C.GHOST, 'Spookling Memory', true)}  ${paint(C.GREY, project)}\n`);
@@ -561,7 +559,6 @@ function stopServer(pid) {
 }
 
 export async function uninstall(project = process.cwd(), { scope = 'project' } = {}) {
-  if (scope === 'user') project = homedir();
   const ctx = newCtx(project, scope);
   const sp = settingsPath(project, scope);
   out(`${paint(C.GHOST, 'Removing Spookling Memory wiring', true)}  ${paint(C.GREY, scope === 'user' ? `${project} (user scope)` : project)}\n`);

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import process from 'node:process';
 import { frames } from '../cli/src/cutscene.js';
 import { init, status, uninstall } from '../cli/src/wizard.js';
@@ -28,10 +31,12 @@ if (!['project', 'user'].includes(scope)) {
   process.exit(2);
 }
 
-if (cmd === 'init') process.exitCode = await init({ anim, scope });
+const home = homedir(), cwd = process.cwd();
+const folder = scope === 'user' ? home : cwd; // user scope keeps the memory in the home folder
+if (cmd === 'init') process.exitCode = await init({ anim, scope, project: folder });
 else if (cmd === 'demo') process.exitCode = fi >= 0 ? (frames(Math.max(1, Number(args[fi + 1]) || 3)), 0) : await init({ anim, scope, dry: true, fast });
-else if (cmd === 'status') process.exitCode = await status();
-else if (cmd === 'uninstall') process.exitCode = await uninstall(process.cwd(), { scope });
+else if (cmd === 'status') process.exitCode = await status(existsSync(join(cwd, '.memory')) || !existsSync(join(home, '.memory')) ? cwd : home);
+else if (cmd === 'uninstall') process.exitCode = await uninstall(folder, { scope });
 else {
   process.stdout.write(HELP);
   process.exitCode = cmd === 'help' || args.includes('--help') || args.includes('-h') ? 0 : 1;
