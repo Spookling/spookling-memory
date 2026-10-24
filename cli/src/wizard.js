@@ -24,6 +24,8 @@ export const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`, STATS = `${SE
 const STEPS = ['Checks', 'Harness', 'Tagger', 'Server', 'Wire Claude Code', 'Smoke test', 'Done'];
 const WIN = process.platform === 'win32';
 export const DEMO_LABEL = 'demo, nothing is written';
+// .memory/.gitignore: the key, the pid and log, and the server's two caches (model replies, embeddings).
+const IGNORE = ['keys.env', 'server.pid', 'server.log', 'cache.sqlite*', 'vectors.sqlite*'];
 
 // What the ghost says, one line per step and one when something goes wrong. Plain words, no hype, no em dashes;
 // at most 52 characters so the bubble fits beside the ghost at 80 columns (test/ui.test.js checks all of it).
@@ -398,9 +400,10 @@ async function steps(ctx, { anim, st }) {
   }
   const giPath = join(ctx.mem, '.gitignore');
   const gi = !ctx.dry && existsSync(giPath) ? readFileSync(giPath, 'utf8') : '';
-  if (!/^keys\.env$/m.test(gi)) {
-    await write(ctx, giPath, gi + (gi && !gi.endsWith('\n') ? '\n' : '') + 'keys.env\nserver.pid\nserver.log\n', {
-      what: 'keeps your keys out of git',
+  const missing = IGNORE.filter((l) => !gi.split(/\r?\n/).includes(l));
+  if (missing.length) {
+    await write(ctx, giPath, gi + (gi && !gi.endsWith('\n') ? '\n' : '') + missing.join('\n') + '\n', {
+      what: 'keeps your keys and the caches out of git',
     });
   }
 

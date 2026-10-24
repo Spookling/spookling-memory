@@ -108,7 +108,7 @@ Every write is shown before it happens; answer `n` to skip it. Every command it 
 | Where | What |
 | --- | --- |
 | `.memory/keys.env` | the tagger's key: `OPENROUTER_API_KEY` for Jev or `ANTHROPIC_API_KEY` for Haiku; nothing for Codex. Taken from your environment, or typed at a hidden prompt; never printed. Mode 600 on macOS and Linux; on Windows it has the folder's own access rules. |
-| `.memory/.gitignore` | `keys.env`, `server.pid`, `server.log` |
+| `.memory/.gitignore` | `keys.env`, `server.pid`, `server.log`, and the server's caches `cache.sqlite*` (model replies) and `vectors.sqlite*` (embeddings); missing lines are added to a file you already have |
 | `.memory/server.pid`, `.memory/server.log` | the background server: `uv run --project <server> spookling-memory serve --folder .memory --port 7447 --model <tagger>` |
 | `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | three hooks merged in, `PreCompact`, `UserPromptSubmit` and `Stop`, each `{"type": "command", "command": "node", "args": ["<hooks>/<event>.js"]}` |
 | `.mcp.json` (project) | `mcpServers.spookling-memory`: stdio, `uv run --project <server> spookling-memory mcp`, with `SPOOKLING_MEMORY_URL` in its `env` |
