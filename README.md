@@ -1,6 +1,6 @@
 # Spookling Memory
 
-*Algorithm v2.1 · `spookling` 0.1.1 · October 2026*
+*Algorithm v2.1 · `spookling` 0.1.2 · October 2026*
 
 **Your AI forgets you every session. It brings back the car you sold. It drops your rules the moment the chat gets long.**
 
@@ -245,7 +245,7 @@ Behind each number: the result file, the judge logs, both judges' verdicts, the 
 
 In Codex, the CLI shows `👻 Spookling memory` during hook activity, `ready` after a successful server health check, and `active` after successful recall (including a search with no matching facts). Failed health checks or recall show `unavailable` and do not block Codex. This is a hook indicator, not a permanent widget; [setup and removal](cli/README.md#codex) use the same local server and `.memory/` data.
 
-Spookling Memory is out as `spookling` 0.1.1, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
+Spookling Memory is out as `spookling` 0.1.2, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
 
 ```bash
 npx spookling init
