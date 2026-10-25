@@ -46,7 +46,7 @@ test('statusLine: yours runs first through --then, keeps its own keys, and comes
   const moved = addStatusLine(out, '/home/a/.spookling-memory/0.2.0/hooks', path.posix);
   assert.equal(moved.statusLine.command.match(/--then/g).length, 1);
   assert.deepEqual(removeStatusLine(moved), s);
-  assert.deepEqual(removeStatusLine(removeHooks(addStatusLine(addHooks(s, hookHandlers(DIR)), DIR))), s);
+  assert.deepEqual(removeStatusLine(removeHooks(addStatusLine(addHooks(s, hookHandlers(DIR, path.posix)), DIR, path.posix))), s);
   assert.throws(() => addStatusLine({ statusLine: 'x' }, DIR), /not an object/);
 });
 
