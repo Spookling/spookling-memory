@@ -42,6 +42,8 @@ test('Codex shell commands quote paths; Windows uses a quoted native path', () =
   assert.equal(codexHandlers('C:\\Users\\Jane O\'Neil\\spookling-memory\\hooks', path.win32).Stop.command,
     'node "C:\\Users\\Jane O\'Neil\\spookling-memory\\hooks\\spookling-codex.cjs"');
   assert.throws(() => codexHandlers('C:\\%PATH%\\hooks', path.win32), /Codex hook path/);
+  assert.equal(codexHandlers('/h', path.posix, "/work/Jane's app/.memory").Stop.command, "node '/h/spookling-codex.cjs' --memory '/work/Jane'\\''s app/.memory'");
+  assert.throws(() => codexHandlers('C:\\hooks', path.win32, 'C:\\100%\\.memory'), /Codex hook path/);
   for (const h of Object.values(handlers)) {
     assert.equal(h.statusMessage, '👻 Spookling memory');
     assert.equal(h.args, undefined, 'Codex must receive a shell command, not Claude exec form');
@@ -53,7 +55,7 @@ test('Codex shell commands quote paths; Windows uses a quoted native path', () =
 test('real Codex command: health, recall, capture and compaction reuse the HTTP API with truthful ghost output', async () => {
   const dir = join(mkdtempSync(join(tmpdir(), 'spk-codex-')), (process.platform === 'win32' ? "spookling's space" : "spookling's $pace `literal`"), 'hooks');
   mkdirSync(dir, { recursive: true });
-  for (const f of ['spookling-codex.cjs', 'ghost.js', 'pulse.js']) copyFileSync(join(dirname(hook), f), join(dir, f));
+  for (const f of ['spookling-codex.cjs', 'ghost.js', 'pulse.js', 'server.js']) copyFileSync(join(dirname(hook), f), join(dir, f));
   const hs = codexHandlers(dir), seen = [];
   let pulseHeader = JSON.stringify({ facts: 1, rules: 1, events: 0, chats: 0, chars: 22, cap: 10000 });
   let code = 200, response;

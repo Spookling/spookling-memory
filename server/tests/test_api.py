@@ -139,7 +139,7 @@ def test_an_empty_prompt_injects_nothing(open_store, prompt):
     assert c.post("/v1/hook/user-prompt-submit", json={"session_id": "x", "prompt": prompt}).json() == {}
 
 
-def test_a_missing_model_key_is_a_503_and_the_server_lives(open_store):
+def test_a_missing_model_key_saves_the_turns_and_recall_still_finds_them(open_store, tmp_path):
     class NoKey(Stub):
         def judge(self, turns, date, known):
             raise SystemExit("OPENROUTER_API_KEY is not set")  # what core.models does
@@ -148,10 +148,15 @@ def test_a_missing_model_key_is_a_503_and_the_server_lives(open_store):
     c = client(store)
     store.mem.triage = NoKey(TAGS)
     r = c.post("/v1/ingest", json={"id": "s1", "ts": "2024-05-22T10:00:00Z", "turns": turns(["I drive a Toyota Corolla, nothing fancy."])})
-    assert r.status_code == 503 and "OPENROUTER_API_KEY" in r.json()["detail"]
-    store.mem.triage = Stub(TAGS)
+    assert r.status_code == 200 and r.json() == {"logged": 2}
+    assert "Corolla" in (tmp_path / "m" / "log.jsonl").read_text()  # on disk before any model was asked
+    t = c.get("/v1/stats").json()["tagging"]
+    assert t["waiting"] == 2 and "OPENROUTER_API_KEY" in t["error"] and t["retry_in"] > 0
+    assert "Toyota Corolla" in c.post("/v1/retrieve", json={"question": "Which Toyota do I drive?"}).json()["context"]
+    store.mem.triage, store.retry_at = Stub(TAGS), 0  # a key arrives, the wait is over
     assert c.post("/v1/ingest", json={"id": "s2", "ts": "2024-05-23T10:00:00Z", "turns": turns(["How do I roast peppers?"])}).status_code == 200
-    assert c.get("/v1/stats").json()["n_events"] == 4  # the first session waited in memory
+    s = c.get("/v1/stats").json()
+    assert s["n_events"] == 4 and s["n_facts"] == 1 and s["tagging"] == {"waiting": 0, "error": None, "retry_in": 0}
 
 
 def test_injected_context_fits_claude_codes_cap():

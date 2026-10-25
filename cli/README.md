@@ -96,16 +96,17 @@ Without a terminal (an assistant's shell, a pipe), answers are read from stdin. 
 
 ## What `init` writes
 
-Every write is shown before it happens; answer `n` to skip it. Every command it runs is shown the same way.
+Every write is shown before it happens; answer `n` to skip it. Every command it runs is shown the same way. `init --yes` takes every default: the harnesses it finds (Claude Code if `claude` or `~/.claude` is there, Codex if `codex` or `$CODEX_HOME` is), the tagger you can already pay for (your Codex plan when `codex login status` says ChatGPT, else `ANTHROPIC_API_KEY`, else `OPENROUTER_API_KEY`, else none), and the ghost.
 
 | Where | What |
 | --- | --- |
 | `~/.spookling-memory/<version>/` (`%LOCALAPPDATA%\spookling-memory\<version>\` on Windows) | `server/` and `hooks/`, copied from the package (a clone's `.venv` and caches stay behind); `uv sync` then makes `server/.venv` there |
-| `.memory/keys.env` | the tagger's key: `OPENROUTER_API_KEY` for Jev or `ANTHROPIC_API_KEY` for Haiku; nothing for Codex. Taken from your environment, or typed at a hidden prompt; never printed. Mode 600 on macOS and Linux; on Windows it has the folder's own access rules. |
-| `.memory/.gitignore` | `keys.env`, `server.pid`, `server.log`, the server's caches `cache.sqlite*` (model replies) and `vectors.sqlite*` (embeddings), and the hooks' `pulse.json*`; missing lines are added to a file you already have |
-| `.memory/server.pid`, `.memory/server.log` | the background server: `uv run --project <server> spookling-memory serve --folder .memory --port 7447 --model <tagger>` |
-| `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | three hooks merged in, `PreCompact`, `UserPromptSubmit` and `Stop`, each `{"type": "command", "command": "node", "args": ["<hooks>/<event>.js"]}`, the first two with a `statusMessage` for the spinner; if you said yes to the ghost, `statusLine` (see [The ghost](#the-ghost)) |
-| `.mcp.json` (project) | `mcpServers.spookling-memory`: stdio, `uv run --project <server> spookling-memory mcp`, with `SPOOKLING_MEMORY_URL` in its `env` |
+| `.memory/keys.env` | the tagger's key: `OPENROUTER_API_KEY` for Jev or `ANTHROPIC_API_KEY` for Haiku; nothing for Codex or no tagger. The server reads it at start, so a server a hook restarts has the key too. Taken from your environment, or typed at a hidden prompt; never printed. Mode 600 on macOS and Linux; on Windows it has the folder's own access rules. |
+| `.memory/.gitignore` | `keys.env`, `server.pid`, `server.log`, `server.json`, `server.starting`, `spookling.json`, the server's caches `cache.sqlite*` (model replies) and `vectors.sqlite*` (embeddings), and the hooks' `pulse.json*`; missing lines are added to a file you already have |
+| `.memory/spookling.json` | `{version, server, uv, model, decider}`: what a hook needs to start this folder's server the way `init` did |
+| `.memory/server.json`, `.memory/server.pid`, `.memory/server.log` | the background server: `uv run --project <server> spookling-memory serve --folder <abs .memory>`. It reads the tagger from `spookling.json`, takes this folder's own port (7448 to 7947, from a hash of the folder's path, the next free one up if taken), writes `{port, pid, folder}` to `server.json` once listening and removes it on the way out. Every reply carries `x-spookling-folder`, so a hook never takes another folder's answer. |
+| `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | four hooks merged in, `SessionStart`, `PreCompact`, `UserPromptSubmit` and `Stop`, each `{"type": "command", "command": "node", "args": ["<hooks>/<event>.js", "--memory", "<abs .memory>"]}`, PreCompact and UserPromptSubmit with a `statusMessage` for the spinner; and, unless `--no-ghost`, `statusLine` (see [The ghost](#the-ghost)) |
+| `.mcp.json` (project) | `mcpServers.spookling-memory`: stdio, `uv run --project <server> spookling-memory mcp`, with `SPOOKLING_MEMORY_FOLDER` in its `env` (the tools read the port from its `server.json`) |
 | user MCP list (user scope) | the same entry, added with `claude mcp add-json spookling-memory '<entry>' --scope user`. Claude Code keeps it in `~/.claude.json`, a file it writes itself, so the wizard only reads that file. |
 | `.codex/hooks.json` (Codex, project) or `$CODEX_HOME/hooks.json` (Codex, user; default `~/.codex/hooks.json`) | SessionStart, UserPromptSubmit, PreCompact and Stop hooks merged in; existing hooks stay |
 
@@ -118,7 +119,8 @@ Checked against the current Claude Code docs on 21 Oct 2026; [docs/claude-code-f
 - The hooks use exec form (`command` plus `args`), which Claude Code spawns with no shell on every OS, so no path needs quoting. It needs Claude Code v2.1.139 or later.
 - In an interactive session, hooks wait until you accept the folder's trust dialog, and Claude Code asks you once to approve the project's `.mcp.json` server.
 - Recalled memory arrives as `additionalContext`, at most 10,000 characters. The server cuts there, because Claude Code would otherwise save a longer value to a file and show Claude only a 2,000-character preview.
-- With the server down, the hooks print nothing and exit 0, within about a second, so a prompt is never blocked.
+- With the server down, a hook starts it (one start at a time, guarded by `.memory/server.starting`) and waits up to 10 s (SessionStart 15 s); if it is still not up, the hook prints nothing and exits 0, so a prompt is never blocked. `SPOOKLING_MEMORY_URL` points every hook at a server you run yourself instead, and then nothing is started.
+- Turns are written to `log.jsonl` before the tagger is called. A failed tagging call leaves them there untagged: search finds them, `/v1/stats` reports `tagging: {waiting, error, retry_in}`, and the next save after five minutes tries again. A `{"step": "tagged", "upto": <seq>}` line in `judgements.jsonl` records how far tagging got, so a restart picks up where it stopped. Recall never calls a model.
 - To see them: `/hooks` in Claude Code lists them; `claude --debug` writes each run to `~/.claude/debug/<session-id>.txt`.
 
 ## The ghost
@@ -133,7 +135,7 @@ What shows where, and when (facts 49 to 66 in [docs/claude-code-facts.md](../doc
 
 How it works:
 
-- The three hooks write `.memory/pulse.json` after each call: `{at, session, event, up, ...counts}`. It goes in the project's `.memory/`, else `~/.memory/` (the folder `status` picks), and never creates either. `up` is false only when the server could not be reached.
+- The hooks write `.memory/pulse.json` after each call (SessionStart adds the server's own counts: `remembered`, `facts_kept`, `rules_kept`; a failing tagger adds `tagging`, its reason): `{at, session, event, up, ...counts}`. It goes in the project's `.memory/`, else `~/.memory/` (the folder `status` picks), and never creates either. `up` is false only when the server could not be reached.
 - The counts come from the server, in an `x-spookling-pulse` response header, so the hook bodies Claude Code and Codex read are unchanged: for a prompt, `facts` (fact records), `rules`, `events` (timeline lines), `chats` (dated past-chat blocks), `chars` and `cap` (the recall's size and the 10,000-character hook cap); for PreCompact, `kept`, `rules` and `lines` in the survivor block. An older server sends no header; the hooks then print its reply untouched.
 - `hooks/status-line.js` reads Claude Code's stdin JSON and `pulse.json`, prints the ghost (or one line for the older looks) and exits 0. No network, no server call: about 24 ms wall clock here, 19 of them node starting. A pulse from another session (`session_id`) is not shown.
 - The ghost (`hooks/ghost.js`, shared with the Codex hook) is a 16 x 16 pixel ghost drawn with half blocks, 16 columns by 8 rows, built the way [pixel-profile](https://github.com/TheMysteriousGhost/pixel-profile) (MIT) builds its ghost: a dark outline, shading down one side, small eyes, blush, a scalloped hem. Its state comes from the pulse alone: `active` (green) when this prompt's recall completed, `ready` after a save, a compaction or once the news is old, `degraded` when the last hook could not reach the server, `waiting` (asleep) before any hook of this session. Beside it, only what the pulse says: what was recalled, how much of the 10,000-character room it took, when the last hook ran, and which `.memory` it was.

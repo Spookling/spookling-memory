@@ -93,13 +93,14 @@ def test_codex_tags_a_chat_through_the_store(fake, codex_store, tmp_path):
     assert len(fake()) == n
 
 
-def test_a_failed_codex_call_is_a_503_and_nothing_is_written(fake, codex_store, tmp_path, monkeypatch):
+def test_a_failed_codex_call_keeps_the_turns_and_says_why(fake, codex_store, tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_CODEX_MODE", "fail")
     c = TestClient(create_app(codex_store()), base_url="http://127.0.0.1:7447")
     r = c.post("/v1/ingest", json={"id": "s1", "ts": "2024-05-22T10:00:00Z", "turns": turns(["I drive a Toyota Corolla."])})
-    assert r.status_code == 503
-    assert r.json()["detail"] == "codex exited 1: ERROR: Your access token could not be refreshed. Please log out and sign in again."
-    assert not (tmp_path / "m" / "log.jsonl").exists()
+    assert r.status_code == 200
+    assert c.get("/v1/stats").json()["tagging"]["error"] == \
+        "codex exited 1: ERROR: Your access token could not be refreshed. Please log out and sign in again."
+    assert "Corolla" in (tmp_path / "m" / "log.jsonl").read_text()
 
 
 def test_codex_missing_is_a_clear_error(monkeypatch, tmp_path):
