@@ -1,6 +1,7 @@
 """Against a real server on a socket: the MCP tools and both sets of hook scripts."""
 import asyncio
 import json
+import re
 import os
 import shutil
 import socket
@@ -13,7 +14,7 @@ import pytest
 import uvicorn
 from conftest import turns
 
-from spookling_memory import mcp as M
+from spookling_memory import hooks, mcp as M
 from spookling_memory.api import create_app
 from spookling_memory.portability import read_archive
 
@@ -114,16 +115,76 @@ def test_codex_ghost_and_memory_hooks_use_the_existing_server(live, tmp_path):
     base = {"session_id": "codex-live", "transcript_path": str(path)}
     runner = ("node", ".cjs")
     start = hook(runner, "spookling-codex", {**base, "hook_event_name": "SessionStart"}, url)
-    assert start.returncode == 0 and "👻 Spookling memory ready" in json.loads(start.stdout)["systemMessage"]
+    said = plain(json.loads(start.stdout)["systemMessage"])
+    assert start.returncode == 0 and said[0] == "spookling ready · local server connected"
+    assert has(said, "0 messages remembered") and has(said, "0 facts in force · 0 standing rules"), said  # an empty store
+    assert has(said, store.folder.name), "the folder the server opened"
     for event in ("Stop", "PreCompact"):
         result = hook(runner, "spookling-codex", {**base, "hook_event_name": event}, url)
         assert (result.returncode, result.stdout, result.stderr) == (0, "", "")
     assert len(store.mem.log.events) == 3 and all(e.agent == "codex" for e in store.mem.log.events)
     result = hook(runner, "spookling-codex", {**base, "hook_event_name": "UserPromptSubmit", "prompt": "What car do I drive?"}, url)
     reply = json.loads(result.stdout)
-    assert "👻 Spookling memory active" in reply["systemMessage"]
-    assert "Toyota Corolla" in reply["hookSpecificOutput"]["additionalContext"]
-    assert "metric" in reply["hookSpecificOutput"]["additionalContext"]
+    ctx = reply["hookSpecificOutput"]["additionalContext"]
+    assert "Toyota Corolla" in ctx and "metric" in ctx
+    said = plain(reply["systemMessage"])
+    assert said[0] == f"spookling active · {spoken(hooks.counts(ctx))} recalled", said  # the server's own count of ctx
+    assert has(said, f"≈{kilo(len(ctx))} of the 10k characters of room"), said
+    start = hook(runner, "spookling-codex", {**base, "hook_event_name": "SessionStart"}, url)
+    assert has(plain(json.loads(start.stdout)["systemMessage"]), "3 messages remembered"), "the store as it is now"
+
+
+def plain(message: str) -> list[str]:
+    """A ghost message as Codex shows it, without colour: the words line, then the ghost's rows with words beside."""
+    return [re.sub(r"\x1b\[[0-9;]*m", "", line).strip() for line in message.split("\n")]
+
+
+def has(lines: list[str], words: str) -> bool:
+    return any(line.endswith(words) for line in lines)
+
+
+def kilo(v: int) -> str:
+    """ghost.kilo in hooks/ghost.js."""
+    return f"{v / 1000:.{0 if v >= 10000 else 1}f}k" if v >= 1000 else str(v)
+
+
+def spoken(c: dict) -> str:
+    """pulse.said in hooks/pulse.js: "1 fact and 1 rule", biggest news first."""
+    parts = [f"{c[k]} {w}{'' if c[k] == 1 else 's'}" for k, w in
+             (("facts", "fact"), ("events", "event"), ("rules", "rule"), ("chats", "past chat")) if c.get(k)]
+    return ", ".join(parts[:-1]) + " and " + parts[-1] if len(parts) > 1 else parts[0]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="no node")
+def test_status_line_ghost_reads_what_the_server_recalled(live, tmp_path):
+    """Claude Code: the prompt hook writes .memory/pulse.json from the real server's answer; the status line's ghost
+    reads it. Then the server is gone and the ghost says so."""
+    url, store = live
+    project = tmp_path / "project"
+    (project / ".memory").mkdir(parents=True)
+    path = tmp_path / "abc.jsonl"
+    path.write_text(encoding="utf-8", data="".join(json.dumps(e) + "\n" for e in [
+        {"type": "user", "message": {"role": "user", "content": "I drive a Toyota Corolla, nothing fancy."}},
+        {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Noted."}]}}]))
+    base = {"session_id": "abc", "transcript_path": str(path), "cwd": str(project)}
+    env = {"CLAUDE_PROJECT_DIR": str(project), "SPOOKLING_GHOST": "half", "COLORTERM": "truecolor"}
+    hook(("node", ".js"), "stop", {**base, "hook_event_name": "Stop", "stop_hook_active": False}, url, **env)
+    out = hook(("node", ".js"), "user-prompt-submit", {**base, "hook_event_name": "UserPromptSubmit",
+                                                      "prompt": "What car do I drive?"}, url, **env)
+    ctx = json.loads(out.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def status_line():
+        run = subprocess.run(["node", str(HOOKS / "status-line.js")], capture_output=True, text=True, encoding="utf-8",
+                             input=json.dumps({"session_id": "abc", "cwd": str(project), "workspace": {"project_dir": str(project)}}),
+                             env={**os.environ, **env}, timeout=30)
+        return [line for line in plain(run.stdout) if line]
+
+    lines = status_line()
+    assert any(line.endswith(f"spookling active · {spoken(hooks.counts(ctx)).replace(' and ', ' · ').replace(', ', ' · ')} recalled")
+               for line in lines), lines
+    assert has(lines, f"≈{kilo(len(ctx))} of the 10k characters of room"), lines
+    hook(("node", ".js"), "user-prompt-submit", {**base, "hook_event_name": "UserPromptSubmit", "prompt": "hi"}, nobody(), **env)
+    assert any(line.endswith("spookling degraded · server off") for line in status_line()), "the server did not answer"
 
 
 @pytest.mark.parametrize("runner", RUNNERS)
