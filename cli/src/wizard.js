@@ -334,12 +334,8 @@ async function steps(ctx, { anim, st }) {
   await ctx.beat(1200);
 
   await step(ctx, 2);
-  const pick = await choose('   Which one?', ['Claude Code', 'Codex', 'Spookling app']);
-  ctx.harness = ['claude', 'codex', 'app'][pick];
-  if (ctx.harness === 'app') {
-    ok('Spookling Memory ships with the app. Nothing to install here.');
-    return 0;
-  }
+  const pick = await choose('   Which one?', ['Claude Code', 'Codex']);
+  ctx.harness = ['claude', 'codex'][pick];
   ok(ctx.harness === 'claude' ? 'Claude Code' : 'Codex');
 
   // the demo reads neither the environment nor keys.env, so the key prompt shows
