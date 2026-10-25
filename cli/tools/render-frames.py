@@ -6,11 +6,14 @@ Dev only, not shipped. Needs Pillow; POSIX (it runs the CLI under a pseudo-termi
                                                   wizard-frame-30.png (80x30)
   python3 tools/render-frames.py raw FILE OUT     any captured byte stream (for example from `script`) to OUT
   python3 tools/render-frames.py snap FILE TEXT OUT   the same, stopped at the first TEXT (and the next stage redraw)
+  python3 tools/render-frames.py video OUT.mp4 [ROOT] [COLSxROWS]  `demo` (intro, then the steps) from ROOT, every
+                                                  frame at 20 fps, 80x24 by default: OUT/ holds the PNGs, OUT.mp4 is
+                                                  H.264 yuv420p (needs ffmpeg)
 
 Each cell is 10 x 20 px: a half block is two 10 x 10 pixels, any other character is drawn in DejaVu Sans Mono.
 Default colours are a dark terminal's (#0C0C0C on #CCCCCC).
 """
-import os, pty, re, select, subprocess, sys, time, fcntl, struct, termios
+import codecs, functools, os, pty, re, select, subprocess, sys, time, fcntl, struct, tempfile, termios
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
@@ -149,7 +152,7 @@ class Screen:
     def png(self, path):
         im = Image.new('RGB', (self.cols * CW, self.rows * CH), BG)
         d = ImageDraw.Draw(im)
-        font = ImageFont.truetype(FONT, 16) if FONT else ImageFont.load_default()
+        font = _font()
         for r, row in enumerate(self.buf):
             for c, (ch, fg, bg) in enumerate(row):
                 fg, bg = fg or FG, bg or BG
@@ -163,14 +166,20 @@ class Screen:
         return im.size
 
 
-def run_pty(args, env, until=None, timeout=60, cols=COLS, rows=ROWS):
-    """Run under a pseudo-terminal of cols x rows; return everything it wrote."""
+@functools.cache
+def _font():
+    return ImageFont.truetype(FONT, 16) if FONT else ImageFont.load_default()
+
+
+def run_pty(args, env, until=None, timeout=60, cols=COLS, rows=ROWS, stamps=False):
+    """Run under a pseudo-terminal of cols x rows; return everything it wrote (stamps: as (seconds, text) pairs)."""
     pid, fd = pty.fork()
     if pid == 0:
         os.chdir(env.pop('_CWD', str(CLI)))
         os.execvpe(args[0], args, env)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
-    out, end = b'', time.time() + timeout
+    dec, parts, t0 = codecs.getincrementaldecoder('utf8')('replace'), [], time.time()
+    end = t0 + timeout
     while time.time() < end:
         r, _, _ = select.select([fd], [], [], 0.5)
         if r:
@@ -180,9 +189,9 @@ def run_pty(args, env, until=None, timeout=60, cols=COLS, rows=ROWS):
                 break
             if not chunk:
                 break
-            out += chunk
+            parts.append((time.time() - t0, dec.decode(chunk)))
     os.waitpid(pid, 0)
-    return out.decode('utf8', 'replace')
+    return parts if stamps else ''.join(t for _, t in parts)
 
 
 def env(**kw):
@@ -203,8 +212,33 @@ def upto(stream, marker, after='\x1b8'):
     return stream[:(j + len(after)) if j >= 0 else i + len(marker)]
 
 
+def video(out, root, fps=20, cols=COLS, rows=ROWS):
+    """Replay the demo's timed bytes and snapshot the screen every 1/fps s, then encode."""
+    with tempfile.TemporaryDirectory() as tmp:
+        parts = run_pty(['node', str(Path(root) / 'bin' / 'spookling-memory.js'), 'demo'], env(_CWD=tmp, HOME=tmp),
+                        cols=cols, rows=rows, timeout=400, stamps=True)
+    out = Path(out)
+    frames = out.with_suffix('')
+    frames.mkdir(parents=True, exist_ok=True)
+    sc, i, pending = Screen(cols=cols, rows=rows), 0, ''
+    for k in range(int(parts[-1][0] * fps) + 2 * fps):  # two more seconds on the last screen
+        while i < len(parts) and parts[i][0] <= k / fps:
+            pending += parts[i][1]
+            i += 1
+        cut = re.search(r'\x1b[\[\d;?]*$', pending)  # an escape split across reads waits for its end
+        sc.feed(pending[:cut.start()] if cut else pending)
+        pending = pending[cut.start():] if cut else ''
+        sc.png(frames / f'{k:05d}.png')
+    subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-framerate', str(fps), '-i', str(frames / '%05d.png'),
+                    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18', '-movflags', '+faststart', str(out)], check=True)
+    print(out, f'{k + 1} frames, {parts[-1][0]:.1f} s of demo; PNGs in {frames}')
+
+
 def main():
     RENDERS.mkdir(exist_ok=True)
+    if len(sys.argv) > 2 and sys.argv[1] == 'video':
+        size = map(int, sys.argv[4].split('x')) if len(sys.argv) > 4 else (COLS, ROWS)
+        return video(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else CLI.parent, 20, *size)
     if len(sys.argv) > 1 and sys.argv[1] in ('raw', 'snap'):
         stream = open(sys.argv[2], encoding='utf8', errors='replace', newline='').read()  # keep \r\n as written
         sc = Screen()
@@ -216,7 +250,6 @@ def main():
         sc = Screen()
         sc.feed('\x1b[H' + node_frame(s, 'demo, nothing is written'))
         print(f'renders/{name}.png', sc.png(RENDERS / f'{name}.png'), f'(t = {s} s)')
-    import tempfile
     # 80 x 24: the 13 x 14 ghost on a 9-row stage. 80 x 30: the 19 x 20 ghost on an 11-row stage.
     for rows, name in ((24, 'wizard-frame'), (30, 'wizard-frame-30')):
         with tempfile.TemporaryDirectory() as tmp:

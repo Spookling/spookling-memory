@@ -1,7 +1,7 @@
 // The intro. The tagline shows once in the whole flow: here, or in the still when there is no animation.
 import process from 'node:process';
 import { C, MODE, bail, canvas, dot, enterScreen, fits, mix, paint, render, restore, setRaw, size, write } from './term.js';
-import { BIG, LITTLE, draw, fly } from './ghost.js';
+import { BIG, LITTLE, bandRows, draw, fly } from './ghost.js';
 
 export const TAGLINE = 'An AI assistant that works for you while you sleep';
 const PROMISE = 'Memory that stays right for years.';
@@ -36,15 +36,15 @@ export function frame(s, cols, rows, label = '') {
   // 256 colours: one step, since a blend would pass through the wrong colours
   const field = MODE === 'none' ? null : MODE === '256' ? (s < T.fade / 2 ? C.BLACK : C.FIELD) : mix(C.BLACK, C.FIELD, s / T.fade);
   const cv = canvas(cols, rows * 2, field);
-  const big = cols >= BAND_W + 2, perched = rows >= 19;
-  const top = Math.max(0, (rows - (perched ? 18 : 10)) >> 1);
-  const band = top + (perched ? 8 : 0), bx = Math.max(0, (cols - (big ? BAND_W : 21)) >> 1);
+  const P = bandRows(LITTLE), big = cols >= BAND_W + 2, perched = rows >= P + 11; // P rows for the perched ghost
+  const top = Math.max(0, (rows - (perched ? P + 10 : 10)) >> 1);
+  const band = top + (perched ? P : 0), bx = Math.max(0, (cols - (big ? BAND_W : 21)) >> 1);
   const g = rows >= 22 && cols >= 60 ? BIG : LITTLE;
   if (s >= T.pass && s < T.park) fly(cv, g, s - T.pass, { dur: T.park - T.pass, y: Math.max(1, rows - (g.h >> 1)) - 1 });
   if (perched && s >= T.park) {
-    const x = (cols - LITTLE.w) >> 1;
-    if (s < T.mark) fly(cv, LITTLE, s - T.park, { dur: T.mark - T.park, y: top * 2 + 1, stopAt: x });
-    else draw(cv, LITTLE, x, top * 2 + 1 + Math.round(Math.sin((s - T.park) * 5)), s);
+    const x = (cols - LITTLE.w) >> 1, y = top * 2 + ((P * 2 - LITTLE.h) >> 1);
+    if (s < T.mark) fly(cv, LITTLE, s - T.park, { dur: T.mark - T.park, y, stopAt: x });
+    else draw(cv, LITTLE, x, y + Math.round(Math.sin((s - T.park) * 5)), s);
   }
   const text = {};
   const put = (row, str, c, col = Math.max(0, (cols - str.length) >> 1)) => (text[row] ??= []).push([col, str, c]);

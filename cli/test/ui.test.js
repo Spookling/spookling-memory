@@ -5,8 +5,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSy
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FRAMES, MID, SMALL } from '../src/ghost-sprite.js';
+import { FRAMES, PALETTE, SMALL } from '../src/ghost-sprite.js';
 import { TAGLINE } from '../src/cutscene.js';
+import { LITTLE, wrap } from '../src/ghost.js';
 import {
   DEMO_LABEL, HOOKS_DIR, INSTALL_DIR, SAY, SERVER_DIR, TAGGERS, VERSION, codexLogin, hooksJson, install, mcpJson, status, taggerText,
 } from '../src/wizard.js';
@@ -22,20 +23,24 @@ test('the ghost says one plain line per step, and one for trouble', () => {
     assert.doesNotMatch(line, /[\u2014\u2013]/, `${k}: dash`);
     assert.doesNotMatch(line, /!!|!\s*$/, `${k}: exclamation`);
     assert.doesNotMatch(line, HYPE, `${k}: hype word`);
+    // beside the little ghost at 80 columns: at most two rows, none too wide, every word kept
+    const rows = wrap(line, 80 - LITTLE.w - 9);
+    assert.ok(rows.length <= 2 && rows.every((r) => r.length <= 80 - LITTLE.w - 9), `${k}: ${JSON.stringify(rows)}`);
+    assert.equal(rows.join(' '), line);
   }
 });
 
 test('sprite: every frame keeps the hat, eyes and smile; only the tail streaks move', () => {
-  for (const frames of [FRAMES, SMALL, MID]) {
+  for (const frames of [FRAMES, SMALL]) {
     assert.ok(frames.length >= 3);
     const [rest] = frames;
     for (const f of frames) {
       assert.equal(f.length, rest.length);
       f.forEach((row, y) => {
         assert.equal(row.length, rest[y].length);
-        assert.match(row, /^[0-4]+$/);
-        // 0, 1 and 2 never change; 3 and 4 swap where the streaks move
-        [...row].forEach((p, x) => { if ('012'.includes(rest[y][x]) || '012'.includes(p)) assert.equal(p, rest[y][x], `(${x}, ${y})`); });
+        [...row].forEach((p) => assert.ok(PALETTE[p] !== undefined, `colour ${p} is not in PALETTE`));
+        // only 3 and 4 swap, where the streaks move; every other colour stays put
+        [...row].forEach((p, x) => { if (!'34'.includes(rest[y][x]) || !'34'.includes(p)) assert.equal(p, rest[y][x], `(${x}, ${y})`); });
       });
     }
     assert.ok(frames.some((f) => f.join() !== rest.join()), 'the tail never moves');
