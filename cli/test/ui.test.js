@@ -9,7 +9,7 @@ import { FRAMES, PALETTE, SMALL } from '../src/ghost-sprite.js';
 import { TAGLINE } from '../src/cutscene.js';
 import { LITTLE, wrap } from '../src/ghost.js';
 import {
-  DEMO_LABEL, HOOKS_DIR, INSTALL_DIR, SAY, SERVER_DIR, TAGGERS, VERSION, codexLogin, hooksJson, install, mcpJson, status, taggerText,
+  CLAUDE_INSTALL, DEMO_LABEL, HOOKS_DIR, INSTALL_DIR, SAY, SERVER_DIR, TAGGERS, VERSION, codexLogin, hooksJson, install, mcpJson, status, taggerText,
 } from '../src/wizard.js';
 import { hookHandlers, mcpEntry, MCP_NAME } from '../src/hooks.js';
 
@@ -146,4 +146,18 @@ test('status names the wired tagger, and the key it needs', async () => {
   assert.match((await run({ model: 'anthropic/claude-haiku-4.5', via: 'anthropic' }))('keys'), /^! keys/);
   assert.equal(taggerText({ model: 'anthropic/claude-haiku-4.5', via: 'anthropic' }), 'anthropic/claude-haiku-4.5 through the Anthropic API');
   assert.equal((await run(null))('tagger'), '! tagger   unknown (the server is down, or older than this wizard)');
+});
+
+test('init offers to install claude when it is not on the PATH, and says so when it stays missing', () => {
+  const src = fileURLToPath(new URL('../src/wizard.js', import.meta.url));
+  const code = `const { claudeCli } = await import(${JSON.stringify(new URL(`file://${src}`).href)});
+    const v = await claudeCli({ scope: 'user', dry: false, problems: [] }, () => null);
+    process.stdout.write('\\nresult=' + v);`;
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', code],
+    { input: 'n\n', env: { ...process.env, NO_COLOR: '1' }, encoding: 'utf8', timeout: 15_000 });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /claude is not on your PATH\. Step 5 runs it to add the MCP entry\./);
+  assert.ok(r.stdout.includes(`install it with: ${CLAUDE_INSTALL}`));
+  assert.match(r.stdout, /Run that now\? \[y\/N\] n/);
+  assert.match(r.stdout, /result=null/);
 });
