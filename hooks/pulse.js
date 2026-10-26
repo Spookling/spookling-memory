@@ -18,6 +18,8 @@ exports.write = (p, fields) => {
   } catch {}
 };
 
+exports.where = where;
+
 exports.read = (project) => { try { return JSON.parse(readFileSync(where(project), 'utf8')); } catch { return null; } };
 
 // the server's x-spookling-pulse header; older servers send none

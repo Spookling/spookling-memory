@@ -4,11 +4,12 @@ import { spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { homedir, tmpdir } from 'node:os';
-import path, { join } from 'node:path';
+import path, { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addHooks, removeHooks, codexHandlers, codexHooksPath, CODEX_EVENTS } from '../src/hooks.js';
 import { hooksJson } from '../src/wizard.js';
 
+const plain = (m) => m.split('\n').map((l) => l.replace(/\x1b\[[0-9;]*m/g, '').trim());
 const hook = fileURLToPath(new URL('../../hooks/spookling-codex.cjs', import.meta.url));
 const handlers = codexHandlers('/opt/spookling-memory/hooks', path.posix);
 const run = (command, url, input, env = {}) => new Promise((resolve, reject) => {
@@ -52,17 +53,18 @@ test('Codex shell commands quote paths; Windows uses a quoted native path', () =
 test('real Codex command: health, recall, capture and compaction reuse the HTTP API with truthful ghost output', async () => {
   const dir = join(mkdtempSync(join(tmpdir(), 'spk-codex-')), (process.platform === 'win32' ? "spookling's space" : "spookling's $pace `literal`"), 'hooks');
   mkdirSync(dir, { recursive: true });
-  copyFileSync(hook, join(dir, 'spookling-codex.cjs'));
+  for (const f of ['spookling-codex.cjs', 'ghost.js', 'pulse.js']) copyFileSync(join(dirname(hook), f), join(dir, f));
   const hs = codexHandlers(dir), seen = [];
+  let pulseHeader = JSON.stringify({ facts: 1, rules: 1, events: 0, chats: 0, chars: 22, cap: 10000 });
   let code = 200, response;
   const srv = http.createServer((req, res) => {
     let body = '';
     req.on('data', (d) => { body += d; });
     req.on('end', () => {
       seen.push({ url: req.url, method: req.method, body: body && JSON.parse(body) });
-      res.writeHead(code, { 'content-type': 'application/json' });
+      res.writeHead(code, { 'content-type': 'application/json', ...(req.url.endsWith('user-prompt-submit') && pulseHeader ? { 'x-spookling-pulse': pulseHeader } : {}) });
       res.end(response ?? JSON.stringify(req.url === '/v1/stats'
-        ? { n_events: 0, folder: '/project/.memory', tagger: { model: 'stub' } }
+        ? { n_events: 12, n_facts: 4, n_rules: 1, folder: '/project/.memory', tagger: { model: 'stub' } }
         : req.url.endsWith('user-prompt-submit') ? { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'Remember metric units.' } } : {}));
     });
   });
@@ -72,17 +74,26 @@ test('real Codex command: health, recall, capture and compaction reuse the HTTP 
   try {
     const start = await run(hs.SessionStart.command, url, input('SessionStart'));
     assert.equal(start.code, 0, start.err);
-    assert.match(JSON.parse(start.out).systemMessage, /👻.*ready/);
+    const card = plain(JSON.parse(start.out).systemMessage);
+    assert.equal(card[0], 'spookling ready · local server connected');
+    for (const words of ['12 messages remembered', '4 facts in force · 1 standing rule', '/project/.memory']) {
+      assert.ok(card.some((l) => l.endsWith(words)), `${words} in ${JSON.stringify(card)}`);
+    }
+    assert.ok(card.length > 8, 'the ghost under the words');
     const recall = JSON.parse((await run(hs.UserPromptSubmit.command, url, input('UserPromptSubmit'))).out);
     assert.equal(recall.hookSpecificOutput.additionalContext, 'Remember metric units.');
-    assert.match(recall.systemMessage, /👻.*active/);
+    const said = plain(recall.systemMessage);
+    assert.equal(said[0], 'spookling active · 1 fact and 1 rule recalled', 'the counts the server sent');
+    assert.ok(said.some((l) => l.endsWith('≈22 of the 10k characters of room')));
     for (const ev of ['Stop', 'PreCompact']) assert.deepEqual(await run(hs[ev].command, url, input(ev)), { code: 0, out: '', err: '' });
     assert.deepEqual(seen.map((r) => [r.method, r.url]), [
       ['GET', '/v1/stats'], ['POST', '/v1/hook/user-prompt-submit'], ['POST', '/v1/hook/stop'], ['POST', '/v1/hook/pre-compact'],
     ]);
     assert.ok(seen.slice(1).every((r) => r.body.harness === 'codex' && r.body.session_id === 's'));
     response = '{}';
-    assert.match(JSON.parse((await run(hs.UserPromptSubmit.command, url, input('UserPromptSubmit'))).out).systemMessage, /active/);
+    pulseHeader = null;
+    const empty = JSON.parse((await run(hs.UserPromptSubmit.command, url, input('UserPromptSubmit'))).out).systemMessage;
+    assert.deepEqual(plain(empty), ['spookling active · recall ran: nothing on record for this prompt'], 'one line, no ghost');
     assert.match(JSON.parse((await run(hs.SessionStart.command, url, input('SessionStart'))).out).systemMessage, /unavailable/);
     for (const failure of [503, 404]) {
       code = failure;

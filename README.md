@@ -243,7 +243,7 @@ Behind each number: the result file, the judge logs, both judges' verdicts, the 
 
 **Claude Code and Codex. One command. Your data stays yours.**
 
-In Codex, the CLI shows `👻 Spookling memory` during hook activity, `ready` after a successful server health check, and `active` after successful recall (including a search with no matching facts). Failed health checks or recall show `unavailable` and do not block Codex. This is a hook indicator, not a permanent widget; [setup and removal](cli/README.md#codex) use the same local server and `.memory/` data.
+In Codex, the pixel ghost shows in the hook messages: `ready` after a successful server health check, with the messages, facts and standing rules the server holds beside it; `active` after successful recall, green, with what was recalled (a search with no matching facts is one `active` line, not a ghost). Failed health checks or recall show the `degraded` ghost and do not block Codex. This is a hook indicator, not a permanent widget; [setup and removal](cli/README.md#codex) use the same local server and `.memory/` data. In Claude Code the same ghost is the status line.
 
 Spookling Memory is out as `spookling` 0.1.2, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
 

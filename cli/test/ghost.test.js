@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, utimesSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
@@ -20,7 +21,8 @@ function project(pulse) {
   if (pulse) writeFileSync(join(d, '.memory', 'pulse.json'), JSON.stringify({ at: Date.now(), session: 's1', up: true, ...pulse }));
   return d;
 }
-const line = (d, { env = {}, args = [], session = 's1' } = {}) => spawnSync(process.execPath, [LINE, ...args], {
+// The tests up to the ghost look's are the older looks': pixel unless they name another. The default is the ghost look.
+const line = (d, { env = {}, args = [], session = 's1', look = 'pixel' } = {}) => spawnSync(process.execPath, [LINE, ...(look && !args.includes('--look') ? ['--look', look] : []), ...args], {
   input: JSON.stringify({ session_id: session, cwd: d, workspace: { current_dir: d, project_dir: d } }),
   env: { PATH: process.env.PATH, HOME: d, USERPROFILE: d, COLORTERM: 'truecolor', ...env }, encoding: 'utf8', timeout: 15000,
 }).stdout;
@@ -128,7 +130,8 @@ test('the ghost line takes under 50 ms beyond starting node', () => {
   const d = project({ event: 'prompt', facts: 3, rules: 1 });
   const ms = (f) => Math.min(...Array.from({ length: 7 }, () => { const t = process.hrtime.bigint(); f(); return Number(process.hrtime.bigint() - t) / 1e6; }));
   const bare = ms(() => spawnSync(process.execPath, ['-e', '0'])), ours = ms(() => line(d)), two = ms(() => line(d, { args: ['--look', 'two-line'] }));
-  for (const t of [ours, two]) assert.ok(t - bare < 50, `fastest of 7: ${t.toFixed(1)} ms, node -e 0 ${bare.toFixed(1)} ms`);
+  const ghost = ms(() => line(d, { look: null }));
+  for (const t of [ours, two, ghost]) assert.ok(t - bare < 50, `fastest of 7: ${t.toFixed(1)} ms, node -e 0 ${bare.toFixed(1)} ms`);
 });
 
 test('status reports the ghost; uninstall takes it out and puts your status line back', () => {
@@ -232,4 +235,71 @@ test('user scope: a project without .memory uses ~/.memory, for the hooks and th
     env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, NO_COLOR: '1' }, encoding: 'utf8',
   }).stdout;
   assert.equal(out, '👻 asleep, server off\n');
+});
+
+// the ghost look, the default: the pixel ghost of hooks/ghost.js, its state and the pulse's numbers beside it
+const pixelGhost = createRequire(import.meta.url)('../../hooks/ghost.js');
+const card = (pulse, { env = {}, session = 's1' } = {}) => {
+  const d = project(pulse);
+  return { d, rows: line(d, { look: null, env, session }) };
+};
+const words = (rows) => strip(rows).split('\n').map((l) => l.trim()).filter((l) => /[a-z~]/i.test(l))
+  .map((l) => l.replace(/^[▀▄ ]+(?=[a-z~/≈])/i, ''));
+
+test('the ghost look is the default: the state and the pulse\'s own numbers beside the ghost', () => {
+  const active = card({ event: 'prompt', facts: 3, rules: 1, chats: 2, chars: 4200, cap: 10000, at: Date.now() - 12_000 });
+  assert.deepEqual(words(active.rows).slice(0, 3), [
+    'spookling active · 3 facts · 1 rule · 2 past chats recalled', '≈4.2k of the 10k characters of room', 'last hook 12 s ago']);
+  assert.ok(words(active.rows)[3].endsWith('.memory'), 'which .memory it read');
+  assert.equal(strip(active.rows).split('\n').length, 9, 'eight rows of ghost and the newline');
+  assert.equal(words(card({ event: 'prompt', rules: 2 }).rows)[0], 'spookling active · nothing on record for this prompt');
+  assert.equal(words(card({ event: 'stop' }).rows)[0], 'spookling ready · saved');
+  assert.equal(words(card({ event: 'compact', rules: 2, lines: 40 }).rows)[0], 'spookling ready · kept your 2 rules and 38 lines');
+  assert.deepEqual(words(card({ event: 'prompt', up: false }).rows).slice(0, 2),
+    ['spookling degraded · server off', 'the local server did not answer the last hook']);
+  assert.deepEqual(words(card(null).rows).slice(0, 2), ['spookling waiting · remembering you', 'no hook has run in this session yet']);
+  assert.equal(words(card({ event: 'prompt', facts: 3 }, { session: 's2' }).rows)[0], 'spookling waiting · remembering you', 'not another session\'s news');
+});
+
+test('the ghost look: 24-bit colour where the terminal says so, the xterm 256 palette otherwise, one emoji line under NO_COLOR', () => {
+  const pulse = { event: 'prompt', facts: 3, rules: 1 };
+  assert.match(card(pulse).rows, /\x1b\[38;2;31;138;60/, 'a green outline in 24-bit');
+  const plain256 = card(pulse, { env: { COLORTERM: '' } }).rows;
+  assert.match(plain256, /\x1b\[48;5;\d+m/);
+  assert.doesNotMatch(plain256, /;2;\d+;\d+;\d+m/, 'no 24-bit codes for a terminal that has none');
+  assert.equal(card(pulse, { env: { NO_COLOR: '1' } }).rows, '👻 3 facts · 1 rule recalled\n');
+});
+
+test('the ghost look: plain cells, no half blocks, where the font has none', () => {
+  const cells = card({ event: 'prompt', facts: 1 }, { env: { SPOOKLING_GHOST: 'cells' } }).rows;
+  assert.doesNotMatch(cells, /[▀▄]/);
+  assert.equal(strip(cells).split('\n').length, 10, 'nine rows of the small ghost and the newline');
+  for (const s of pixelGhost.STATES) {
+    for (const row of pixelGhost.rows(s, { mode: 'cells', level: '256' })) assert.equal(strip(row).length, 20);
+    for (const row of pixelGhost.rows(s, { mode: 'half', level: '256' })) assert.equal(strip(row).length, 16);
+  }
+});
+
+test('Terminal.app with Monaco gets plain cells, read from its own settings', { skip: process.platform !== 'darwin' && 'plutil and defaults are macOS' }, () => {
+  const d = mkdtempSync(join(tmpdir(), 'spk-term-'));
+  const plist = join(d, 'com.apple.Terminal.plist');
+  const font = (name) => Buffer.from(`bplist00\x00\x00${name}\x00NSFont\x00`, 'latin1').toString('base64');
+  const write = (name) => writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Default Window Settings</key><string>Pro</string>
+<key>Window Settings</key><dict><key>Pro</key><dict><key>Font</key><data>${font(name)}</data></dict></dict></dict></plist>`);
+  write('Monaco');
+  const env = { TERM_PROGRAM: 'Apple_Terminal', SPOOKLING_TERMINAL_PLIST: plist };
+  assert.equal(pixelGhost.terminalFont(env), 'Monaco');
+  assert.equal(pixelGhost.mode(env), 'cells');
+  write('SFMono-Regular');
+  utimesSync(plist, new Date(), new Date(Date.now() + 5000)); // a changed file is read again
+  assert.equal(pixelGhost.mode(env), 'half');
+  assert.equal(pixelGhost.mode({ TERM_PROGRAM: 'iTerm.app' }), 'half');
+});
+
+test('active is the ready ghost turned green: the same face, no smile', () => {
+  assert.deepEqual(pixelGhost.grid('active', 'large'), pixelGhost.grid('ready', 'large'));
+  assert.deepEqual(pixelGhost.grid('active', 'small'), pixelGhost.grid('ready', 'small'));
+  assert.notEqual(pixelGhost.PALETTE.active.O, pixelGhost.PALETTE.ready.O);
 });
