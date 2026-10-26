@@ -122,7 +122,7 @@ test('status reports the ghost; uninstall takes it out and puts your status line
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /✓ ghost +in the status line \(\.claude[\\/]settings\.json\)/);
   assert.match(r.stdout, /and the ghost \(your own status line comes back\)/);
-  assert.match(r.stdout, /✓ ghost +not in the status line/);
+  assert.match(r.stdout, /✓ ghost +not shown/);
 });
 
 // a fake memory server: the reply body plus the pulse header the real one sends

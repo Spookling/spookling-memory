@@ -24,6 +24,10 @@ export const INSTALL_DIR = SHARE ? ROOT
   : WIN ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'spookling-memory', VERSION)
     : join(homedir(), '.spookling-memory', VERSION);
 export const SERVER_DIR = join(INSTALL_DIR, 'server'), HOOKS_DIR = join(INSTALL_DIR, 'hooks');
+const BAND = 'spookling', BAND_ID = 'spookling@spookling'; // the Claude Code plugin in claude-mod/, and its marketplace
+// the plugin's one folder for every version: Claude Code refuses a marketplace name from a second folder, and reads a
+// folder marketplace from the folder itself, so the next version's copy over it is the upgrade
+export const BAND_DIR = join(dirname(INSTALL_DIR), 'claude-mod');
 const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`, STATS = `${SERVER_URL}/v1/stats`;
 const STEPS = ['Checks', 'Harness', 'Tagger', 'Server', 'Wire harness', 'Smoke test', 'Done'];
 export const DEMO_LABEL = 'demo, nothing is written';
@@ -191,7 +195,7 @@ async function mergeFile(ctx, path, fn, { what, preview, same }) {
 }
 
 // stdin closed: `claude mcp` waits on an open stdin
-async function runCmd(ctx, cmd, args, { what, show }) {
+async function runCmd(ctx, cmd, args, { what, show, cwd }) {
   out(`\n   ${paint(C.GHOST, 'run')} ${show}\n`);
   if (!(await confirm('   Run it?'))) {
     ctx.skipped.push(what);
@@ -199,7 +203,7 @@ async function runCmd(ctx, cmd, args, { what, show }) {
     return null;
   }
   if (ctx.dry) { ctx.written.push([cmd, what]); info('demo: not run'); return { status: 0 }; }
-  const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 60_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: 60_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   for (const l of `${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n').filter(Boolean)) info(l);
   if (r.status === 0) { ctx.written.push([cmd, what]); ok('done'); }
   else warn(r.error?.code === 'ENOENT' ? `${cmd} is not on your PATH` : r.error ? `${cmd}: ${r.error.code ?? r.error.message}` : `${cmd} exited ${r.status}`);
@@ -252,8 +256,12 @@ async function userMcp(ctx, entry) {
 
 // a clone's .venv and caches stay behind: a .venv belongs to the folder it was made in
 const LEAVE = new Set(['.venv', '__pycache__', '.pytest_cache', '.memory', 'node_modules']);
-export function install(from, dir) {
+export function install(from, dir, band = join(dirname(dir), 'claude-mod')) {
   for (const d of ['server', 'hooks']) cpSync(join(from, d), join(dir, d), { recursive: true, filter: (p) => !LEAVE.has(basename(p)) });
+  rmSync(band, { recursive: true, force: true }); // a file an older version had must not outlive it
+  cpSync(join(from, 'claude-mod'), band, { recursive: true, filter: (p) => !LEAVE.has(basename(p)) });
+  mkdirSync(join(band, 'bin'), { recursive: true });
+  writeFileSync(join(band, 'bin', 'hooks.json'), JSON.stringify({ hooks: join(dir, 'hooks') }) + '\n'); // where probe.cjs finds ghost.js
 }
 
 // true when the server is in place, copied now or by an earlier init
@@ -488,16 +496,34 @@ async function steps(ctx, { anim, st }) {
     }
     if (!version('node')) warn('`node` is not on your PATH here. The hooks run `node`, so Claude Code needs it on its PATH.');
     const sp = settingsPath(project, scope);
-    const ghost = ctx.ghost && await confirm('   Show the ghost in your status line?');
-    let line = '';
+    // the ghost: the band above the prompt, a Claude Code plugin that blinks and turns green when memory recalls; the
+    // status line where this Claude Code cannot install plugins
+    const want = ctx.ghost && await confirm('   Show the ghost above your prompt?');
+    let band = false;
+    if (want && !SHARE) {
+      const args = ['plugin', 'install', BAND, '--marketplace', ctx.dry ? join(ROOT, 'claude-mod') : BAND_DIR, '--scope', scope, '--json'];
+      const r = await runCmd(ctx, 'claude', args, { what: 'the ghost above the prompt (a Claude Code plugin)', show: `claude ${args.map(shq).join(' ')}`, cwd: project });
+      band = r?.status === 0;
+      if (r && !band) {
+        info('This Claude Code could not install the plugin, so the ghost goes in the status line instead.');
+        if (/"name_taken"/.test(r.stdout ?? '')) info('A "spookling" marketplace from another folder is in the way: claude plugin marketplace remove spookling, then init again.');
+      }
+    }
+    const ghost = want && !band;
+    let line = '', ours = false;
+    try { ours = band && isOurStatus(readJson(sp).statusLine); } catch {}
     try { line = ghost ? addStatusLine(ctx.dry ? {} : readJson(sp), HOOKS_DIR).statusLine : ''; } catch {} // mergeFile reports it
-    await mergeFile(ctx, sp, (s) => (ghost ? addStatusLine(addHooks(s, handlers), HOOKS_DIR) : addHooks(s, handlers)), {
+    const wire = (s) => (ghost ? addStatusLine(addHooks(s, handlers), HOOKS_DIR) : band ? removeStatusLine(addHooks(s, handlers)) : addHooks(s, handlers));
+    await mergeFile(ctx, sp, wire, {
       what: `hooks: PreCompact, UserPromptSubmit, Stop${ghost ? '; the ghost in the status line' : ''}`,
       preview: `${hooksJson(handlers)}${line ? `\n"statusLine": ${JSON.stringify(line, null, 2)}` : ''}\n  merged in; nothing else in the file changes`
-        + (line && / --then /.test(line.command) ? '\n  your status line stays first; uninstall puts it back as it was' : ''),
+        + (line && / --then /.test(line.command) ? '\n  your status line stays first; uninstall puts it back as it was' : '')
+        + (ours ? '\n  the status line ghost of an earlier install comes out: the ghost is above the prompt now' : ''),
       same: `${rel(ctx, sp)} already has the hooks${ghost ? ' and the ghost' : ''}`,
     });
-    if (!ghost) info('No ghost in the status line. npx spookling init again adds it.');
+    info(band ? 'The ghost sits above the prompt from the next Claude Code session: it blinks, and turns green when memory recalls.'
+      : ghost ? 'The ghost sits in your status line from the next Claude Code session.'
+        : 'No ghost. npx spookling init again adds it.');
     const entry = mcpEntry(SERVER_DIR, SERVER_URL);
     if (scope === 'project') {
       await mergeFile(ctx, mcpPath(project), (c) => addMcp(c, entry), {
@@ -571,8 +597,10 @@ export async function status(project = process.cwd(), get = stats) {
   const events = [...got];
   line('hooks', where.events.join('; ') || 'none in .claude/settings.json or ~/.claude/settings.json', events.length === 3);
   const ghostIn = ['project', 'user'].filter((sc) => { try { return isOurStatus(readJson(settingsPath(project, sc)).statusLine); } catch { return false; } });
-  line('ghost', ghostIn.length ? `in the status line (${ghostIn.map((sc) => rel(ctx, settingsPath(project, sc))).join(', ')})`
-    : 'not in the status line (init asks; --no-ghost skips it)', true);
+  const bandIn = ['project', 'user'].filter((sc) => { try { return readJson(settingsPath(project, sc)).enabledPlugins?.[BAND_ID] === true; } catch { return false; } });
+  line('ghost', bandIn.length ? `above the prompt (the ${BAND_ID} plugin, ${bandIn.map((sc) => rel(ctx, settingsPath(project, sc))).join(', ')})`
+    : ghostIn.length ? `in the status line (${ghostIn.map((sc) => rel(ctx, settingsPath(project, sc))).join(', ')})`
+      : 'not shown (--no-ghost; init again adds it)', true);
   line('mcp', where.mcp.join('; ') || 'no entry in .mcp.json or ~/.claude.json', where.mcp.length > 0);
   const missing = Object.values(HOOK_FILES).filter((f) => !existsSync(join(HOOKS_DIR, f)));
   if (events.length && missing.length) line('scripts', `missing in ${HOOKS_DIR}: ${missing.join(', ')}`, false);
@@ -619,6 +647,15 @@ export async function uninstall(project = process.cwd(), { scope = 'project', ha
     preview: `drop only the Spookling hooks${harness === 'codex' ? '' : ' and the ghost (your own status line comes back)'}; everything else stays`,
     same: `no Spookling hooks in ${rel(ctx, sp)}`,
   });
+  if (harness !== 'codex') {
+    let has = false;
+    try { has = readJson(sp).enabledPlugins?.[BAND_ID] === true; } catch {}
+    if (has) {
+      const args = ['plugin', 'uninstall', BAND_ID, '--scope', scope];
+      const r = await runCmd(ctx, 'claude', args, { what: 'removed the ghost plugin', show: `claude ${args.join(' ')}`, cwd: project });
+      if (r && r.status !== 0) ctx.problems.push(`run claude plugin uninstall ${BAND_ID} --scope ${scope} yourself`);
+    }
+  }
   if (harness === 'codex') info('Codex hooks removed; memory and unrelated configuration stay.');
   else if (scope === 'project') {
     await mergeFile(ctx, mcpPath(project), removeMcp, {
