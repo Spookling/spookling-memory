@@ -241,6 +241,17 @@ test('the ghost: plain cells, no half blocks, where the font has none', () => {
   }
 });
 
+test('no ghost row starts with a space: Claude Code strips leading spaces, which squared off the head', () => {
+  for (const s of pixelGhost.STATES) {
+    for (const mode of ['cells', 'half']) {
+      const rows = pixelGhost.rows(s, { mode, level: '256' });
+      for (const row of rows) assert.doesNotMatch(row, /^\s/, `${s} ${mode}: ${JSON.stringify(row.slice(0, 12))}`);
+      const trimmed = rows.map((row) => strip(row.trimStart())); // what Claude Code draws
+      assert.deepEqual(trimmed, rows.map(strip), `${s} ${mode}: every pixel keeps its column`);
+    }
+  }
+});
+
 test('Terminal.app with Monaco gets plain cells, read from its own settings', { skip: process.platform !== 'darwin' && 'plutil and defaults are macOS' }, () => {
   const d = mkdtempSync(join(tmpdir(), 'spk-term-'));
   const plist = join(d, 'com.apple.Terminal.plist');
