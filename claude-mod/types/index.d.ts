@@ -30,7 +30,8 @@ export type Probe = {
   stats: { n_events: number; n_facts: number; n_rules: number; tagging?: { error: string | null } } | null
 }
 
-export type Tally = { recalls: number; chars: number }
+/** This session's recalls that brought anything along, their characters, and the last one: its size and what it held. */
+export type Tally = { recalls: number; chars: number; last: { chars: number; what: string } | null }
 
 declare module 'claude-code' {
   interface PluginState {

@@ -32,7 +32,7 @@ export const BAND_DIR = join(dirname(INSTALL_DIR), 'claude-mod');
 const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`;
 const STEPS = ['Checks', 'Harness', 'Tagger', 'Server', 'Wire harness', 'Smoke test', 'Done'];
 export const DEMO_LABEL = 'demo, nothing is written';
-const IGNORE = ['keys.env', 'server.pid', 'server.log', 'server.json', 'server.starting', 'spookling.json', 'cache.sqlite*', 'vectors.sqlite*', 'pulse.json*'];
+const IGNORE = ['keys.env', 'server.pid', 'server.log', 'server.json', 'server.starting', 'spookling.json', 'cache.sqlite*', 'vectors.sqlite*', 'pulse.json*', 'usage.jsonl'];
 
 // at most 52 characters each, so the bubble fits beside the ghost at 80 columns (tested)
 export const SAY = {

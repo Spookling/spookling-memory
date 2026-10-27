@@ -164,6 +164,33 @@ test('UserPromptSubmit: the pulse gets the counts, and the transcript a line onl
   try { assert.equal((await hook('user-prompt-submit.js', s.url, project(), { prompt: 'hi' })).out, JSON.stringify(ctx)); } finally { await s.close(); }
 });
 
+test('usage: each prompt adds a line to .memory/usage.jsonl, and npx spookling usage lists them in ≈tokens', async () => {
+  const ctx = { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: '<recalled-data>…</recalled-data>' } };
+  const d = project();
+  let s = await serve(ctx, { facts: 3, rules: 1, events: 0, chats: 0, chars: 31, cap: 10000 });
+  try { await hook('user-prompt-submit.js', s.url, d, { prompt: 'what   car\ndo I drive?' }); } finally { await s.close(); }
+  s = await serve(ctx, { facts: 0, rules: 2, events: 0, chats: 0, chars: 400, cap: 10000 });
+  try { await hook('user-prompt-submit.js', s.url, d, { prompt: 'hi' }); } finally { await s.close(); }
+  await hook('user-prompt-submit.js', 'http://127.0.0.1:9', d, { prompt: 'still there?' });
+  await hook('stop.js', 'http://127.0.0.1:9', d, {}); // a save is not a recall: no line
+  const log = readFileSync(join(d, '.memory', 'usage.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(log.map(({ at, ...u }) => (assert.ok(at > 0), u)), [
+    { session: 's1', harness: 'claude', prompt: 'what car do I drive?', event: 'prompt', up: true, facts: 3, rules: 1, events: 0, chats: 0, chars: 31, cap: 10000 },
+    { session: 's1', harness: 'claude', prompt: 'hi', event: 'prompt', up: true, facts: 0, rules: 2, events: 0, chats: 0, chars: 400, cap: 10000 },
+    { session: 's1', harness: 'claude', prompt: 'still there?', event: 'prompt', up: false },
+  ]);
+  const bin = fileURLToPath(new URL('../../bin/spookling-memory.js', import.meta.url));
+  const r = spawnSync(process.execPath, [bin, 'usage'], { cwd: d, env: { PATH: process.env.PATH, HOME: d, USERPROFILE: d, NO_COLOR: '1' }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const o = strip(r.stdout);
+  assert.match(o, /claude\s+≈8\s+3 facts and 1 rule\s+"what car do I drive\?"/);
+  assert.match(o, /claude\s+≈100\s+2 rules\s+"hi"/);
+  assert.match(o, /claude\s+—\s+the memory server did not answer\s+"still there\?"/);
+  assert.match(o, /3 prompts since .* · 2 brought memory along · ≈108 tokens in all/);
+  const none = spawnSync(process.execPath, [bin, 'usage'], { cwd: project(), env: { PATH: process.env.PATH, HOME: d, USERPROFILE: d, NO_COLOR: '1' }, encoding: 'utf8' });
+  assert.match(none.stdout, /No recalls logged here yet/);
+});
+
 test('PreCompact and Stop: a pulse each, nothing printed; a dead server is "asleep"; no .memory, no file', async () => {
   const s = await serve({}, { kept: 3, rules: 2, lines: 40 });
   try {

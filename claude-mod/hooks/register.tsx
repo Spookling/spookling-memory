@@ -16,7 +16,7 @@ const ghost = atom(
 const blinkShut = atom({ plugin: 'spookling', key: 'blinkShut' } as const, false)
 const render = atom({ plugin: 'spookling', key: 'render' } as const, 'half' as Render)
 const probe = atom({ plugin: 'spookling', key: 'probe' } as const, null as Probe | null, { shape: 'probe-1' })
-const tally = atom({ plugin: 'spookling', key: 'tally' } as const, { recalls: 0, chars: 0 } as Tally, { shape: 'tally-1' })
+const tally = atom({ plugin: 'spookling', key: 'tally' } as const, { recalls: 0, chars: 0, last: null } as Tally, { shape: 'tally-2' })
 
 const STATE_COLOR: Record<GhostState, string> = {
   ready: 'claude',
@@ -29,6 +29,8 @@ const STATE_COLOR: Record<GhostState, string> = {
 const n = (k: number, word: string) => `${k} ${word}${k === 1 ? '' : 's'}`
 // 298, 4.2k, 10k: a count of characters as the ghost says it (hooks/ghost.js kilo)
 const kilo = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k` : String(v))
+// tokens as `npx spookling usage` says them: characters ÷ 4, the usual rough rate for English and code
+const tokens = (chars: number) => kilo(Math.round(chars / 4))
 
 /** "3 facts, 1 rule and 2 past chats": what reached Claude, biggest news first (hooks/pulse.js said). */
 function said(p: Pulse): string {
@@ -163,9 +165,11 @@ export const register: Register = on => {
     } else if (!p.up) {
       await setGhost($, 'degraded', 'the memory server did not answer this prompt')
     } else if (p.facts || p.events || p.chats) {
-      await update($, tally, t => ({ recalls: t.recalls + 1, chars: t.chars + (p.chars ?? 0) }))
+      await update($, tally, t => ({ recalls: t.recalls + 1, chars: t.chars + (p.chars ?? 0), last: { chars: p.chars ?? 0, what: said(p) } }))
       await setGhost($, 'active', `${said(p)} recalled (≈${kilo(p.chars ?? 0)} chars), delivered with the prompt`)
     } else {
+      // standing rules alone still went in with the prompt: the last recall, at their size
+      if (p.chars) await update($, tally, t => ({ recalls: t.recalls + 1, chars: t.chars + (p.chars ?? 0), last: { chars: p.chars ?? 0, what: said(p) } }))
       await setGhost($, 'active', p.rules ? `${n(p.rules, 'standing rule')}; nothing else on record for this prompt` : 'nothing on record for this prompt')
     }
     return entered
@@ -211,7 +215,8 @@ export const register: Register = on => {
     )
     const held = s ? `${n(s.n_events, 'message')} remembered · ${n(s.n_facts, 'fact')} in force · ${n(s.n_rules, 'standing rule')}` : MEANING[g.state]
     const tagging = s?.tagging?.error ? ` · saving, not tagging: ${s.tagging.error.slice(0, 60)}` : ''
-    const work = `${n(t.recalls, 'recall')} this session ≈${kilo(t.chars)} chars${tagging}`
+    // the last recall in one line; npx spookling usage has them all
+    const work = `${t.last ? `last recall ≈${tokens(t.last.chars)} tokens: ${t.last.what} · ${n(t.recalls, 'recall')} this session ≈${tokens(t.chars)} tokens` : 'no recall yet this session'}${tagging}`
     if (e.props.maxRows < room) {
       return (
         <Box flexDirection="row" gap={1}>
@@ -232,7 +237,7 @@ export const register: Register = on => {
           </Text>
           <Text wrap="truncate">{work}</Text>
           <Text dimColor wrap="truncate">
-            {found?.shown ? `memory in ${found.shown} · npx spookling status` : 'npx spookling init sets memory up here'}
+            {found?.shown ? `memory in ${found.shown} · npx spookling usage` : 'npx spookling init sets memory up here'}
           </Text>
         </Box>
       </Box>

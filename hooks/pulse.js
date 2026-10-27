@@ -1,8 +1,8 @@
 // .memory/pulse.json: what the hooks last did, for the status line. The --memory folder; else the project's .memory,
 // else ~/.memory, as status finds it.
-const { existsSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
+const { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
 const { homedir } = require('node:os');
-const { join } = require('node:path');
+const { dirname, join } = require('node:path');
 
 // --memory <folder>, as init wires every hook and the status line, wins
 const given = () => { const i = process.argv.indexOf('--memory'); return i < 0 ? undefined : process.argv[i + 1]; };
@@ -22,6 +22,17 @@ exports.write = (p, fields) => {
 };
 
 exports.where = where;
+
+// .memory/usage.jsonl: a line per prompt the recall hook ran for, appended, for `npx spookling usage`: when, which
+// session and harness, the prompt's start, and what reached the model (the server's own counts and size, or up: false)
+exports.log = (p, fields, harness = 'claude') => {
+  try {
+    const f = where(process.env.CLAUDE_PROJECT_DIR || p.cwd);
+    if (!f) return;
+    const prompt = String(p.prompt || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+    appendFileSync(join(dirname(f), 'usage.jsonl'), `${JSON.stringify({ at: Date.now(), session: p.session_id, harness, prompt, ...fields })}\n`);
+  } catch {}
+};
 
 exports.read = (project) => { try { return JSON.parse(readFileSync(where(project), 'utf8')); } catch { return null; } };
 

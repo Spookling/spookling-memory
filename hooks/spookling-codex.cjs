@@ -14,6 +14,8 @@ const done = () => process.exit(0);
 let printed = false; // the deadline and a late reply must not both print
 const emit = (value) => { if (printed) return; printed = true; process.stdout.write(JSON.stringify(value), done); };
 let visible = false;
+let asked = null; // the UserPromptSubmit input, for its line in .memory/usage.jsonl
+const record = (fields) => { if (asked) pulse.log(asked, { event: 'prompt', ...fields }, 'codex'); asked = null; };
 // What Codex shows: its hook messages render ANSI colour and keep every line, so the ghost is drawn under a first line
 // of words (Codex puts "↳ Hook · " before that one). Only the server's own answers fill it.
 const GREY = '#8a8a8a';
@@ -23,7 +25,7 @@ const said = (state, title, details) => {
     : `\x1b[1m${ghost.paint(`spookling ${state}`, level, ghost.PALETTE[state].O)}\x1b[0m${ghost.paint(` · ${title}`, level, GREY)}`;
   return details ? [head, ...ghost.card(state, details.map((t) => [[t, GREY]]))].join('\n') : head;
 };
-const unavailable = () => visible
+const unavailable = () => (record({ up: false }), visible)
   ? emit({ systemMessage: said('degraded', 'memory unavailable', ['the local server did not answer', 'check it with: npx spookling status']) })
   : done();
 process.stdin.on('data', (c) => chunks.push(c));
@@ -36,6 +38,7 @@ process.stdin.on('end', async () => {
   if (!start && !Object.hasOwn(events, p.hook_event_name)) return done();
   if (p.hook_event_name === 'UserPromptSubmit' && (typeof p.prompt !== 'string' || !p.prompt.trim())) return done();
   visible = start || p.hook_event_name === 'UserPromptSubmit';
+  if (p.hook_event_name === 'UserPromptSubmit') asked = p;
   const timeout = p.hook_event_name === 'PreCompact' ? 60000 : 15000;
   // A wall-clock deadline also covers a connected server that never finishes its response.
   const deadline = setTimeout(unavailable, timeout + (start ? 16000 : 11000));
@@ -60,6 +63,7 @@ process.stdin.on('end', async () => {
   const context = reply.hookSpecificOutput;
   if (Object.keys(reply).length && !(context?.hookEventName === 'UserPromptSubmit' && typeof context.additionalContext === 'string')) return unavailable();
   const c = pulse.counts(res.headers['x-spookling-pulse']);
+  record({ up: true, ...c });
   const room = c.cap ? `≈${ghost.kilo(c.chars || 0)} of the ${ghost.kilo(c.cap)} characters of room` : null;
   emit({ ...reply, systemMessage: c.facts || c.events || c.chats
     ? said('active', `${pulse.said(c)} recalled`, [room].filter(Boolean))

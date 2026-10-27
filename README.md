@@ -263,6 +263,7 @@ npx spookling init                 # this project, step by step
 npx spookling init --scope user    # every project you open in Claude Code
 npx spookling demo                 # the whole install, answered for you; writes nothing
 npx spookling status               # is the server up, what is wired, which tagger
+npx spookling usage                # each prompt's recall: when, ≈tokens, what reached the model (--all for every one)
 npx spookling uninstall            # remove the hooks and the MCP entry; keep .memory/
 ```
 
@@ -323,6 +324,8 @@ In Claude Code the ghost sits just above the prompt (in by default; `--no-ghost`
 - **active** (green): the recall reached Claude, for example `1 fact, 2 rules and 2 past chats recalled (≈5.6k chars), delivered with the prompt`.
 - **ready, idle** again once the turn ends, saying what the last prompt got.
 - **degraded** (amber, with a sweat drop): the server did not answer, or the hook did not report for this prompt.
+
+Under the counts, one line says what the last recall brought along and its size: `last recall ≈1.4k tokens: 1 fact, 2 rules and 2 past chats · 3 recalls this session ≈2.1k tokens` (tokens are characters ÷ 4, a rough rate). `npx spookling usage` lists every recall, Claude Code's and Codex's, from `.memory/usage.jsonl`.
 
 When a prompt recalls something, one quiet line also lands under it: `👻 3 facts and 1 rule from memory`. A Claude Code that cannot install plugins gets the same ghost in its status line instead, without the blink (a status line is a command Claude Code reruns, not a timer); your own status line stays first there, and `uninstall` puts it back exactly.
 

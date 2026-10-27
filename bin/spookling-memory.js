@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import process from 'node:process';
 import { frames } from '../cli/src/cutscene.js';
+import { usage } from '../cli/src/usage.js';
 import { init, status, uninstall } from '../cli/src/wizard.js';
 
 const HELP = `Spookling Memory
@@ -12,6 +13,7 @@ const HELP = `Spookling Memory
   npx spookling init --yes  the same install with no questions: the harnesses and the tagger you already have
   npx spookling demo        the whole install as you would see it, answered for you; writes nothing
   npx spookling status      is the server up, which harness is wired (project and user files)
+  npx spookling usage       each prompt's recall: when, about how many tokens, what reached the model (--all: not just the last 20)
   npx spookling uninstall   remove the hooks and MCP entry, keep .memory/
 
   --scope project   init/uninstall: project harness files (.codex/hooks.json for Codex), the default
@@ -49,6 +51,7 @@ const folder = scope === 'user' ? home : cwd; // user scope keeps the memory in 
 if (cmd === 'init') process.exitCode = await init({ anim, scope, project: folder, ghost, yes });
 else if (cmd === 'demo') process.exitCode = fi >= 0 ? (frames(Math.max(1, Number(args[fi + 1]) || 3)), 0) : await init({ anim, scope, dry: true, fast, ghost });
 else if (cmd === 'status') process.exitCode = await status(existsSync(join(cwd, '.memory')) || !existsSync(join(home, '.memory')) ? cwd : home);
+else if (cmd === 'usage') process.exitCode = usage(existsSync(join(cwd, '.memory')) || !existsSync(join(home, '.memory')) ? cwd : home, { all: args.includes('--all') });
 else if (cmd === 'uninstall') process.exitCode = await uninstall(folder, { scope, harness });
 else {
   process.stdout.write(HELP);

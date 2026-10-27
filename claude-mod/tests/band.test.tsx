@@ -65,7 +65,8 @@ test('ready once the memory server answers, with its own counts', async ($, on) 
   const b = await band($)
   expect(b.label).toBe('spookling ready · server connected · 20 messages remembered')
   expect(b.texts).toContain('20 messages remembered · 1 fact in force · 2 standing rules')
-  expect(b.texts).toContain('memory in ~/repo/.memory · npx spookling status')
+  expect(b.texts).toContain('memory in ~/repo/.memory · npx spookling usage')
+  expect(b.texts).toContain('no recall yet this session')
 })
 
 test('degraded when the server does not answer, or there is no memory here', async ($, on) => {
@@ -80,7 +81,8 @@ test('searching while the hook recalls, then active and green with what it recal
   await $.prompt.submit(PROMPT)
   const b = await band($)
   expect(b.label).toBe('spookling active · 1 fact, 2 rules and 2 past chats recalled (≈5.6k chars), delivered with the prompt')
-  expect(b.texts).toContain('1 recall this session ≈5.6k chars')
+  // the last recall in one line beside the ghost, in tokens (characters ÷ 4)
+  expect(b.texts).toContain('last recall ≈1.4k tokens: 1 fact, 2 rules and 2 past chats · 1 recall this session ≈1.4k tokens')
 })
 
 test('a prompt the hook did not report for reads degraded, not active', async ($, on) => {
@@ -95,7 +97,9 @@ test('back to ready when the turn ends, saying what the last prompt got', async 
   await start($)
   await $.prompt.submit(PROMPT)
   await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
-  expect((await band($)).label).toBe('spookling ready · idle · last prompt: 2 standing rules; nothing else on record for this prompt')
+  const b = await band($)
+  expect(b.label).toBe('spookling ready · idle · last prompt: 2 standing rules; nothing else on record for this prompt')
+  expect(b.texts).toContain('last recall ≈75 tokens: 2 rules · 1 recall this session ≈75 tokens') // the rules went in with the prompt
 })
 
 test('awake, it blinks: eyes shut for a moment, then open again', async ($, on) => {
