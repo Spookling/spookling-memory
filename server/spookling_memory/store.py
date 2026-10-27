@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
+import time
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -15,12 +17,14 @@ from .reset import now
 from .core import SpooklingMemory, models, vectors
 from .core import compact as keep
 from .core.base import Session, Turn
-from .core.sleep import tx_of
+from .core.sleep import _id, full, tx_of
 from .subscription import backend
 
 LOG, JUDGEMENTS, VECTORS, CACHE = "log.jsonl", "judgements.jsonl", "vectors.sqlite", "cache.sqlite"
 WINDOWS = os.name == "nt"
 PART = re.compile(r"#(\d+)(?:-(\d+))?")  # a tail part: "#<from>" or "#<from>-<to>"
+RETRY = 300  # seconds after a failed tagging call before the next try; the turns wait in the LOG meanwhile
+LOG_ = logging.getLogger("uvicorn.error")  # uvicorn's, so it lands in .memory/server.log
 
 
 class Busy(RuntimeError):
@@ -57,7 +61,24 @@ def load(mem, events: list[dict], decisions: list[dict]) -> None:
     for d in decisions:
         mem.record(d)
         replay(mem, d)
-    mem.tag_cursor = mem.log.last_seq  # every stored turn was tagged before it was stored
+    # up to where the turns are tagged: the last "tagged" record; a folder from before those records has every
+    # stored turn tagged, since turns were written only once tagged
+    marks = [d for d in decisions if d["step"] == "tagged"]
+    mem.tag_cursor = marks[-1]["upto"] if marks else mem.log.last_seq
+
+
+def tagged(mem) -> dict:
+    """The record that turns up to mem.tag_cursor are tagged; written before untagged turns can reach the LOG file."""
+    upto = mem.tag_cursor
+    src = next((e.hash for e in reversed(mem.log.events) if e.seq <= upto), "")
+    return {"id": _id("tagged", upto, src), "step": "tagged", "upto": upto, "source": src, "created": now()}
+
+
+def unsettled(mem) -> int:
+    """Turns not tagged yet, plus flagged items not ruled on: what a tagging pass has left to do."""
+    ruled = {(d["seq"], d["idx"]) for d in mem.log.decisions if d["step"] == "resolve"}
+    flagged = sum(d["step"] == "triage" and d["route"] == "slow" and (d["seq"], d["idx"]) not in ruled for d in mem.log.decisions)
+    return sum(e.seq > mem.tag_cursor for e in mem.log.events) + flagged
 
 
 def replay(mem, d: dict) -> None:
@@ -127,6 +148,8 @@ class Store:
             raise RuntimeError(f"{self.folder} is open in another process (one server per memory folder)") from None
         self.adapter, self.lock, self._post, self.mem = adapter, threading.RLock(), None, None
         self.wait, self.ready, self.failed = wait, threading.Event(), None
+        self.tag_error, self.retry_at = None, 0.0  # the last tagging failure, and when to try again (monotonic)
+        self.background = background
         vectors.CACHE = self.folder / VECTORS  # ponytail: process-wide, fine for one folder per server process
         models.CACHE_PATH = self.folder / CACHE  # likewise
         if background:
@@ -143,8 +166,7 @@ class Store:
                 self.mem = SpooklingMemory(**self.adapter)
                 load(self.mem, events, decisions)
                 self.written = (len(events), len(decisions))
-                self.mem.settle()
-                self._flush()  # a full sleep may judge pending items: those judgements are records too
+                self.mem.settle(tag=False)  # recall works at once; turns left untagged are tagged just below
         except BaseException as e:
             if self.mem is not None:  # Windows cannot delete its open temp SQLite file
                 self.mem.close()
@@ -152,6 +174,9 @@ class Store:
             self.failed = e
         finally:
             self.ready.set()
+        if self.background and self.failed is None:
+            with self.lock:
+                self._tag()
 
     @contextmanager
     def _busy(self, wait: float | None = None):
@@ -174,6 +199,45 @@ class Store:
         append(self.folder / LOG, log)  # the LOG first: judgements point into it
         append(self.folder / JUDGEMENTS, dec)
         self.written = (len(self.mem.log.events), len(self.mem.log.decisions))
+
+    def _tag(self) -> None:
+        """Tag what is waiting, settle flagged items, rebuild the views. A failure (no key, no credit, codex logged
+        out) never loses a turn: the turns are already in the LOG file, the views are rebuilt without a model, the
+        reason is kept for stats, and the next try comes after RETRY seconds."""
+        m = self.mem
+        if not unsettled(m) or time.monotonic() < self.retry_at:
+            return
+        n = len(m.log.decisions)
+        try:
+            full(m)
+        except (Exception, SystemExit) as e:  # core.models exits when a key is missing
+            self.tag_error, self.retry_at = str(e) or type(e).__name__, time.monotonic() + RETRY
+            LOG_.warning("tagging failed, will retry in %d s; the turns are saved untagged: %s", RETRY, self.tag_error)
+            if len(m.log.decisions) != n:  # judgements made before the failure: back to what the files hold
+                self._reload()
+            else:
+                m.full_seq = -1  # the failed pass may have stopped before the views: rebuild them
+                m.settle(tag=False)
+            return
+        self.tag_error = None
+        mark = tagged(m)
+        if mark["id"] not in m.decision_by_id:
+            m.record(mark)
+        self._flush()
+
+    def _reload(self) -> None:
+        """A fresh adapter from the two files, views built without a model."""
+        old, self.mem = self.mem, SpooklingMemory(**self.adapter)
+        old.close()
+        events, decisions = read_jsonl(self.folder / LOG), read_jsonl(self.folder / JUDGEMENTS)
+        load(self.mem, events, decisions)
+        self.written = (len(events), len(decisions))
+        self.mem.settle(tag=False)
+
+    def tagging(self) -> dict:
+        """What waits to be tagged and why, for stats and the hooks' pulse."""
+        wait = max(0, round(self.retry_at - time.monotonic())) if self.tag_error else 0
+        return {"waiting": unsettled(self.mem), "error": self.tag_error, "retry_in": wait}
 
     def records(self) -> tuple[list[dict], list[dict]]:
         return [asdict(e) for e in self.mem.log.events], list(self.mem.log.decisions)
@@ -205,17 +269,18 @@ class Store:
             if not R.admits(m.log.decisions, ts):
                 raise ValueError(f"session {session_id} at {ts} predates the reset at {R.latest(m.log.decisions)['at']}")
             n = len(m.log.events)
-            m.ingest(Session(session_id, agent, ts, [Turn(t["role"], t["content"]) for t in turns]))
-            # only now, with the session tagged, is it written: a failed tagging call leaves the files as they were
-            self._flush()
+            if not any(d["step"] == "tagged" for d in m.log.decisions):
+                m.record(tagged(m))  # before the first untagged turn reaches the file
+            m.ingest(Session(session_id, agent, ts, [Turn(t["role"], t["content"]) for t in turns]), tag=False)
+            self._flush()  # the turns are on disk before any model is called
+            self._tag()
             return len(m.log.events) - n
 
     def retrieve(self, question: str, ts: str | None = None) -> dict:
         """After a reset, a question about now is answered from the after-reset view."""
         ts = ts or now()
         with self._busy(self.wait):
-            self.mem.settle()
-            self._flush()
+            self.mem.settle(tag=False)  # recall never waits on a model: Stop already tagged, or tagging is failing
             r = R.latest(self.mem.log.decisions)
             if r and not R.asks_before(self.mem, question, ts, r):
                 return self._view(r).retrieve(question, "user", ts)
@@ -230,7 +295,7 @@ class Store:
                 self._post[1].close()
             post = SpooklingMemory(**self.adapter)
             load(post, *R.after(*self.records(), r))
-            post.settle()  # the main memory settled first, so no model is called here
+            post.settle(tag=False)  # a view of records already judged; what waits is tagged in the main memory
             self._post = (key, post)
         return self._post[1]
 
@@ -266,7 +331,8 @@ class Store:
             if self.mem.log.events or self.mem.log.decisions:
                 raise ValueError("this memory is not empty: import into an empty folder")
             load(self.mem, events, decisions)
-            self.mem.settle()
+            self.mem.settle(tag=False)
+            self._tag()
             self._flush()
             return {"events": len(self.mem.log.events), "judgements": len(self.mem.log.decisions)}
 
@@ -280,6 +346,7 @@ class Store:
         with self._busy(self.wait):
             r = R.latest(self.mem.log.decisions)
             return self.mem.stats() | {"folder": str(self.folder), "before_reset": len(R.before_reset(self.mem)),
+                                       "tagging": self.tagging(),
                                        "reset": {k: r[k] for k in ("id", "at", "note", "upto")} if r else None,
                                        "tagger": {"model": self.mem.model, "via": backend(self.mem.model),
                                                   "decider": self.mem.decider and self.mem.decider.model}}

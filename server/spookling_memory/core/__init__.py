@@ -150,14 +150,19 @@ class SpooklingMemory(Memory):
     def log_time(self) -> str:
         return self.log.events[-1].ts if self.log.events else ""
 
-    def ingest(self, session) -> None:
+    def ingest(self, session, tag: bool = True) -> None:
+        """tag=False only appends to the LOG: the caller tags later, with full()."""
         for i, t in enumerate(session.turns):
             if self.log.append(session.agent, session.id, i, t.role, session.ts, t.content) is None:
                 continue  # the same turn again: the LOG keeps one
+            if not tag:
+                continue
             self.turns_since_light += 1
             if self.sleep_every != "session" and self.turns_since_light >= self.sleep_every:
                 light(self)
                 self.turns_since_light = 0
+        if not tag:
+            return
         if self.sleep_every == "session":
             light(self)
             self.turns_since_light = 0
@@ -173,11 +178,12 @@ class SpooklingMemory(Memory):
         have = {k.text for k in self.staging}
         self.staging += [k for k in keep.extract(e for e in self.log.events if e.session_id == session_id) if k.text not in have]
 
-    def settle(self) -> None:
-        """The pass that runs once before questions: a full sleep if anything arrived since the last one."""
+    def settle(self, tag: bool = True) -> None:
+        """The pass that runs once before questions: a full sleep if anything arrived since the last one.
+        tag=False rebuilds the views without a model call (see full)."""
         with self._lock:
             if self.log.last_seq > self.full_seq:
-                full(self)
+                full(self, tag)
                 self.sessions_since_full = 0
 
     def rules(self) -> list[str]:

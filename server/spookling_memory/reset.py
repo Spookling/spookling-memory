@@ -83,7 +83,7 @@ sleep.fold = fold
 
 def _refold(mem) -> None:
     mem.full_seq = -1  # settle() runs a full sleep only when the LOG grew
-    mem.settle()
+    mem.settle(tag=False)  # a refold of what is judged: the callers settled first
 
 
 def _source(mem) -> str:

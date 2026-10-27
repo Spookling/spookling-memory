@@ -56,21 +56,22 @@ def test_tail_ingest_logs_only_new_turns(open_store):
     assert s.compact("cc")["kept"] == 0
 
 
-def test_a_failed_tagging_call_writes_nothing(open_store, tmp_path):
+def test_a_failed_tagging_call_still_writes_the_turns(open_store, tmp_path):
     class Down(Stub):
         def judge(self, turns, date, known):
             raise ConnectionError("model down")
 
     s = open_store()
     s.mem.triage = Down(TAGS)
-    with pytest.raises(ConnectionError):
-        fill(s, HISTORY[:1])
-    assert not (tmp_path / "m" / "log.jsonl").exists()  # never a turn on disk that was not tagged
-    s.mem.triage = Stub(TAGS)
-    fill(s, HISTORY[1:2])  # the next good call writes both sessions, tagged
-    assert len((tmp_path / "m" / "log.jsonl").read_text().splitlines()) == 8
+    fill(s, HISTORY[:1])
+    assert len((tmp_path / "m" / "log.jsonl").read_text().splitlines()) == 4  # on disk, untagged
+    assert s.tagging() == {"waiting": 4, "error": "model down", "retry_in": 300}
+    s.mem.triage, s.retry_at = Stub(TAGS), 0
+    fill(s, HISTORY[1:2])  # the next good call tags both sessions
+    assert len((tmp_path / "m" / "log.jsonl").read_text().splitlines()) == 8 and s.tagging()["waiting"] == 0
     s.close()
-    assert len(open_store().mem.log.events) == 8
+    t = open_store()
+    assert len(t.mem.log.events) == 8 and t.mem.triage.judged == []
 
 
 def test_a_bad_timestamp_is_refused_before_it_reaches_the_log(open_store):
@@ -190,3 +191,57 @@ def test_a_reopen_with_the_decider_asks_jev_nothing_already_judged(tmp_path, mon
     b = Store(tmp_path / "j", triage=Stub({}), decider="typesafe/jev-1.14")
     assert len(asked) == n and b.mem.events_store.rows()  # reopened and rebuilt, nothing asked
     b.close()
+
+
+class NoKey(Stub):
+    def judge(self, turns, date, known):
+        raise SystemExit("OPENROUTER_API_KEY is not set")
+
+
+def test_turns_saved_without_a_tagger_are_tagged_after_a_restart(tmp_path):
+    s = Store(tmp_path / "m", triage=NoKey(TAGS))
+    fill(s, HISTORY[:1])
+    assert s.tagging()["waiting"] == 4 and len(s.mem.log.events) == 4
+    s.close()
+    t = Store(tmp_path / "m", background=True, triage=Stub(TAGS))
+    t.ready.wait(10)
+    with t.lock:  # the opening thread tags what waited once the views are up
+        pass
+    assert t.tagging() == {"waiting": 0, "error": None, "retry_in": 0}
+    assert [d["step"] for d in t.mem.log.decisions].count("tagged") == 2  # where tagging stood, then where it got to
+    assert any(a == "car" for a, *_ in __import__("conftest").believed(t))
+    t.close()
+    u = Store(tmp_path / "m", triage=Stub(TAGS))  # every turn is tagged now: reopening tags nothing again
+    assert u.mem.triage.judged == [] and u.tagging()["waiting"] == 0
+    u.close()
+
+
+def test_a_tagging_failure_halfway_leaves_no_half_judgement(tmp_path):
+    class Flaky(Stub):
+        calls = 0
+
+        def judge(self, turns, date, known):
+            Flaky.calls += 1
+            if Flaky.calls == 2:
+                raise RuntimeError("codex exited 1: ERROR: token expired")
+            return super().judge(turns, date, known)
+
+    s = Store(tmp_path / "m", triage=Flaky(TAGS))
+    s.ingest("a", turns(["I drive a Toyota Corolla, nothing fancy."]), "2024-05-22T10:00:00Z")
+    s.mem.triage = Flaky(TAGS)
+    s.ingest("b", turns(["This Pixel 8 camera is honestly great.", "From now on, always answer in metric units."]), "2024-09-23T19:35:00Z")
+    on_disk = (tmp_path / "m" / "judgements.jsonl").read_text().splitlines()
+    assert s.mem.log.lines()[1] == on_disk and "token expired" in s.tagging()["error"]
+    s.close()
+
+
+def test_the_keyless_tagger_keeps_only_standing_rules(tmp_path):
+    from spookling_memory.subscription import adapter
+
+    s = Store(tmp_path / "m", **adapter("none"))
+    s.ingest("a", turns(["From now on, always answer in metric units.", "I drive a Toyota Corolla, nothing fancy."]), "2024-05-22T10:00:00Z")
+    ctx = s.retrieve("What car do I drive?", NOW)["context"]
+    assert "always answer in metric units" in ctx.split("</rules>")[0] and "Toyota Corolla" in ctx
+    assert s.stats()["tagger"] == {"model": "none", "via": "none", "decider": None}
+    assert s.stats()["n_facts"] == 0 and s.tagging()["error"] is None
+    s.close()

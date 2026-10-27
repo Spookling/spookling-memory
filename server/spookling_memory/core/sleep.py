@@ -270,11 +270,14 @@ def resolve_events(mem) -> None:
                           "created": mem.log_time()})
 
 
-def same_event(mem):
-    """Jev's check of the identity rule's candidates: each pair asked once and recorded; replays read the record."""
+def same_event(mem, ask: bool = True):
+    """Jev's check of the identity rule's candidates: each pair asked once and recorded; replays read the record.
+    ask=False reads records only: a pair never asked counts as two events until it is."""
     def same(d: dict, cands: list[dict]) -> list[bool]:
         ids = [f"same:{d['id']}~{s['id']}" for s in cands]
         todo = [(i, s) for i, s in zip(ids, cands, strict=True) if i not in mem.decision_by_id]
+        if todo and not ask:
+            return [i in mem.decision_by_id and mem.decision_by_id[i]["noul"] >= mem.decider.threshold for i in ids]
         if todo:
             for (i, s), p in zip(todo, mem.decider.same_event(d, [s for _, s in todo]), strict=True):
                 mem.decider.yes(p, "same_event")
@@ -298,13 +301,18 @@ def fold(decisions: list[dict]) -> Facts:
     return facts
 
 
-def full(mem) -> None:
-    light(mem)
+def full(mem, tag: bool = True) -> None:
+    """tag=False rebuilds the views over every LOG turn without calling a model: turns not tagged yet are still
+    searched word for word, and are tagged (and their flagged items settled) by a later full(mem)."""
+    if tag:
+        light(mem)
     done = {(d["seq"], d["idx"]) for d in mem.log.decisions if d["step"] == "resolve"}
     slow = [d for d in mem.log.decisions if d["step"] == "triage" and d["route"] == "slow" and (d["seq"], d["idx"]) not in done]
     hist = lambda key: [f"- {r.value or 'none'}: true from {fmt(date.fromisoformat(r.valid_from))} to {fmt(date.fromisoformat(r.valid_to))}"
                         for r in mem.facts.believed(key)]
-    if mem.decider:  # Jev rules: one request per message for its slow items
+    if not tag:
+        slow = []
+    if mem.decider and slow:  # Jev rules: one request per message for its slow items
         by_source: dict[str, list[dict]] = {}
         for d in slow:
             by_source.setdefault(d["source"], []).append(d)
@@ -333,8 +341,9 @@ def full(mem) -> None:
     if mem.events_on:  # EVENTS after the slow path settles new classes
         from .extract import build
 
-        resolve_events(mem)
-        store = build(mem.log.events, mem.log.decisions, mem.classes, mem.log_time(), same_event(mem) if mem.decider else None)
+        if tag:
+            resolve_events(mem)
+        store = build(mem.log.events, mem.log.decisions, mem.classes, mem.log_time(), same_event(mem, tag) if mem.decider else None)
         if mem.events_store is not None and mem._owns_events:
             mem.events_store.close()
         mem.events_store, mem._owns_events = store, True
