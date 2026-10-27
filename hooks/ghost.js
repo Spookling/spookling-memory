@@ -120,6 +120,12 @@ function mode(env = process.env) {
   return NO_HALF_BLOCKS.includes(terminalFont(env)) ? 'cells' : 'half';
 }
 
+// Claude Code strips the leading spaces of each status line row, which pulls the head's top rows left and squares it
+// off (seen by running Claude Code 2.1.310 in a terminal emulator). A row that starts with a blank cell starts with a
+// reset first: drawn as nothing, and not a space, so the blank cells stay.
+const KEEP = '\x1b[0m';
+const keep = (row) => (row.startsWith(' ') ? KEEP + row : row);
+
 /**
  * The ghost as terminal rows. Half blocks: where a cell's two pixels share a colour it is a background-coloured
  * space (nothing for a terminal to dim or misdraw); two colours, ▀ with the top in front and the bottom behind; one,
@@ -129,19 +135,19 @@ function rows(state, { mode: m = 'half', level = '256' } = {}) {
   const colours = PALETTE[state];
   const px = (ch) => (ch === '.' ? null : colours[ch]);
   if (m === 'cells') {
-    return grid(state, 'small').map((row) => [...row].map((ch) => (px(ch) ? paint('  ', level, null, px(ch)) : '  ')).join(''));
+    return grid(state, 'small').map((row) => keep([...row].map((ch) => (px(ch) ? paint('  ', level, null, px(ch)) : '  ')).join('')));
   }
   const g = grid(state, 'large');
   const out = [];
   for (let r = 0; r < g.length; r += 2) {
-    out.push([...g[r]].map((ch, x) => {
+    out.push(keep([...g[r]].map((ch, x) => {
       const top = px(ch), bottom = px(g[r + 1][x]);
       if (top && top === bottom) return paint(' ', level, null, top);
       if (top && bottom) return paint('▀', level, top, bottom);
       if (top) return paint('▀', level, top);
       if (bottom) return paint('▄', level, bottom);
       return ' ';
-    }).join(''));
+    }).join('')));
   }
   return out;
 }

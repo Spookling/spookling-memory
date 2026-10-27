@@ -19,7 +19,7 @@ const HELP = `Spookling Memory
   --harness codex   uninstall: remove Codex hooks (default: claude); init finds which ones you have
   --yes, -y         init: take every default (Claude Code and/or Codex as found; your Codex plan, an API key in your
                     environment, or no tagger at all) and write without asking
-  --no-ghost        init: leave the ghost out of the Claude Code status line (it is in by default)
+  --no-ghost        init: leave out the ghost above the Claude Code prompt (it is in by default)
   --no-anim         skip the animation (also skipped when NO_COLOR is set or output is not a terminal)
   --fast            demo only: no pauses (any key also skips the current one)
   --frames N        demo only: print N frames from across the intro, one after another, and stop

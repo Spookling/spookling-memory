@@ -243,7 +243,7 @@ Behind each number: the result file, the judge logs, both judges' verdicts, the 
 
 **Claude Code and Codex. One command. Your data stays yours.**
 
-In Codex, the pixel ghost shows in the hook messages: `ready` after a successful server health check, with the messages, facts and standing rules the server holds beside it; `active` after successful recall, green, with what was recalled (a search with no matching facts is one `active` line, not a ghost). Failed health checks or recall show the `degraded` ghost and do not block Codex. This is a hook indicator, not a permanent widget; [setup and removal](cli/README.md#codex) use the same local server and `.memory/` data. In Claude Code the same ghost is the status line.
+In Codex, the pixel ghost shows in the hook messages: `ready` after a successful server health check, with the messages, facts and standing rules the server holds beside it; `active` after successful recall, green, with what was recalled (a search with no matching facts is one `active` line, not a ghost). Failed health checks or recall show the `degraded` ghost and do not block Codex. This is a hook indicator, not a permanent widget; [setup and removal](cli/README.md#codex) use the same local server and `.memory/` data. In Claude Code the same ghost sits above the prompt and blinks.
 
 Spookling Memory is out as `spookling` 0.1.3, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
 
@@ -274,7 +274,7 @@ It opens with a cutscene: the Spookling wordmark builds in block letters and the
 2. **Finds your harness.** Claude Code, Codex, or both, whichever is on the machine; it wires each one it finds. Codex asks you once, in `/hooks`, to trust new hooks.
 3. **Picks the tagger you already have.** Your Codex plan if `codex` is logged in with ChatGPT, else an Anthropic or OpenRouter key already in your environment, else no tagger at all. All four choices are in the table below. A key you type is hidden, saved to `.memory/keys.env`, and never printed.
 4. **Installs the local memory server.** It copies the server and the hooks to a folder per user and version: `~/.spookling-memory/<version>/`, or `%LOCALAPPDATA%\spookling-memory\<version>\` on Windows. It runs `uv sync` there, writes `.memory/spookling.json` (the tagger, and where the server and uv are), and starts the server. Each memory folder gets its own server on its own port, written to `.memory/server.json`, so two projects never share one. Nothing Claude Code runs lives in the npx cache.
-5. **Wires Claude Code.** Four hooks that call the server: `SessionStart` wakes it, `Stop` saves the chat when it ends, `UserPromptSubmit` hands the right lines to each prompt, `PreCompact` copies the survivor block out before the squash. Plus the MCP server, so Claude can call the memory tools, and the ghost in the status line (`--no-ghost` leaves it out). `--scope project` (the default) writes this project's files; `--scope user` writes yours, for every project.
+5. **Wires Claude Code.** Four hooks that call the server: `SessionStart` wakes it, `Stop` saves the chat when it ends, `UserPromptSubmit` hands the right lines to each prompt, `PreCompact` copies the survivor block out before the squash. Plus the MCP server, so Claude can call the memory tools, and the ghost above the prompt, a small Claude Code plugin installed with `claude plugin install` (`--no-ghost` leaves it out). `--scope project` (the default) writes this project's files; `--scope user` writes yours, for every project.
 6. **Runs a smoke test.** It asks the server for its stats, then asks it a question the way a hook does. Nothing is written to your log.
 7. **Shows a done screen.** The ghost flies once more. "Spookling Memory is in."
 
@@ -302,7 +302,7 @@ To switch, run `init` again: it restarts this folder's server with the new tagge
 | Where | What |
 | --- | --- |
 | `~/.spookling-memory/<version>/` (`%LOCALAPPDATA%\spookling-memory\<version>\` on Windows) | the server and the hooks, copied from the package; `uv sync` makes the server's `.venv` there |
-| `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | four hooks merged in: `SessionStart`, `PreCompact`, `UserPromptSubmit`, `Stop`, each naming this `.memory` folder; and the ghost's `statusLine` (left out with `--no-ghost`) |
+| `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | four hooks merged in: `SessionStart`, `PreCompact`, `UserPromptSubmit`, `Stop`, each naming this `.memory` folder; and `enabledPlugins` for the ghost's plugin, `spookling@spookling` (left out with `--no-ghost`; where the plugin cannot install, the ghost's `statusLine` instead) |
 | `.mcp.json` (project) or Claude Code's user MCP list (user) | the `spookling-memory` server and its tools, `memory_retrieve` and `memory_reset` among them |
 | `.memory/` | your memory, your tagger's key in `keys.env`, `spookling.json` (the tagger and where the server is), the server's port in `server.json`, its pid and log, and a `.gitignore` that keeps the key, those files and the caches out of git |
 
@@ -316,7 +316,15 @@ Windows (native PowerShell, no Git Bash needed), macOS and Linux, WSL included. 
 
 ![Claude Code with the ghost in its status line: "1 fact · 1 rule · 2 past chats recalled"](cli/renders/ghost-status-line.png)
 
-In Claude Code a small ghost sits in the status line under the prompt (in by default; `--no-ghost` leaves it out). It says what memory last did, in plain words: `3 facts · 1 rule recalled` while Claude answers, `saved` after, `kept your 2 rules and 38 lines` after a compaction, `remembering you` when nothing is new, `asleep, server off` when the server is down. Its arms go up and down between refreshes; the words change only when memory does something. When a prompt recalls something, one quiet line lands under it: `👻 3 facts and 1 rule from memory`. Standing rules alone, a save or a compaction add nothing to the conversation. Already have a status line? Yours stays first with the ghost after it, and `uninstall` puts yours back exactly.
+In Claude Code the ghost sits just above the prompt (in by default; `--no-ghost` leaves it out). It is a small Claude Code plugin, `spookling`, that `init` installs from `claude-mod/` with `claude plugin install`. It blinks every few seconds while it runs and only claims what the hooks report:
+
+- **ready** (purple): the memory server answered. Beside it: messages remembered, facts in force, standing rules.
+- **searching** (blue): this prompt's recall is running.
+- **active** (green): the recall reached Claude, for example `1 fact, 2 rules and 2 past chats recalled (≈5.6k chars), delivered with the prompt`.
+- **ready, idle** again once the turn ends, saying what the last prompt got.
+- **degraded** (amber, with a sweat drop): the server did not answer, or the hook did not report for this prompt.
+
+When a prompt recalls something, one quiet line also lands under it: `👻 3 facts and 1 rule from memory`. A Claude Code that cannot install plugins gets the same ghost in its status line instead, without the blink (a status line is a command Claude Code reruns, not a timer); your own status line stays first there, and `uninstall` puts it back exactly.
 
 ---
 

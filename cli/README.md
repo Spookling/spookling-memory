@@ -63,7 +63,7 @@ Windows sessions then log into the WSL project's `.memory/`; the server reads th
 ## Flags
 
 - `--scope project` (default) or `--scope user`, for `init` and `uninstall`. See the table below.
-- `--no-ghost` (init) skips the question about the ghost in the Claude Code status line, and leaves the status line alone.
+- `--no-ghost` (init) leaves out the ghost above the Claude Code prompt, and leaves the status line alone.
 - `--no-anim` skips the animation: the wordmark prints as a still and the ghost's lines print as plain text.
 - `--fast` (demo only) drops the pauses. Without it the demo takes about a minute; any key cuts the current pause short.
 - `--frames N` (demo only) prints N frames from across the intro, one after another, and stops. Useful for checking the drawing without a live terminal.
@@ -105,7 +105,7 @@ Every write is shown before it happens; answer `n` to skip it. Every command it 
 | `.memory/.gitignore` | `keys.env`, `server.pid`, `server.log`, `server.json`, `server.starting`, `spookling.json`, the server's caches `cache.sqlite*` (model replies) and `vectors.sqlite*` (embeddings), and the hooks' `pulse.json*`; missing lines are added to a file you already have |
 | `.memory/spookling.json` | `{version, server, uv, model, decider}`: what a hook needs to start this folder's server the way `init` did |
 | `.memory/server.json`, `.memory/server.pid`, `.memory/server.log` | the background server: `uv run --project <server> spookling-memory serve --folder <abs .memory>`. It reads the tagger from `spookling.json`, takes this folder's own port (7448 to 7947, from a hash of the folder's path, the next free one up if taken), writes `{port, pid, folder}` to `server.json` once listening and removes it on the way out. Every reply carries `x-spookling-folder`, so a hook never takes another folder's answer. |
-| `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | four hooks merged in, `SessionStart`, `PreCompact`, `UserPromptSubmit` and `Stop`, each `{"type": "command", "command": "node", "args": ["<hooks>/<event>.js", "--memory", "<abs .memory>"]}`, PreCompact and UserPromptSubmit with a `statusMessage` for the spinner; and, unless `--no-ghost`, `statusLine` (see [The ghost](#the-ghost)) |
+| `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | four hooks merged in, `SessionStart`, `PreCompact`, `UserPromptSubmit` and `Stop`, each `{"type": "command", "command": "node", "args": ["<hooks>/<event>.js", "--memory", "<abs .memory>"]}`, PreCompact and UserPromptSubmit with a `statusMessage` for the spinner; and, unless `--no-ghost`, the ghost: the `spookling@spookling` plugin in `enabledPlugins` (installed by `claude plugin install` from `~/.spookling-memory/claude-mod`, one folder every version copies over), or `statusLine` where this Claude Code cannot install plugins (see [The ghost](#the-ghost)) |
 | `.mcp.json` (project) | `mcpServers.spookling-memory`: stdio, `uv run --project <server> spookling-memory mcp`, with `SPOOKLING_MEMORY_FOLDER` in its `env` (the tools read the port from its `server.json`) |
 | user MCP list (user scope) | the same entry, added with `claude mcp add-json spookling-memory '<entry>' --scope user`. Claude Code keeps it in `~/.claude.json`, a file it writes itself, so the wizard only reads that file. |
 | `.codex/hooks.json` (Codex, project) or `$CODEX_HOME/hooks.json` (Codex, user; default `~/.codex/hooks.json`) | SessionStart, UserPromptSubmit, PreCompact and Stop hooks merged in; existing hooks stay |
