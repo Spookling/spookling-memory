@@ -2,11 +2,11 @@
 import process from 'node:process';
 import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, delimiter, dirname, isAbsolute, join, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { C, DOWN, MODE, UP, askHidden, bail, choose, confirm, fits, paint, press, setFeed, setRaw, sleep, write as out } from './term.js';
+import { C, DOWN, MODE, UP, askHidden, bail, choose, confirm, fits, paint, press, setAssume, setFeed, setRaw, sleep, write as out } from './term.js';
 import { play } from './cutscene.js';
 import { flyOnce } from './ghost.js';
 import { stage } from './stage.js';
@@ -24,16 +24,21 @@ export const INSTALL_DIR = SHARE ? ROOT
   : WIN ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'spookling-memory', VERSION)
     : join(homedir(), '.spookling-memory', VERSION);
 export const SERVER_DIR = join(INSTALL_DIR, 'server'), HOOKS_DIR = join(INSTALL_DIR, 'hooks');
-const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`, STATS = `${SERVER_URL}/v1/stats`;
+const BAND = 'spookling', BAND_ID = 'spookling@spookling'; // the Claude Code plugin in claude-mod/, and its marketplace
+// the plugin's one folder for every version: Claude Code refuses a marketplace name from a second folder, and reads a
+// folder marketplace from the folder itself, so the next version's copy over it is the upgrade
+export const BAND_DIR = join(dirname(INSTALL_DIR), 'claude-mod');
+// the URL only for a server run by hand in WSL; every other folder's server picks its own port, in <folder>/server.json
+const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`;
 const STEPS = ['Checks', 'Harness', 'Tagger', 'Server', 'Wire harness', 'Smoke test', 'Done'];
 export const DEMO_LABEL = 'demo, nothing is written';
-const IGNORE = ['keys.env', 'server.pid', 'server.log', 'cache.sqlite*', 'vectors.sqlite*', 'pulse.json*'];
+const IGNORE = ['keys.env', 'server.pid', 'server.log', 'server.json', 'server.starting', 'spookling.json', 'cache.sqlite*', 'vectors.sqlite*', 'pulse.json*', 'usage.jsonl'];
 
 // at most 52 characters each, so the bubble fits beside the ghost at 80 columns (tested)
 export const SAY = {
   1: 'Hello. First I check what this machine has.',
-  2: 'Pick the tool you talk to. I will sit beside it.',
-  3: 'A small model tags each chat for me. Pick one.',
+  2: 'I sit beside the tools you already use.',
+  3: 'I use what you already have. A key is optional.',
   4: 'Moving in. Everything I remember goes in .memory/',
   5: 'I will remind Claude of what you told it before.',
   codex: 'I will show Codex when memory is ready.',
@@ -46,9 +51,25 @@ export const TAGGERS = [
   { label: 'Jev through an OpenRouter key (cheapest, about $0.002 a chat)', model: 'typesafe/jev-router', decider: 'typesafe/jev-1.14', key: 'OPENROUTER_API_KEY', ask: 'OpenRouter API key for Jev:' },
   { label: 'Anthropic API key (Haiku 4.5)', model: 'anthropic/claude-haiku-4.5', key: 'ANTHROPIC_API_KEY', ask: 'Anthropic API key:' },
   { label: 'Your Codex subscription (the codex CLI, logged in)', model: 'codex', key: null },
+  { label: 'No tagger: free, works now (messages kept and searched, rules by pattern)', model: 'none', key: null },
 ];
-export const taggerText = (t) => (t.via === 'codex' ? 'your Codex subscription (codex exec)'
+const NONE = TAGGERS.length - 1;
+const viaOf = (model) => (['none', 'codex'].includes(model) ? model : model.startsWith('anthropic/') ? 'anthropic' : 'openrouter');
+export const taggerText = (t) => (t.via === 'none' ? 'none (every message kept and searched word for word; standing rules found by pattern)'
+  : t.via === 'codex' ? 'your Codex subscription (codex exec)'
   : `${t.model} through ${t.via === 'anthropic' ? 'the Anthropic API' : 'OpenRouter'}`) + (t.decider ? `, decisions by ${t.decider}` : '');
+
+// what this machine already runs: the harnesses on it, and the tagger it can pay for with no new key or sign-up
+export function detect(env = process.env, mem = null, have = version, login = codexLogin) {
+  const codexHome = env.CODEX_HOME || join(homedir(), '.codex');
+  const claude = !!have('claude') || existsSync(join(env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')));
+  const codex = !!have('codex') || existsSync(codexHome);
+  const keys = mem && existsSync(join(mem, 'keys.env')) ? readFileSync(join(mem, 'keys.env'), 'utf8') : '';
+  const has = (k) => !!(env[k] || envValue(keys, k));
+  const c = codex ? login(env) : { ok: false, line: '' };
+  const tagger = c.ok && !/api key/i.test(c.line) ? 2 : has('ANTHROPIC_API_KEY') ? 1 : has('OPENROUTER_API_KEY') ? 0 : NONE;
+  return { claude, codex, tagger, login: c };
+}
 
 // through a shell: npm's codex on Windows is codex.cmd; it checks a login is saved, not that it still works
 export function codexLogin(env = process.env) {
@@ -125,7 +146,7 @@ function demoInput(fast) {
 }
 
 const newCtx = (project, scope = 'project') => ({
-  project, scope, mem: join(project, '.memory'), written: [], skipped: [], problems: [], keys: {},
+  project, scope, mem: join(project, '.memory'), harnesses: [], written: [], skipped: [], problems: [], keys: {},
   dry: false, say: async () => {}, beat: async () => {},
 });
 const rel = (ctx, p) => {
@@ -133,24 +154,41 @@ const rel = (ctx, p) => {
   return !r ? p : !r.startsWith('..') && !isAbsolute(r) ? r : !h.startsWith('..') && !isAbsolute(h) ? join('~', h) : p;
 };
 const pidFile = (project) => join(project, '.memory', 'server.pid');
+// npm's claude and codex on Windows are .cmd files, which only a shell runs
 const version = (cmd) => {
-  const r = spawnSync(cmd, ['--version'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
-  return r.status === 0 ? r.stdout.trim().split('\n')[0] : null;
+  const r = spawnSync(`${cmd} --version`, { shell: true, encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  return r.status === 0 && r.stdout ? r.stdout.trim().split('\n')[0] : null;
 };
+// the full path, so the hooks find uv when they start the server from Claude Code's or Codex's own PATH
+const which = (cmd) => (process.env.PATH || '').split(delimiter).filter(Boolean)
+  .flatMap((d) => (WIN ? ['.exe', '.cmd', ''] : ['']).map((x) => join(d, cmd + x))).find((f) => existsSync(f) && statSync(f).isFile()) || cmd;
+const real = (p) => { try { return realpathSync(p); } catch { return p; } };
+const readServer = (mem) => { try { return JSON.parse(readFileSync(join(mem, 'server.json'), 'utf8')); } catch { return null; } };
 
-const stats = () => new Promise((res) => {
-  const req = http.get(STATS, { timeout: 1500 }, (r) => {
-    let body = '';
-    r.setEncoding('utf8');
-    r.on('data', (d) => { body += d; });
-    r.on('end', () => {
-      if (r.statusCode !== 200) return res(null);
-      try { res(JSON.parse(body)); } catch { res({ body: body.slice(0, 80) }); }
+// one call to the server of this memory folder: the port in its server.json, and only if that server says it serves
+// this folder (a stale server.json can name a port another folder's server has since)
+function call(mem, path, body) {
+  const s = readServer(mem);
+  if (!Number.isInteger(s?.port)) return Promise.resolve(null);
+  return new Promise((res) => {
+    const req = http.request(`http://127.0.0.1:${s.port}${path}`, { method: body ? 'POST' : 'GET', timeout: 1500, headers: { 'content-type': 'application/json' } }, (r) => {
+      let text = '';
+      r.setEncoding('utf8');
+      r.on('data', (d) => { text += d; });
+      r.on('end', () => {
+        const at = r.headers['x-spookling-folder'];
+        const mine = (x) => (WIN ? x.toLowerCase() : x);
+        if (r.statusCode !== 200 || (at && mine(at) !== mine(real(mem)))) return res(null);
+        try { res(JSON.parse(text)); } catch { res({ body: text.slice(0, 80) }); }
+      });
     });
+    req.on('socket', (sk) => sk.once('connect', () => req.setTimeout(15000)));
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => res(null));
+    req.end(body ? JSON.stringify(body) : undefined);
   });
-  req.on('timeout', () => req.destroy());
-  req.on('error', () => res(null));
-});
+}
+const stats = (mem) => call(mem, '/v1/stats');
 
 function readPid(project) {
   try {
@@ -191,7 +229,7 @@ async function mergeFile(ctx, path, fn, { what, preview, same }) {
 }
 
 // stdin closed: `claude mcp` waits on an open stdin
-async function runCmd(ctx, cmd, args, { what, show }) {
+async function runCmd(ctx, cmd, args, { what, show, cwd }) {
   out(`\n   ${paint(C.GHOST, 'run')} ${show}\n`);
   if (!(await confirm('   Run it?'))) {
     ctx.skipped.push(what);
@@ -199,7 +237,7 @@ async function runCmd(ctx, cmd, args, { what, show }) {
     return null;
   }
   if (ctx.dry) { ctx.written.push([cmd, what]); info('demo: not run'); return { status: 0 }; }
-  const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 60_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: 60_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   for (const l of `${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n').filter(Boolean)) info(l);
   if (r.status === 0) { ctx.written.push([cmd, what]); ok('done'); }
   else warn(r.error?.code === 'ENOENT' ? `${cmd} is not on your PATH` : r.error ? `${cmd}: ${r.error.code ?? r.error.message}` : `${cmd} exited ${r.status}`);
@@ -252,8 +290,12 @@ async function userMcp(ctx, entry) {
 
 // a clone's .venv and caches stay behind: a .venv belongs to the folder it was made in
 const LEAVE = new Set(['.venv', '__pycache__', '.pytest_cache', '.memory', 'node_modules']);
-export function install(from, dir) {
+export function install(from, dir, band = join(dirname(dir), 'claude-mod')) {
   for (const d of ['server', 'hooks']) cpSync(join(from, d), join(dir, d), { recursive: true, filter: (p) => !LEAVE.has(basename(p)) });
+  rmSync(band, { recursive: true, force: true }); // a file an older version had must not outlive it
+  cpSync(join(from, 'claude-mod'), band, { recursive: true, filter: (p) => !LEAVE.has(basename(p)) });
+  mkdirSync(join(band, 'bin'), { recursive: true });
+  writeFileSync(join(band, 'bin', 'hooks.json'), JSON.stringify({ hooks: join(dir, 'hooks') }) + '\n'); // where probe.cjs finds ghost.js
 }
 
 // true when the server is in place, copied now or by an earlier init
@@ -283,14 +325,15 @@ function keysFile(text, keys) {
 }
 const envValue = (text, k) => text.match(new RegExp(`^${k}=(.+)$`, 'm'))?.[1]?.trim();
 
+// the same command the hooks run when they find the server down: the tagger and keys come from the folder
 function startServer(ctx) {
   mkdirSync(ctx.mem, { recursive: true });
   const log = openSync(join(ctx.mem, 'server.log'), 'a');
-  const args = ['run', '--project', SERVER_DIR, 'spookling-memory', 'serve', '--folder', '.memory', '--port', String(PORT)];
+  const args = ['run', '--project', SERVER_DIR, 'spookling-memory', 'serve', '--folder', real(ctx.mem)];
   if (ctx.model) args.push('--model', ctx.model);
   if (ctx.decider) args.push('--decider', ctx.decider);
   // detached, so it outlives the wizard; PYTHONUTF8, or Python on Windows reads files as cp1252
-  const child = spawn('uv', args, {
+  const child = spawn(which('uv'), args, {
     cwd: ctx.project, detached: true, windowsHide: true, stdio: ['ignore', log, log],
     env: { ...process.env, PYTHONUTF8: '1', ...ctx.keys },
   });
@@ -303,8 +346,8 @@ function startServer(ctx) {
 
 async function waitForStats(ctx) {
   let d = 250;
-  for (let i = 0; i < 8; i++) {
-    const r = await stats();
+  for (let i = 0; i < 10; i++) {
+    const r = await stats(ctx.mem);
     if (r) return r;
     if (!ctx.pid || !readPid(ctx.project)?.alive) return null;
     out(paint(C.GREY, '.'));
@@ -314,10 +357,11 @@ async function waitForStats(ctx) {
   return null;
 }
 
-export async function init({ anim = true, project = process.cwd(), scope = 'project', dry = false, fast = false, ghost = true } = {}) {
+export async function init({ anim = true, project = process.cwd(), scope = 'project', dry = false, fast = false, ghost = true, yes = false } = {}) {
   const label = dry ? DEMO_LABEL : '';
-  await play({ anim: anim && !fast, keep: fits(anim), label });
-  const ctx = { ...newCtx(project, scope), ghost };
+  if (yes && !dry) setAssume(true);
+  await play({ anim: anim && !fast && !yes, keep: fits(anim), label });
+  const ctx = { ...newCtx(project, scope), ghost, yes };
   const demo = dry ? demoInput(fast) : null;
   const st = stage({ anim, label, hold: fast ? 0 : 1200 });
   Object.assign(ctx, { dry, say: st.say, beat: demo?.beat ?? ctx.beat });
@@ -333,7 +377,7 @@ async function steps(ctx, { anim, st }) {
   const { project, scope } = ctx;
   if (ctx.dry && !st.live) info(DEMO_LABEL);
   out(`   Setting up Spookling Memory in ${paint(C.GHOST, project)}${scope === 'user' ? paint(C.GREY, ' (hooks and MCP for all your projects)') : ''}\n`);
-  info('Every file is shown before it is written. Answer n to skip it.');
+  info(ctx.yes ? 'Every file is shown as it is written (--yes: every answer is its default).' : 'Every file is shown before it is written. Answer n to skip it.');
 
   await step(ctx, 1);
   if (Number(process.versions.node.split('.')[0]) < 18) {
@@ -362,30 +406,38 @@ async function steps(ctx, { anim, st }) {
   if (git) ok(git); else warn('git not found. That is fine; .memory/ is just easier to back up inside a repo.');
   await ctx.beat(1200);
 
+  // the demo reads neither the environment nor keys.env: its defaults are the first choices
+  const found = ctx.dry ? { claude: true, codex: false, tagger: 0 } : detect(process.env, ctx.mem);
   await step(ctx, 2);
-  const pick = await choose('   Which one?', ['Claude Code', 'Codex']);
-  ctx.harness = ['claude', 'codex'][pick];
-  ok(ctx.harness === 'claude' ? 'Claude Code' : 'Codex');
-  if (ctx.harness === 'claude') ctx.claude = await claudeCli(ctx);
+  if (!ctx.dry) info(`found: ${[found.claude && 'Claude Code', found.codex && 'Codex'].filter(Boolean).join(' and ') || 'neither (Claude Code assumed)'}`);
+  const both = found.claude && found.codex;
+  const pick = await choose('   Which one?', ['Claude Code', 'Codex', 'Both'], both ? 2 : found.codex ? 1 : 0);
+  ctx.harnesses = [['claude'], ['codex'], ['claude', 'codex']][pick];
+  ok(['Claude Code', 'Codex', 'Claude Code and Codex'][pick]);
+  if (ctx.harnesses.includes('claude')) ctx.claude = await claudeCli(ctx);
 
-  // the demo reads neither the environment nor keys.env, so the key prompt shows
   await step(ctx, 3);
-  const t = TAGGERS[await choose('   How should the tagger run?', TAGGERS.map((x) => x.label))];
-  ctx.decider = t.decider || null;
-  ctx.model = t.model;
-  ok(t.label);
+  if (!ctx.dry) info(`using what you have: ${TAGGERS[found.tagger].label.split(' (')[0].replace(/^Your/, 'your')}`);
+  let t = TAGGERS[await choose('   How should the tagger run?', TAGGERS.map((x) => x.label), found.tagger)];
+  const keyless = (why) => {
+    warn(`${why} Memory starts without a tagger: every message is kept and searched, rules are found by pattern.`);
+    info('Run init again once you have it; nothing is lost, later chats get tagged.');
+    t = TAGGERS[NONE];
+  };
   const envPath = join(ctx.mem, 'keys.env');
-  if (t.key) {
+  if (t.model === 'none') {
+    ok(t.label);
+    if (ctx.harnesses.includes('claude')) info('A Claude Pro or Max plan cannot tag for another tool (Anthropic\'s terms); an Anthropic API key can.');
+  } else if (t.key) {
+    ok(t.label);
     const envText = !ctx.dry && existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
     const name = t.key, have = envValue(envText, name);
     let v = ctx.dry ? undefined : process.env[name];
     if (v) ok(`${name} found in your environment`);
     else if (have) { ok(`${name} already in .memory/keys.env`); v = have; }
     else if ((v = await askHidden(`   ${t.ask}`))) ok(`${name} received`);
-    if (!v) {
-      warn(`${name} not set. Put it in .memory/keys.env later; the server needs it to tag.`);
-      await fail(ctx, `no ${name}`);
-    } else {
+    if (!v) keyless(`No ${name}.`);
+    else {
       ctx.keys[name] = v;
       if (name === 'ANTHROPIC_API_KEY' && !v.startsWith('sk-ant-')) warn('That key does not start with sk-ant-. Kept as given.');
       if (v === have) ok('.memory/keys.env already up to date');
@@ -397,7 +449,8 @@ async function steps(ctx, { anim, st }) {
       }
     }
   } else {
-    const c = codexLogin();
+    ok(t.label);
+    const c = !ctx.dry && found.codex ? found.login : codexLogin();
     out(`   ${paint(C.GREY, 'codex login status')}\n`);
     if (c.ok) {
       ok(c.line || 'logged in');
@@ -406,10 +459,11 @@ async function steps(ctx, { anim, st }) {
       info('Each chat then takes several seconds to tag and uses a little of your plan (Plus or higher); its terms apply.');
     } else {
       warn(c.line || 'codex did not answer');
-      info('Install the codex CLI (npm install -g @openai/codex), run codex login, then run init again.');
-      await fail(ctx, 'codex is not installed or not logged in');
+      keyless('Codex is not installed or not logged in (npm install -g @openai/codex, then codex login).');
     }
   }
+  ctx.decider = t.decider || null;
+  ctx.model = t.model;
   const giPath = join(ctx.mem, '.gitignore');
   const gi = !ctx.dry && existsSync(giPath) ? readFileSync(giPath, 'utf8') : '';
   const missing = IGNORE.filter((l) => !gi.split(/\r?\n/).includes(l));
@@ -444,43 +498,54 @@ async function steps(ctx, { anim, st }) {
       await fail(ctx, 'uv sync failed');
     } else {
       if (!ctx.dry) ok('server installed');
-      const up = !ctx.dry && await stats();
-      if (up?.tagger && up.tagger.model !== ctx.model) {
-        const p = readPid(ctx.project);
-        warn(`a server already answers on 127.0.0.1:${PORT}, tagging with ${taggerText(up.tagger)}.`);
-        info(`Stop it${p?.alive ? ` (pid ${p.pid})` : ''}, then run init again to switch the tagger.`);
-        await fail(ctx, 'the running server has another tagger');
-      } else if (up) ok(`a server already answers on 127.0.0.1:${PORT}`);
-      else if (await confirm('   Start it in the background? (pid in .memory/server.pid, log in .memory/server.log)')) {
+      // what a server started later by a hook reads: the tagger, and where the server and uv are
+      const config = { version: VERSION, server: SERVER_DIR, uv: which('uv'), model: ctx.model, decider: ctx.decider };
+      await write(ctx, join(ctx.mem, 'spookling.json'), JSON.stringify(config, null, 2) + '\n', {
+        what: 'the tagger and the server, for the hooks to restart it after a reboot',
+      });
+      let up = !ctx.dry && await stats(ctx.mem);
+      if (up?.tagger && (up.tagger.model !== ctx.model || (up.tagger.decider || null) !== ctx.decider)) {
+        const p = readPid(ctx.project)?.alive ? readPid(ctx.project) : readServer(ctx.mem); // uv's pid leads the group
+        warn(`this folder's server tags with ${taggerText(up.tagger)}.`);
+        if (p?.pid && await confirm(`   Restart it (pid ${p.pid}) with ${taggerText({ model: ctx.model, via: viaOf(ctx.model), decider: ctx.decider })}?`)) {
+          stopServer(p.pid);
+          await gone(p.pid);
+          up = null;
+        } else await fail(ctx, 'the running server has another tagger');
+      }
+      if (up) ok(`this folder's server already answers on 127.0.0.1:${readServer(ctx.mem).port}`);
+      else if (!ctx.problems.length && await confirm('   Start it in the background? (log in .memory/server.log; the hooks restart it if it stops)')) {
         if (ctx.dry) {
           info('demo: not started');
-          ctx.written.push(['memory server', `127.0.0.1:${PORT}`]);
+          ctx.written.push(['memory server', 'its own port, in .memory/server.json']);
         } else {
           ctx.pid = startServer(ctx);
           if (ctx.pid) {
             ok(`started, pid ${ctx.pid}`);
-            ctx.written.push(['memory server', `127.0.0.1:${PORT}, pid ${ctx.pid}`]);
+            ctx.written.push(['memory server', `pid ${ctx.pid}, port in .memory/server.json`]);
           } else { warn('could not start uv'); await fail(ctx, 'server did not start'); }
         }
-      } else ctx.skipped.push('starting the server');
+      } else if (!up) ctx.skipped.push('starting the server (the first hook starts it)');
     }
   }
 
-  await step(ctx, 5, ctx.harness === 'claude' ? SAY[5] : SAY.codex);
-  if (ctx.harness === 'codex') {
+  await step(ctx, 5, ctx.harnesses.includes('claude') ? SAY[5] : SAY.codex);
+  // every hook and the status line name this memory folder, so they reach its own server (in WSL: the fixed URL)
+  const memory = SHARE ? undefined : real(ctx.mem);
+  if (ctx.harnesses.includes('codex')) {
     if (!existsSync(join(ctx.dry ? join(ROOT, 'hooks') : HOOKS_DIR, 'spookling-codex.cjs'))) await fail(ctx, 'Codex hook script missing');
-    const handlers = codexHandlers(HOOKS_DIR), sp = codexHooksPath(project, scope);
+    const handlers = codexHandlers(HOOKS_DIR, undefined, memory), sp = codexHooksPath(project, scope);
     await mergeFile(ctx, sp, (s) => addHooks(s, handlers), {
       what: 'Codex hooks: SessionStart, UserPromptSubmit, PreCompact, Stop',
       preview: `${hooksJson(handlers)}\n  merged in; existing hooks stay`,
       same: `${rel(ctx, sp)} already has the hooks`,
     });
-    info('Open /hooks in Codex and review/trust the Spookling hooks before they can run.');
-    info('The ghost appears in hook activity; ready/active messages follow successful server checks or recall.');
+    info('Codex asks you to trust new hooks once: open /hooks in Codex and trust the Spookling ones.');
+    info('Then the ghost shows itself at the start of each session, and again whenever memory recalls something.');
   }
-  else {
-    const handlers = hookHandlers(HOOKS_DIR), hooksAt = ctx.dry ? join(ROOT, 'hooks') : HOOKS_DIR; // the demo copies nothing
-    for (const f of [...Object.values(HOOK_FILES), 'pulse.js', STATUS_FILE]) {
+  if (ctx.harnesses.includes('claude')) {
+    const handlers = hookHandlers(HOOKS_DIR, undefined, memory), hooksAt = ctx.dry ? join(ROOT, 'hooks') : HOOKS_DIR; // the demo copies nothing
+    for (const f of [...Object.values(HOOK_FILES), 'pulse.js', 'server.js', 'ghost.js', STATUS_FILE]) {
       if (!existsSync(join(hooksAt, f))) {
         warn(`${join(hooksAt, f)} is missing; Claude Code will report it on each event.`);
         await fail(ctx, `hook script ${f} missing`);
@@ -488,17 +553,35 @@ async function steps(ctx, { anim, st }) {
     }
     if (!version('node')) warn('`node` is not on your PATH here. The hooks run `node`, so Claude Code needs it on its PATH.');
     const sp = settingsPath(project, scope);
-    const ghost = ctx.ghost && await confirm('   Show the ghost in your status line?');
-    let line = '';
-    try { line = ghost ? addStatusLine(ctx.dry ? {} : readJson(sp), HOOKS_DIR).statusLine : ''; } catch {} // mergeFile reports it
-    await mergeFile(ctx, sp, (s) => (ghost ? addStatusLine(addHooks(s, handlers), HOOKS_DIR) : addHooks(s, handlers)), {
-      what: `hooks: PreCompact, UserPromptSubmit, Stop${ghost ? '; the ghost in the status line' : ''}`,
+    // the ghost (on unless --no-ghost: it is how you see memory is on): the band above the prompt, a Claude Code plugin
+    // that blinks and turns green when memory recalls; the status line where this Claude Code cannot install plugins
+    let band = false;
+    if (ctx.ghost && !SHARE) {
+      const args = ['plugin', 'install', BAND, '--marketplace', ctx.dry ? join(ROOT, 'claude-mod') : BAND_DIR, '--scope', scope, '--json'];
+      const r = await runCmd(ctx, 'claude', args, { what: 'the ghost above the prompt (a Claude Code plugin)', show: `claude ${args.map(shq).join(' ')}`, cwd: project });
+      band = r?.status === 0;
+      if (r && !band) {
+        info('This Claude Code could not install the plugin, so the ghost goes in the status line instead.');
+        if (/"name_taken"/.test(r.stdout ?? '')) info('A "spookling" marketplace from another folder is in the way: claude plugin marketplace remove spookling, then init again.');
+      }
+    }
+    const ghost = ctx.ghost && !band;
+    let line = '', ours = false;
+    try { ours = band && isOurStatus(readJson(sp).statusLine); } catch {}
+    try { line = ghost ? addStatusLine(ctx.dry ? {} : readJson(sp), HOOKS_DIR, undefined, memory).statusLine : ''; } catch {} // mergeFile reports it
+    const events = Object.keys(HOOK_FILES).join(', ');
+    const wire = (s) => (ghost ? addStatusLine(addHooks(s, handlers), HOOKS_DIR, undefined, memory) : band ? removeStatusLine(addHooks(s, handlers)) : addHooks(s, handlers));
+    await mergeFile(ctx, sp, wire, {
+      what: `hooks: ${events}${ghost ? '; the ghost in the status line' : ''}`,
       preview: `${hooksJson(handlers)}${line ? `\n"statusLine": ${JSON.stringify(line, null, 2)}` : ''}\n  merged in; nothing else in the file changes`
-        + (line && / --then /.test(line.command) ? '\n  your status line stays first; uninstall puts it back as it was' : ''),
+        + (line && / --then /.test(line.command) ? '\n  your status line stays first; uninstall puts it back as it was' : '')
+        + (ours ? '\n  the status line ghost of an earlier install comes out: the ghost is above the prompt now' : ''),
       same: `${rel(ctx, sp)} already has the hooks${ghost ? ' and the ghost' : ''}`,
     });
-    if (!ghost) info('No ghost in the status line. npx spookling init again adds it.');
-    const entry = mcpEntry(SERVER_DIR, SERVER_URL);
+    info(band ? 'The ghost sits above the prompt from the next Claude Code session: it blinks, and turns green when memory recalls.'
+      : ghost ? 'The ghost sits in your status line from the next Claude Code session (--no-ghost leaves it out).'
+        : 'No ghost (--no-ghost). npx spookling init again adds it.');
+    const entry = mcpEntry(SERVER_DIR, SERVER_URL, memory);
     if (scope === 'project') {
       await mergeFile(ctx, mcpPath(project), (c) => addMcp(c, entry), {
         what: `MCP server ${MCP_NAME}`,
@@ -508,34 +591,42 @@ async function steps(ctx, { anim, st }) {
     } else await userMcp(ctx, entry);
   }
 
+  // stats, then a recall: a question the way a hook asks it, so the check covers the path every prompt takes. It reads
+  // only: no test message lands in the log, which is never edited
   await step(ctx, 6);
-  out(`   ${paint(C.GREY, `GET ${STATS} `)}`);
-  let res;
+  out(`   ${paint(C.GREY, 'GET /v1/stats, POST /v1/retrieve ')}`);
+  let res, recall;
   if (ctx.dry) {
     for (let i = 0; i < 3; i++) { await ctx.beat(500); out(paint(C.GREY, '.')); }
-    res = { n_events: 0, n_facts: 0, n_rows: 0, reset: null };
-  } else res = await waitForStats(ctx);
+    res = { n_events: 0, n_facts: 0, n_rows: 0, tagger: { model: ctx.model, via: viaOf(ctx.model) }, tagging: { waiting: 0, error: null } };
+    recall = { context: '' };
+  } else {
+    res = await waitForStats(ctx);
+    recall = res && await call(ctx.mem, '/v1/retrieve', { question: 'what did we decide last time?' });
+  }
   out('\n');
-  const short = (j) => (j.length > 50 ? `${j.slice(0, 49)}…` : j);
-  if (res) {
-    ok(`the server answered: ${short(JSON.stringify(res))}`);
+  if (res && recall && typeof recall.context === 'string') {
+    const port = ctx.dry ? '' : ` on 127.0.0.1:${readServer(ctx.mem)?.port}`;
+    ok(`the server answered${port}: ${plural(res.n_events, 'message')} remembered, recall ${/<(recalled-data|invariant)\b/.test(recall.context) ? 'returned context' : 'ran (nothing on record yet)'}`);
+    if (res.tagger) ok(`tagger: ${taggerText(res.tagger)}`);
+    if (res.tagging?.error) warn(`tagging is failing (${res.tagging.error}); messages are saved and searched meanwhile`);
     if (ctx.dry) info('demo: a sample reply');
   } else {
-    warn(`nothing answered on 127.0.0.1:${PORT}. ${SHARE ? 'Start the server in WSL (the command in step 4).' : 'Look in .memory/server.log.'}`);
+    warn(`${res ? 'the server answered but recall did not' : 'nothing answered'}. ${SHARE ? 'Start the server in WSL (the command in step 4).' : 'Look in .memory/server.log.'}`);
     await fail(ctx, 'smoke test failed');
   }
 
   await step(ctx, 7, null);
   await ctx.beat(1000);
   let wired = true;
-  if (ctx.harness === 'claude' && !ctx.dry) {
+  if (ctx.harnesses.includes('claude') && !ctx.dry) {
     try {
       const w = wiring(readJson(settingsPath(project, scope)), readJson(mcpPath(project, scope)));
-      wired = w.events.length === 3 && w.mcp;
+      wired = w.events.length === Object.keys(HOOK_FILES).length && w.mcp;
     } catch { wired = false; }
   }
-  if (ctx.harness === 'codex' && !ctx.dry) {
-    try { wired = CODEX_EVENTS.every((ev) => wiring(readJson(codexHooksPath(project, scope)), {}).events.includes(ev)); }
+  if (ctx.harnesses.includes('codex') && !ctx.dry) {
+    try { wired = wired && CODEX_EVENTS.every((ev) => wiring(readJson(codexHooksPath(project, scope)), {}).events.includes(ev)); }
     catch { wired = false; }
   }
   st.close();
@@ -552,13 +643,15 @@ async function steps(ctx, { anim, st }) {
   return 1;
 }
 
+const plural = (k, word) => `${k} ${word}${k === 1 ? '' : 's'}`;
+
 export async function status(project = process.cwd(), get = stats) {
   const line = (label, text, good) => out(`   ${good ? paint(C.MINT, '✓') : paint(C.LILAC, '!')} ${label.padEnd(8)} ${text}\n`);
   const ctx = newCtx(project);
   out(`${paint(C.GHOST, 'Spookling Memory', true)}  ${paint(C.GREY, project)}\n`);
-  const s = await get(), p = readPid(project);
-  line('server', s ? `up on 127.0.0.1:${PORT}${p?.alive ? `, pid ${p.pid}` : ''}`
-    : `down${p && !p.alive ? ` (stale .memory/server.pid: pid ${p.pid} is not running)` : ''}`, !!s);
+  const s = await get(ctx.mem), p = readPid(project);
+  line('server', s ? `up on 127.0.0.1:${readServer(ctx.mem)?.port ?? PORT}${p?.alive ? `, pid ${p.pid}` : ''}`
+    : `down${p && !p.alive ? ` (stale .memory/server.pid: pid ${p.pid} is not running)` : ''}; the next hook starts it`, !!s);
   const where = { events: [], mcp: [] }, got = new Set();
   for (const scope of ['project', 'user']) {
     try {
@@ -569,10 +662,12 @@ export async function status(project = process.cwd(), get = stats) {
     } catch (e) { line('config', e.message, false); }
   }
   const events = [...got];
-  line('hooks', where.events.join('; ') || 'none in .claude/settings.json or ~/.claude/settings.json', events.length === 3);
+  line('hooks', where.events.join('; ') || 'none in .claude/settings.json or ~/.claude/settings.json', events.length === Object.keys(HOOK_FILES).length);
   const ghostIn = ['project', 'user'].filter((sc) => { try { return isOurStatus(readJson(settingsPath(project, sc)).statusLine); } catch { return false; } });
-  line('ghost', ghostIn.length ? `in the status line (${ghostIn.map((sc) => rel(ctx, settingsPath(project, sc))).join(', ')})`
-    : 'not in the status line (init asks; --no-ghost skips it)', true);
+  const bandIn = ['project', 'user'].filter((sc) => { try { return readJson(settingsPath(project, sc)).enabledPlugins?.[BAND_ID] === true; } catch { return false; } });
+  line('ghost', bandIn.length ? `above the prompt (the ${BAND_ID} plugin, ${bandIn.map((sc) => rel(ctx, settingsPath(project, sc))).join(', ')})`
+    : ghostIn.length ? `in the status line (${ghostIn.map((sc) => rel(ctx, settingsPath(project, sc))).join(', ')})`
+      : 'not shown (--no-ghost; init again adds it)', true);
   line('mcp', where.mcp.join('; ') || 'no entry in .mcp.json or ~/.claude.json', where.mcp.length > 0);
   const missing = Object.values(HOOK_FILES).filter((f) => !existsSync(join(HOOKS_DIR, f)));
   if (events.length && missing.length) line('scripts', `missing in ${HOOKS_DIR}: ${missing.join(', ')}`, false);
@@ -590,9 +685,13 @@ export async function status(project = process.cwd(), get = stats) {
   if (codexGot.size) line('trust', 'review /hooks in Codex; configured hooks are not proof of trust or execution', false);
   const codexScript = existsSync(join(HOOKS_DIR, 'spookling-codex.cjs'));
   if (codexGot.size && !codexScript) line('scripts', `missing ${join(HOOKS_DIR, 'spookling-codex.cjs')}`, false);
-  const claude = events.length === 3 && where.mcp.length > 0;
+  const claude = events.length === Object.keys(HOOK_FILES).length && where.mcp.length > 0;
   line('harness', [claude && 'Claude Code', codex && 'Codex (configured; trust checked in /hooks)'].filter(Boolean).join(', ') || 'none wired', claude || codex);
   line('tagger', s?.tagger ? taggerText(s.tagger) : 'unknown (the server is down, or older than this wizard)', !!s?.tagger);
+  if (s?.tagging) {
+    const { waiting, error, retry_in: retry } = s.tagging;
+    line('tagging', error ? `failing: ${error}; ${plural(waiting, 'item')} saved and waiting, next try in ${retry} s` : waiting ? `${plural(waiting, 'item')} waiting` : 'up to date', !error);
+  }
   const need = { openrouter: 'OPENROUTER_API_KEY', anthropic: 'ANTHROPIC_API_KEY' }[s?.tagger?.via];
   const envPath = join(project, '.memory', 'keys.env');
   if (existsSync(envPath)) {
@@ -602,6 +701,13 @@ export async function status(project = process.cwd(), get = stats) {
       (!need || names.includes(need)) && (!mode || mode === 0o600));
   } else line('keys', need ? `no .memory/keys.env (the tagger needs ${need})` : 'no .memory/keys.env', !need);
   return s && ((claude && !missing.length) || (codex && codexScript)) ? 0 : 1;
+}
+
+// up to 10 s for a stopped server to go (SIGTERM is graceful: uvicorn closes the store first)
+async function gone(pid) {
+  const dead = () => { try { process.kill(pid, 0); return false; } catch (e) { return e.code !== 'EPERM'; } };
+  for (let i = 0; i < 50 && !dead(); i++) await sleep(200);
+  return dead();
 }
 
 // the whole tree: started detached, its pid leads a process group; on Windows taskkill /T
@@ -619,6 +725,15 @@ export async function uninstall(project = process.cwd(), { scope = 'project', ha
     preview: `drop only the Spookling hooks${harness === 'codex' ? '' : ' and the ghost (your own status line comes back)'}; everything else stays`,
     same: `no Spookling hooks in ${rel(ctx, sp)}`,
   });
+  if (harness !== 'codex') {
+    let has = false;
+    try { has = readJson(sp).enabledPlugins?.[BAND_ID] === true; } catch {}
+    if (has) {
+      const args = ['plugin', 'uninstall', BAND_ID, '--scope', scope];
+      const r = await runCmd(ctx, 'claude', args, { what: 'removed the ghost plugin', show: `claude ${args.join(' ')}`, cwd: project });
+      if (r && r.status !== 0) ctx.problems.push(`run claude plugin uninstall ${BAND_ID} --scope ${scope} yourself`);
+    }
+  }
   if (harness === 'codex') info('Codex hooks removed; memory and unrelated configuration stay.');
   else if (scope === 'project') {
     await mergeFile(ctx, mcpPath(project), removeMcp, {
@@ -634,11 +749,9 @@ export async function uninstall(project = process.cwd(), { scope = 'project', ha
   const p = readPid(project);
   if (p?.alive && (await confirm(`   Stop the memory server (pid ${p.pid})?`))) {
     if (stopServer(p.pid)) {
-      // SIGTERM is graceful (uvicorn closes the store first): wait up to 10 s
-      const gone = () => { try { process.kill(p.pid, 0); return false; } catch (e) { return e.code !== 'EPERM'; } };
-      for (let i = 0; i < 50 && !gone(); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+      const went = await gone(p.pid);
       rmSync(pidFile(project), { force: true });
-      if (gone()) ok(`stopped pid ${p.pid}`); else warn(`pid ${p.pid} is still shutting down; check with: status`);
+      if (went) ok(`stopped pid ${p.pid}`); else warn(`pid ${p.pid} is still shutting down; check with: status`);
     }
     else warn(`could not stop pid ${p.pid}`);
   } else if (p && !p.alive) rmSync(pidFile(project), { force: true });

@@ -1,4 +1,4 @@
-"""`serve --model`: maps a model id to its backend, and runs the codex subscription CLI as one."""
+"""`serve --model`: maps a model id to its backend, runs the codex subscription CLI as one, and none as no model."""
 from __future__ import annotations
 
 import os
@@ -7,8 +7,9 @@ import signal
 import subprocess
 import tempfile
 
+from .core import compact as keep
 from .core import models
-from .core.triage import FIX, WRITER, ModelTriage, Spent
+from .core.triage import FIX, WRITER, Item, ModelTriage, Ruling, Spent, Triage
 
 TIMEOUT = 90  # seconds per call; then the whole process tree is killed
 WINDOWS = os.name == "nt"
@@ -94,8 +95,21 @@ class Subscription(ModelTriage):
         return None, spent
 
 
+class Keyless(Triage):
+    """--model none: no model and no key. Every turn is still logged and searched word for word; the only tags are
+    standing rules, the user's own sentences that compact.is_rule (the survivor block's test) calls rules."""
+
+    name, version = "none", "none-1"
+
+    def judge(self, turns, date, known):
+        return [[Item("rule", value=s) for s in keep.sentences(t) if keep.is_rule(s)] for t in turns], Spent()
+
+    def resolve(self, turn, date, proposed, history, flags):
+        return Ruling(proposed["op"], proposed["value"], proposed["old"], proposed["when"]), Spent()
+
+
 def backend(model: str) -> str:
-    if model == "codex":
+    if model in ("codex", "none"):
         return model
     return "anthropic" if model.startswith("anthropic/") and os.environ.get("ANTHROPIC_API_KEY") else "openrouter"
 
@@ -106,6 +120,9 @@ def adapter(model: str | None = None, decider: str | None = None, decide_thresho
     b = backend(model)
     if b == "codex":
         out = {"model": model, "triage": Subscription(model)}
+    elif b == "none":
+        out = {"model": model, "triage": Keyless()}
+        decider = None  # Jev needs an OpenRouter key
     else:
         out = {"model": model}
         models.BACKEND = b

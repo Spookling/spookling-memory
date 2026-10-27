@@ -17,6 +17,10 @@ function words(p, now) {
   if (p?.up === false) return [['asleep, server off', C.GREY]];
   if (!p || now - p.at > STALE) return [['remembering you', C.LILAC]];
   if (p.event === 'stop') return [['saved', C.LILAC]];
+  if (p.event === 'start') {
+    return Number.isInteger(p.remembered) ? [[`${n(p.remembered, 'message')} remembered`, C.LILAC], [' · ', C.GREY],
+      [n(p.rules_kept || 0, 'standing rule'), C.LILAC]] : [['connected', C.LILAC]];
+  }
   if (p.event === 'compact') {
     const rest = (p.lines || 0) - (p.rules || 0);
     return [[p.rules ? `kept your ${n(p.rules, 'rule')}${rest ? ` and ${n(rest, 'line')}` : ''}`
@@ -47,6 +51,7 @@ function beside(st, p, said, now, project) {
   if (st === 'degraded') out.push([['the local server did not answer the last hook', C.GREY]]);
   else if (st === 'waiting') out.push([['no hook has run in this session yet', C.GREY]]);
   else if (st === 'active' && !nothing && p.cap) out.push([[`≈${kilo(p.chars || 0)} of the ${kilo(p.cap)} characters of room`, C.GREY]]);
+  if (p?.tagging) out.push([[`saving, not tagging: ${p.tagging.slice(0, 60)}`, C.GREY]]); // recall still works
   if (p?.at) out.push([[`last hook ${ago(now - p.at)}`, C.GREY]]);
   const file = pulse.where(project);
   if (file) out.push([[file.replace(/[\\/]pulse\.json$/, '').replace(require('node:os').homedir(), '~'), C.GREY]]);

@@ -26,9 +26,12 @@ const user = {
 test('hooks run in exec form: node, then the script path as one argument; the ghost names the spinner', () => {
   const h = (f, statusMessage) => ({ type: 'command', command: 'node', args: [`/opt/spookling-memory/hooks/${f}`], ...(statusMessage && { statusMessage }) });
   assert.deepEqual(cmds, {
-    PreCompact: h('pre-compact.js', '👻 keeping your rules'), UserPromptSubmit: h('user-prompt-submit.js', '👻 remembering'), Stop: h('stop.js'),
+    SessionStart: h('session-start.js'), PreCompact: h('pre-compact.js', '👻 keeping your rules'),
+    UserPromptSubmit: h('user-prompt-submit.js', '👻 remembering'), Stop: h('stop.js'),
   });
   assert.deepEqual(hookHandlers("/my spookling's $dir/hooks", path.posix).Stop.args, ["/my spookling's $dir/hooks/stop.js"]);
+  // init names the memory folder, so each project's hooks reach that project's own server
+  assert.deepEqual(hookHandlers('/h', path.posix, "/work/Jane's app/.memory").Stop.args, ['/h/stop.js', '--memory', "/work/Jane's app/.memory"]);
 });
 
 test('win32: a path with spaces, quotes, $ or a WSL share goes into args verbatim, no quoting', () => {
@@ -67,7 +70,7 @@ const HOOKS = fileURLToPath(new globalThis.URL('../../hooks/', import.meta.url))
 const spaced = () => {
   const d = join(mkdtempSync(join(tmpdir(), 'spk-')), "Jane O'Neil $pace", 'spookling-memory', 'hooks');
   mkdirSync(d, { recursive: true });
-  for (const f of [...Object.values(HOOK_FILES), 'pulse.js']) copyFileSync(join(HOOKS, f), join(d, f));
+  for (const f of [...Object.values(HOOK_FILES), 'pulse.js', 'server.js']) copyFileSync(join(HOOKS, f), join(d, f));
   return hookHandlers(d);
 };
 // a home and project of their own: a hook writes .memory/pulse.json, never into the real ~/.memory
@@ -116,9 +119,9 @@ test('exec form: UserPromptSubmit prints the server reply whole; Stop and PreCom
   assert.ok(seen.every((s) => s[1] === 'application/json' && s[2] === input));
 });
 
-test('addHooks on an empty file adds the three events', () => {
+test('addHooks on an empty file adds the four events', () => {
   const out = addHooks({}, cmds);
-  assert.deepEqual(Object.keys(out.hooks), ['PreCompact', 'UserPromptSubmit', 'Stop']);
+  assert.deepEqual(Object.keys(out.hooks), ['SessionStart', 'PreCompact', 'UserPromptSubmit', 'Stop']);
   assert.deepEqual(out.hooks.Stop, [{ hooks: [cmds.Stop] }]);
 });
 
@@ -191,7 +194,7 @@ test('wiring reports what is in place', () => {
   assert.deepEqual(wiring({}, {}), { events: [], mcp: false });
   const s = addHooks(user, cmds), m = addMcp({}, mcpEntry('/x', URL));
   const w = wiring(s, m);
-  assert.deepEqual([w.events.sort(), w.mcp], [['PreCompact', 'Stop', 'UserPromptSubmit'], true]);
+  assert.deepEqual([w.events.sort(), w.mcp], [['PreCompact', 'SessionStart', 'Stop', 'UserPromptSubmit'], true]);
 });
 
 test('readJson: missing or empty is {}, broken JSON throws', () => {

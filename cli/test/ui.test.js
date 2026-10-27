@@ -1,15 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FRAMES, PALETTE, SMALL } from '../src/ghost-sprite.js';
 import { TAGLINE } from '../src/cutscene.js';
 import { LITTLE, wrap } from '../src/ghost.js';
 import {
-  CLAUDE_INSTALL, DEMO_LABEL, HOOKS_DIR, INSTALL_DIR, SAY, SERVER_DIR, TAGGERS, VERSION, codexLogin, hooksJson, install, mcpJson, status, taggerText,
+  CLAUDE_INSTALL, DEMO_LABEL, HOOKS_DIR, INSTALL_DIR, BAND_DIR, SAY, SERVER_DIR, TAGGERS, VERSION, codexLogin, detect, hooksJson, install, mcpJson, status, taggerText,
 } from '../src/wizard.js';
 import { hookHandlers, mcpEntry, MCP_NAME } from '../src/hooks.js';
 
@@ -65,7 +65,7 @@ test('demo walks every step, writes nothing, and shows the tagline once', () => 
   for (let n = 1; n <= 7; n++) assert.match(o, new RegExp(`step ${n} of 7`));
   for (const k of [1, 2, 3, 4, 5, 6, 7]) assert.ok(o.includes(`spookling: ${SAY[k]}`), `line ${k}`);
   assert.equal(o.split(TAGLINE).length - 1, 1, 'the tagline once');
-  assert.equal(o.match(/demo: not written/g)?.length, 4); // keys.env, .gitignore, settings.json, .mcp.json
+  assert.equal(o.match(/demo: not written/g)?.length, 5); // keys.env, .gitignore, spookling.json, settings.json, .mcp.json
   for (const [i, t] of TAGGERS.entries()) assert.ok(o.includes(`${i + 1}  ${t.label}`), t.label);
   assert.match(o, /How should the tagger run\? \[1\]/);
   assert.match(o, /OpenRouter API key for Jev: •+/);
@@ -75,8 +75,11 @@ test('demo walks every step, writes nothing, and shows the tagline once', () => 
   if (/so the server runs there/.test(o)) assert.doesNotMatch(o, /uv sync in/);
   else { assert.match(o, /copy server\/ and hooks\/ to .*spookling-memory/); assert.match(o, /demo: not copied/); assert.match(o, /uv sync in .*\n.*demo: skipped/); assert.match(o, /demo: not started/); }
   assert.match(o, /"hooks": \{/);
-  assert.match(o, /Show the ghost in your status line\? \[Y\/n\] y/);
-  assert.match(o, /"statusLine": \{\n.*"type": "command",\n.*"command": "node (?:'|\\").*status-line\.js(?:'|\\")",\n.*"refreshInterval": 5/);
+  assert.doesNotMatch(o, /Show the ghost/, 'the ghost is in without a question');
+  // the ghost is the band above the prompt: the plugin in claude-mod/, installed by claude's own command
+  assert.match(o, /run claude plugin install spookling --marketplace \S*claude-mod --scope project --json\n.*\n.*demo: not run/);
+  assert.match(o, /The ghost sits above the prompt from the next Claude Code session: it blinks, and turns green when memory recalls/);
+  assert.doesNotMatch(o, /"statusLine"/, 'no status line ghost beside the band');
   assert.match(o, /"mcpServers": \{/);
   assert.match(o, /demo: a sample reply/);
   assert.ok(o.includes(DEMO_LABEL));
@@ -88,21 +91,43 @@ test('init wires a folder per version, and copies the package into it without a 
     : join(homedir(), '.spookling-memory', VERSION));
   assert.deepEqual([SERVER_DIR, HOOKS_DIR], [join(INSTALL_DIR, 'server'), join(INSTALL_DIR, 'hooks')]);
   const from = mkdtempSync(join(tmpdir(), 'spk-pkg-')), to = join(mkdtempSync(join(tmpdir(), 'spk-home-')), VERSION);
-  const files = ['server/pyproject.toml', 'server/spookling_memory/core/classes.json', 'hooks/stop.js',
+  const files = ['server/pyproject.toml', 'server/spookling_memory/core/classes.json', 'hooks/stop.js', 'claude-mod/hooks/register.tsx',
     'server/.venv/bin/python', 'server/spookling_memory/__pycache__/x.pyc', 'server/.pytest_cache/x', 'server/.memory/log.jsonl'];
   for (const f of files) { mkdirSync(join(from, f, '..'), { recursive: true }); writeFileSync(join(from, f), f); }
   mkdirSync(join(to, 'server', '.venv'), { recursive: true });
   writeFileSync(join(to, 'server', '.venv', 'made-by-uv-sync'), '');
+  mkdirSync(join(to, '..', 'claude-mod'), { recursive: true });
+  writeFileSync(join(to, '..', 'claude-mod', 'gone.js'), 'an older version\'s file');
   install(from, to);
-  assert.deepEqual(files.map((f) => existsSync(join(to, f))), [true, true, true, false, false, false, false]);
+  // the plugin goes beside the version folders, in the one folder every version installs it from
+  const at = (f) => (f.startsWith('claude-mod/') ? join(to, '..', f) : join(to, f));
+  assert.deepEqual(files.map((f) => existsSync(at(f))), [true, true, true, true, false, false, false, false]);
+  assert.equal(BAND_DIR, join(dirname(INSTALL_DIR), 'claude-mod'));
+  assert.ok(!existsSync(join(to, '..', 'claude-mod', 'gone.js')), 'an older version\'s plugin files go');
+  assert.deepEqual(JSON.parse(readFileSync(join(to, '..', 'claude-mod', 'bin', 'hooks.json'), 'utf8')), { hooks: join(to, 'hooks') });
   assert.ok(existsSync(join(to, 'server', '.venv', 'made-by-uv-sync')), 'an earlier uv sync is kept');
 });
 
-test('the tagger menu: Jev, Haiku or Codex, each started with its --model and asking only its own key', () => {
+test('the tagger menu: Jev, Haiku, Codex or none, each started with its --model and asking only its own key', () => {
   assert.deepEqual(TAGGERS.map((t) => [t.model, t.key]), [
-    ['typesafe/jev-router', 'OPENROUTER_API_KEY'], ['anthropic/claude-haiku-4.5', 'ANTHROPIC_API_KEY'], ['codex', null]]);
+    ['typesafe/jev-router', 'OPENROUTER_API_KEY'], ['anthropic/claude-haiku-4.5', 'ANTHROPIC_API_KEY'], ['codex', null], ['none', null]]);
   assert.match(TAGGERS[0].label, /\$0\.002 a chat/);
   for (const t of TAGGERS) assert.ok(`   › ${t.label}`.length <= 80, `${t.label}: wraps at 80 columns`);
+});
+
+test('detect: the harnesses on the machine, and a tagger it can already pay for, else none', () => {
+  const home = mkdtempSync(join(tmpdir(), 'spk-detect-')), mem = join(home, '.memory');
+  const env = { CLAUDE_CONFIG_DIR: join(home, 'no-claude'), CODEX_HOME: join(home, 'no-codex') };
+  const nothing = () => null, chatgpt = () => ({ ok: true, line: 'Logged in using ChatGPT' });
+  assert.deepEqual(detect(env, null, nothing), { claude: false, codex: false, tagger: 3, login: { ok: false, line: '' } });
+  assert.equal(detect({ ...env, OPENROUTER_API_KEY: 'k' }, null, nothing).tagger, 0);
+  mkdirSync(mem);
+  writeFileSync(join(mem, 'keys.env'), 'ANTHROPIC_API_KEY=sk-ant-x\n');
+  assert.equal(detect(env, mem, nothing).tagger, 1, 'a key init saved before');
+  const both = detect(env, mem, (c) => `${c} 1.0`, chatgpt);
+  assert.deepEqual([both.claude, both.codex, both.tagger], [true, true, 2], 'a Codex plan first: nothing new to pay for');
+  assert.equal(detect(env, null, (c) => (c === 'codex' ? '1' : null), () => ({ ok: true, line: 'Logged in using an API key - sk-…' })).tagger, 3,
+    'a Codex API-key login would bill the API: not picked unasked');
 });
 
 test('codex login status: its line when logged in, a failure when not, or when codex is missing', { skip: process.platform === 'win32' && 'a POSIX fake codex' }, () => {

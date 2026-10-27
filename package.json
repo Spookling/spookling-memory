@@ -1,6 +1,6 @@
 {
   "name": "spookling",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Spookling Memory for Claude Code and Codex: the install wizard, the local memory server and the hooks.",
   "type": "module",
   "bin": {
@@ -8,6 +8,7 @@
   },
   "files": [
     "bin/",
+    "claude-mod/",
     "cli/src/",
     "hooks/",
     "server/pyproject.toml",

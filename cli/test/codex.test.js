@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import path, { dirname, join } from 'node:path';
@@ -42,6 +42,8 @@ test('Codex shell commands quote paths; Windows uses a quoted native path', () =
   assert.equal(codexHandlers('C:\\Users\\Jane O\'Neil\\spookling-memory\\hooks', path.win32).Stop.command,
     'node "C:\\Users\\Jane O\'Neil\\spookling-memory\\hooks\\spookling-codex.cjs"');
   assert.throws(() => codexHandlers('C:\\%PATH%\\hooks', path.win32), /Codex hook path/);
+  assert.equal(codexHandlers('/h', path.posix, "/work/Jane's app/.memory").Stop.command, "node '/h/spookling-codex.cjs' --memory '/work/Jane'\\''s app/.memory'");
+  assert.throws(() => codexHandlers('C:\\hooks', path.win32, 'C:\\100%\\.memory'), /Codex hook path/);
   for (const h of Object.values(handlers)) {
     assert.equal(h.statusMessage, '👻 Spookling memory');
     assert.equal(h.args, undefined, 'Codex must receive a shell command, not Claude exec form');
@@ -53,7 +55,7 @@ test('Codex shell commands quote paths; Windows uses a quoted native path', () =
 test('real Codex command: health, recall, capture and compaction reuse the HTTP API with truthful ghost output', async () => {
   const dir = join(mkdtempSync(join(tmpdir(), 'spk-codex-')), (process.platform === 'win32' ? "spookling's space" : "spookling's $pace `literal`"), 'hooks');
   mkdirSync(dir, { recursive: true });
-  for (const f of ['spookling-codex.cjs', 'ghost.js', 'pulse.js']) copyFileSync(join(dirname(hook), f), join(dir, f));
+  for (const f of ['spookling-codex.cjs', 'ghost.js', 'pulse.js', 'server.js']) copyFileSync(join(dirname(hook), f), join(dir, f));
   const hs = codexHandlers(dir), seen = [];
   let pulseHeader = JSON.stringify({ facts: 1, rules: 1, events: 0, chats: 0, chars: 22, cap: 10000 });
   let code = 200, response;
@@ -85,6 +87,13 @@ test('real Codex command: health, recall, capture and compaction reuse the HTTP 
     const said = plain(recall.systemMessage);
     assert.equal(said[0], 'spookling active · 1 fact and 1 rule recalled', 'the counts the server sent');
     assert.ok(said.some((l) => l.endsWith('≈22 of the 10k characters of room')));
+    // the recall's line in .memory/usage.jsonl, for npx spookling usage: Codex's as well as Claude Code's
+    const home = mkdtempSync(join(tmpdir(), 'spk-codex-home-'));
+    mkdirSync(join(home, '.memory'));
+    await run(hs.UserPromptSubmit.command, url, input('UserPromptSubmit'), { HOME: home, USERPROFILE: home });
+    const [logged, ...more] = readFileSync(join(home, '.memory', 'usage.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.deepEqual([more.length, logged.harness, logged.prompt, logged.up, logged.facts, logged.rules, logged.chars], [0, 'codex', 'What units?', true, 1, 1, 22]);
+    seen.pop(); // that extra recall is not part of the sequence below
     for (const ev of ['Stop', 'PreCompact']) assert.deepEqual(await run(hs[ev].command, url, input(ev)), { code: 0, out: '', err: '' });
     assert.deepEqual(seen.map((r) => [r.method, r.url]), [
       ['GET', '/v1/stats'], ['POST', '/v1/hook/user-prompt-submit'], ['POST', '/v1/hook/stop'], ['POST', '/v1/hook/pre-compact'],

@@ -1,0 +1,9 @@
+{
+  "name": "spookling",
+  "author": {
+    "name": "Spookling"
+  },
+  "version": "0.1.4",
+  "description": "The Spookling ghost above the prompt: what memory recalled for each prompt, from Spookling Memory's own hooks and server. It blinks while it runs.",
+  "types": "./types/index.d.ts"
+}

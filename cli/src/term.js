@@ -111,6 +111,9 @@ export const setFeed = (f) => { feed = f; };
 export const press = (k) => { buf += k; pump(); };
 export const UP = '\x1b[A', DOWN = '\x1b[B';
 let onPrompt = () => {};
+// init --yes: every question takes its default, said on screen, and nothing is read
+let assume = false;
+export function setAssume(on) { assume = on; }
 export const setOnPrompt = (f) => { onPrompt = f; };
 // an assistant's shell can hold stdin open and never write: take the default after this long, once
 const NO_TTY_WAIT = 20_000;
@@ -175,6 +178,7 @@ function read({ hidden = false, key = false } = {}) {
 
 export async function ask(q, def = '', kind = 'line') {
   write(`${q}${def ? paint(C.GREY, ` [${def}]`) : ''} `);
+  if (assume) { write(paint(C.GREY, `${def} (--yes)`.trim()) + '\n'); return def; }
   onPrompt(true);
   feed?.({ kind, q });
   const a = await read();
@@ -188,6 +192,7 @@ export async function ask(q, def = '', kind = 'line') {
 
 export async function askHidden(q) {
   write(`${q} `);
+  if (assume) { write(paint(C.GREY, 'skipped (--yes)') + '\n'); return ''; }
   onPrompt(true);
   feed?.({ kind: 'hidden', q });
   const a = await read({ hidden: true });
@@ -197,11 +202,13 @@ export async function askHidden(q) {
 }
 
 export async function confirm(q, yes = true) {
+  if (assume) { write(`${q} ${paint(C.GREY, `${yes ? 'yes' : 'no'} (--yes)`)}\n`); return yes; }
   const a = (await ask(`${q} ${paint(C.GREY, yes ? '[Y/n]' : '[y/N]')}`, '', 'confirm')).toLowerCase();
   return a ? a.startsWith('y') : yes;
 }
 
 export async function choose(q, opts, def = 0) {
+  if (assume) { write(`${q} ${paint(C.GHOST, opts[def])} ${paint(C.GREY, '(--yes)')}\n`); return def; }
   if (!stdout.isTTY || (!stdin.isTTY && !feed)) {
     write(opts.map((o, i) => `   ${i + 1}  ${o}\n`).join(''));
     const a = (await ask(q, String(def + 1))).toLowerCase();

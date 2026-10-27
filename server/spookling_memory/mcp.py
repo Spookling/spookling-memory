@@ -16,8 +16,19 @@ server = MCPServer("spookling-memory", instructions="Long-term memory for this u
 _open = urllib.request.build_opener(urllib.request.ProxyHandler({})).open  # never send local memory through a proxy
 
 
+def base() -> str:
+    """SPOOKLING_MEMORY_URL if set; else the port in SPOOKLING_MEMORY_FOLDER's server.json; else the old fixed port."""
+    if os.environ.get("SPOOKLING_MEMORY_URL"):
+        return os.environ["SPOOKLING_MEMORY_URL"]
+    folder = os.environ.get("SPOOKLING_MEMORY_FOLDER")
+    try:
+        return f"http://127.0.0.1:{json.loads((Path(folder) / 'server.json').read_text(encoding='utf-8'))['port']}"
+    except (TypeError, OSError, ValueError, KeyError):
+        return "http://127.0.0.1:7447"
+
+
 def call(path: str, body: dict | None = None, raw: bytes | None = None):
-    url = os.environ.get("SPOOKLING_MEMORY_URL", "http://127.0.0.1:7447").rstrip("/") + path
+    url = base().rstrip("/") + path
     data = raw if raw is not None else None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method="GET" if data is None else "POST", headers={
         "content-type": "application/octet-stream" if raw is not None else "application/json"})
