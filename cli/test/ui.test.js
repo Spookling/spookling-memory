@@ -1,15 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FRAMES, PALETTE, SMALL } from '../src/ghost-sprite.js';
 import { TAGLINE } from '../src/cutscene.js';
 import { LITTLE, wrap } from '../src/ghost.js';
 import {
-  CLAUDE_INSTALL, DEMO_LABEL, HOOKS_DIR, INSTALL_DIR, SAY, SERVER_DIR, TAGGERS, VERSION, codexLogin, hooksJson, install, mcpJson, status, taggerText,
+  CLAUDE_INSTALL, DEMO_LABEL, HOOKS_DIR, INSTALL_DIR, BAND_DIR, SAY, SERVER_DIR, TAGGERS, VERSION, codexLogin, hooksJson, install, mcpJson, status, taggerText,
 } from '../src/wizard.js';
 import { hookHandlers, mcpEntry, MCP_NAME } from '../src/hooks.js';
 
@@ -75,8 +75,11 @@ test('demo walks every step, writes nothing, and shows the tagline once', () => 
   if (/so the server runs there/.test(o)) assert.doesNotMatch(o, /uv sync in/);
   else { assert.match(o, /copy server\/ and hooks\/ to .*spookling-memory/); assert.match(o, /demo: not copied/); assert.match(o, /uv sync in .*\n.*demo: skipped/); assert.match(o, /demo: not started/); }
   assert.match(o, /"hooks": \{/);
-  assert.match(o, /Show the ghost in your status line\? \[Y\/n\] y/);
-  assert.match(o, /"statusLine": \{\n.*"type": "command",\n.*"command": "node (?:'|\\").*status-line\.js(?:'|\\")",\n.*"refreshInterval": 5/);
+  assert.match(o, /Show the ghost above your prompt\? \[Y\/n\] y/);
+  // the ghost is the band above the prompt: the plugin in claude-mod/, installed by claude's own command
+  assert.match(o, /run claude plugin install spookling --marketplace \S*claude-mod --scope project --json\n.*\n.*demo: not run/);
+  assert.match(o, /The ghost sits above the prompt from the next Claude Code session: it blinks, and turns green when memory recalls/);
+  assert.doesNotMatch(o, /"statusLine"/, 'no status line ghost beside the band');
   assert.match(o, /"mcpServers": \{/);
   assert.match(o, /demo: a sample reply/);
   assert.ok(o.includes(DEMO_LABEL));
@@ -88,13 +91,20 @@ test('init wires a folder per version, and copies the package into it without a 
     : join(homedir(), '.spookling-memory', VERSION));
   assert.deepEqual([SERVER_DIR, HOOKS_DIR], [join(INSTALL_DIR, 'server'), join(INSTALL_DIR, 'hooks')]);
   const from = mkdtempSync(join(tmpdir(), 'spk-pkg-')), to = join(mkdtempSync(join(tmpdir(), 'spk-home-')), VERSION);
-  const files = ['server/pyproject.toml', 'server/spookling_memory/core/classes.json', 'hooks/stop.js',
+  const files = ['server/pyproject.toml', 'server/spookling_memory/core/classes.json', 'hooks/stop.js', 'claude-mod/hooks/register.tsx',
     'server/.venv/bin/python', 'server/spookling_memory/__pycache__/x.pyc', 'server/.pytest_cache/x', 'server/.memory/log.jsonl'];
   for (const f of files) { mkdirSync(join(from, f, '..'), { recursive: true }); writeFileSync(join(from, f), f); }
   mkdirSync(join(to, 'server', '.venv'), { recursive: true });
   writeFileSync(join(to, 'server', '.venv', 'made-by-uv-sync'), '');
+  mkdirSync(join(to, '..', 'claude-mod'), { recursive: true });
+  writeFileSync(join(to, '..', 'claude-mod', 'gone.js'), 'an older version\'s file');
   install(from, to);
-  assert.deepEqual(files.map((f) => existsSync(join(to, f))), [true, true, true, false, false, false, false]);
+  // the plugin goes beside the version folders, in the one folder every version installs it from
+  const at = (f) => (f.startsWith('claude-mod/') ? join(to, '..', f) : join(to, f));
+  assert.deepEqual(files.map((f) => existsSync(at(f))), [true, true, true, true, false, false, false, false]);
+  assert.equal(BAND_DIR, join(dirname(INSTALL_DIR), 'claude-mod'));
+  assert.ok(!existsSync(join(to, '..', 'claude-mod', 'gone.js')), 'an older version\'s plugin files go');
+  assert.deepEqual(JSON.parse(readFileSync(join(to, '..', 'claude-mod', 'bin', 'hooks.json'), 'utf8')), { hooks: join(to, 'hooks') });
   assert.ok(existsSync(join(to, 'server', '.venv', 'made-by-uv-sync')), 'an earlier uv sync is kept');
 });
 

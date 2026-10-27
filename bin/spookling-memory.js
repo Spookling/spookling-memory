@@ -16,7 +16,7 @@ const HELP = `Spookling Memory
   --scope project   init/uninstall: project harness files (.codex/hooks.json for Codex), the default
   --scope user      init/uninstall: user harness files ($CODEX_HOME/hooks.json for Codex)
   --harness codex   uninstall: remove Codex hooks (default: claude); init asks which harness to use
-  --no-ghost        init: do not ask to put the ghost in the Claude Code status line
+  --no-ghost        init: do not ask to put the ghost above the Claude Code prompt
   --no-anim         skip the animation (also skipped when NO_COLOR is set or output is not a terminal)
   --fast            demo only: no pauses (any key also skips the current one)
   --frames N        demo only: print N frames from across the intro, one after another, and stop

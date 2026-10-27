@@ -1,0 +1,6 @@
+{
+  "name": "spookling",
+  "description": "The Spookling Memory ghost above the Claude Code prompt",
+  "owner": { "name": "Spookling" },
+  "plugins": [{ "name": "spookling", "source": "./", "description": "The Spookling ghost above the prompt" }]
+}

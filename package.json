@@ -8,6 +8,7 @@
   },
   "files": [
     "bin/",
+    "claude-mod/",
     "cli/src/",
     "hooks/",
     "server/pyproject.toml",

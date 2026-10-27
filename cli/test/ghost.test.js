@@ -122,7 +122,7 @@ test('status reports the ghost; uninstall takes it out and puts your status line
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /✓ ghost +in the status line \(\.claude[\\/]settings\.json\)/);
   assert.match(r.stdout, /and the ghost \(your own status line comes back\)/);
-  assert.match(r.stdout, /✓ ghost +not in the status line/);
+  assert.match(r.stdout, /✓ ghost +not shown/);
 });
 
 // a fake memory server: the reply body plus the pulse header the real one sends
@@ -238,6 +238,17 @@ test('the ghost: plain cells, no half blocks, where the font has none', () => {
   for (const s of pixelGhost.STATES) {
     for (const row of pixelGhost.rows(s, { mode: 'cells', level: '256' })) assert.equal(strip(row).length, 20);
     for (const row of pixelGhost.rows(s, { mode: 'half', level: '256' })) assert.equal(strip(row).length, 16);
+  }
+});
+
+test('no ghost row starts with a space: Claude Code strips leading spaces, which squared off the head', () => {
+  for (const s of pixelGhost.STATES) {
+    for (const mode of ['cells', 'half']) {
+      const rows = pixelGhost.rows(s, { mode, level: '256' });
+      for (const row of rows) assert.doesNotMatch(row, /^\s/, `${s} ${mode}: ${JSON.stringify(row.slice(0, 12))}`);
+      const trimmed = rows.map((row) => strip(row.trimStart())); // what Claude Code draws
+      assert.deepEqual(trimmed, rows.map(strip), `${s} ${mode}: every pixel keeps its column`);
+    }
   }
 });
 

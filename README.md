@@ -308,7 +308,15 @@ Windows (native PowerShell, no Git Bash needed), macOS and Linux, WSL included. 
 
 ![Claude Code with the ghost in its status line: "1 fact · 1 rule · 2 past chats recalled"](cli/renders/ghost-status-line.png)
 
-In Claude Code a small ghost sits in the status line under the prompt (`init` asks; `--no-ghost` skips it). It says what memory last did, in plain words: `3 facts · 1 rule recalled` while Claude answers, `saved` after, `kept your 2 rules and 38 lines` after a compaction, `remembering you` when nothing is new, `asleep, server off` when the server is down. Its arms go up and down between refreshes; the words change only when memory does something. When a prompt recalls something, one quiet line lands under it: `👻 3 facts and 1 rule from memory`. Standing rules alone, a save or a compaction add nothing to the conversation. Already have a status line? Yours stays first with the ghost after it, and `uninstall` puts yours back exactly.
+In Claude Code the ghost sits just above the prompt (`init` asks; `--no-ghost` skips it). It is a small Claude Code plugin, `spookling`, that `init` installs from `claude-mod/` with `claude plugin install`. It blinks every few seconds while it runs and only claims what the hooks report:
+
+- **ready** (purple): the memory server answered. Beside it: messages remembered, facts in force, standing rules.
+- **searching** (blue): this prompt's recall is running.
+- **active** (green): the recall reached Claude, for example `1 fact, 2 rules and 2 past chats recalled (≈5.6k chars), delivered with the prompt`.
+- **ready, idle** again once the turn ends, saying what the last prompt got.
+- **degraded** (amber, with a sweat drop): the server did not answer, or the hook did not report for this prompt.
+
+When a prompt recalls something, one quiet line also lands under it: `👻 3 facts and 1 rule from memory`. A Claude Code that cannot install plugins gets the same ghost in its status line instead, without the blink (a status line is a command Claude Code reruns, not a timer); your own status line stays first there, and `uninstall` puts it back exactly.
 
 ---
 
