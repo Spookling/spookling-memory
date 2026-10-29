@@ -8,6 +8,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -310,11 +311,13 @@ def test_hooks_start_each_projects_own_server_keep_projects_apart_and_restart_it
         start = claude_hook("session-start", a, {"session_id": "s1", "cwd": str(a.parent)})
         assert start.returncode == 0 and start.stdout == ""  # SessionStart output would become context
         assert json.loads((a / "pulse.json").read_text())["event"] == "start"  # it started the server and returned
-        for _ in range(300):
-            if (a / "server.json").exists():
+        for _ in range(300):  # its port, then the folder open (a 503 until then has no counts)
+            try:
+                port_a = json.loads((a / "server.json").read_text())["port"]
+                urllib.request.urlopen(f"http://127.0.0.1:{port_a}/v1/stats", timeout=2)
                 break
-            time.sleep(0.1)
-        port_a = json.loads((a / "server.json").read_text())["port"]
+            except (OSError, ValueError):
+                time.sleep(0.1)
         start = claude_hook("session-start", a, {"session_id": "s1", "cwd": str(a.parent)})
         p = json.loads((a / "pulse.json").read_text())
         assert p["event"] == "start" and p["up"] and p["remembered"] == 0  # the server's own count, not a guess

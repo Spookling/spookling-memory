@@ -165,6 +165,7 @@ def bind(port: int | None) -> socket.socket:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         s.bind((HOST, port or 0))
+        s.listen(2048)  # now, not when uvicorn starts: a hook reading server.json is queued, never refused
     except OSError:
         s.close()
         raise
