@@ -21,8 +21,7 @@ function project(pulse) {
   if (pulse) writeFileSync(join(d, '.memory', 'pulse.json'), JSON.stringify({ at: Date.now(), session: 's1', up: true, ...pulse }));
   return d;
 }
-// The tests up to the ghost look's are the older looks': pixel unless they name another. The default is the ghost look.
-const line = (d, { env = {}, args = [], session = 's1', look = 'pixel' } = {}) => spawnSync(process.execPath, [LINE, ...(look && !args.includes('--look') ? ['--look', look] : []), ...args], {
+const line = (d, { env = {}, args = [], session = 's1' } = {}) => spawnSync(process.execPath, [LINE, ...args], {
   input: JSON.stringify({ session_id: session, cwd: d, workspace: { current_dir: d, project_dir: d } }),
   env: { PATH: process.env.PATH, HOME: d, USERPROFILE: d, COLORTERM: 'truecolor', ...env }, encoding: 'utf8', timeout: 15000,
 }).stdout;
@@ -70,8 +69,7 @@ test('statusLine on Windows: forward slashes in double quotes; what Git Bash and
 });
 
 test('the ghost line: idle, recalled, saved, compacted, asleep; another session\'s news is not shown', () => {
-  assert.match(strip(line(project())), /^[▀▄]●●[▀▄] remembering you\n$/);
-  const said = (pulse, opts) => strip(line(project(pulse), opts)).slice(5).trim();
+  const said = (pulse, opts = {}) => line(project(pulse), { ...opts, env: { NO_COLOR: '1', ...opts.env } }).replace(/^👻 /, '').trim();
   assert.equal(said({ event: 'prompt', facts: 3, rules: 1 }), '3 facts · 1 rule recalled');
   assert.equal(said({ event: 'prompt', chats: 2, events: 1, rules: 0 }), '1 event · 2 past chats recalled');
   assert.equal(said({ event: 'prompt', rules: 2 }), 'listening', 'standing rules alone are not news');
@@ -83,55 +81,18 @@ test('the ghost line: idle, recalled, saved, compacted, asleep; another session\
   assert.equal(said({ event: 'prompt', facts: 3, at: Date.now() - 11 * 60_000 }), 'remembering you', 'old news fades');
 });
 
-test('the ghost line: pixels in truecolour, the emoji otherwise, no escapes under NO_COLOR', () => {
-  const d = project({ event: 'prompt', facts: 3, rules: 1, chars: 5000, cap: 10000 });
-  const tc = line(d);
-  assert.match(tc, /\x1b\[38;2;178;138;255m[▀▄]\x1b\[0m\x1b\[38;2;78;25;207;48;2;223;212;255m●/);
-  assert.match(line(d, { env: { COLORTERM: '' } }), /^👻 \x1b\[38;5;\d+m3 facts/);
-  assert.equal(line(d, { env: { NO_COLOR: '1' } }), '👻 3 facts · 1 rule recalled\n');
-  assert.equal(line(d, { env: { NO_COLOR: '1' }, args: ['--look', 'meter'] }), '👻 [###...] 3 facts · 1 rule recalled\n');
-  assert.match(strip(line(d, { args: ['--look', 'meter'] })), /^.{4} ███    3 facts/);
-  assert.equal(strip(line(d, { args: ['--look', 'emoji'] })), '👻 3 facts · 1 rule recalled\n');
-  assert.match(strip(line(project({ up: false }))), /^▄--▄ asleep, server off/);
-});
-
-test('look two-line: hat, eyes and hem over two rows with the words on the first; one emoji line without truecolour', () => {
-  const d = project({ event: 'prompt', facts: 3, rules: 1 }), two = ['--look', 'two-line'];
-  assert.deepEqual(strip(line(d, { args: two })).split('\n'), ['▄▀▀▀▄ 3 facts · 1 rule recalled', '▀▀▀▀▀', '']);
-  assert.match(line(d, { args: two }), /\x1b\[38;2;78;25;207;48;2;2;2;2m▀/, 'a purple hat over a dark eye');
-  assert.equal(line(d, { args: two, env: { NO_COLOR: '1' } }), '👻 3 facts · 1 rule recalled\n');
-  assert.equal(line(d, { args: two, env: { COLORTERM: '' } }).split('\n').length, 2, 'one row and the newline');
-  assert.deepEqual(strip(line(d, { args: [...two, '--then', 'printf "[Opus] app\\n"'] })).split('\n'),
-    ['[Opus] app', '▄▀▀▀▄ 3 facts · 1 rule recalled', '▀▀▀▀▀', '']);
-});
-
 test('the ghost line: your old status line first, two spaces, then the ghost', () => {
   const d = project({ event: 'stop' });
   assert.equal(line(d, { env: { NO_COLOR: '1' }, args: ['--then', 'printf "[Opus] app\\n"'] }), '[Opus] app  👻 saved\n');
   assert.equal(line(d, { env: { NO_COLOR: '1' }, args: ['--then', 'exit 3'] }), '👻 saved\n', 'a failing one is left out');
 });
 
-test('the ghost bobs between seconds and the words stay put', async () => {
-  const d = project({ event: 'prompt', facts: 1 });
-  const at = () => new Promise((r) => setTimeout(r, 1100 - (Date.now() % 1000))); // just past the next second
-  const two = { args: ['--look', 'two-line'] };
-  await at();
-  const [a, ta] = [strip(line(d)), line(d, two).split('\n')];
-  await at();
-  const [b, tb] = [strip(line(d)), line(d, two).split('\n')];
-  assert.notEqual(a.slice(0, 4), b.slice(0, 4));
-  assert.equal(a.slice(4), b.slice(4));
-  assert.notEqual(ta[1], tb[1], 'the hem sways');
-  assert.equal(ta[0], tb[0]);
-});
-
 // node's own start varies by host (19 ms to 90 ms here), so this times what the script adds to it
 test('the ghost line takes under 50 ms beyond starting node', () => {
   const d = project({ event: 'prompt', facts: 3, rules: 1 });
   const ms = (f) => Math.min(...Array.from({ length: 7 }, () => { const t = process.hrtime.bigint(); f(); return Number(process.hrtime.bigint() - t) / 1e6; }));
-  const bare = ms(() => spawnSync(process.execPath, ['-e', '0'])), ours = ms(() => line(d)), two = ms(() => line(d, { args: ['--look', 'two-line'] }));
-  const ghost = ms(() => line(d, { look: null }));
-  for (const t of [ours, two, ghost]) assert.ok(t - bare < 50, `fastest of 7: ${t.toFixed(1)} ms, node -e 0 ${bare.toFixed(1)} ms`);
+  const bare = ms(() => spawnSync(process.execPath, ['-e', '0'])), ours = ms(() => line(d));
+  assert.ok(ours - bare < 50, `fastest of 7: ${ours.toFixed(1)} ms, node -e 0 ${bare.toFixed(1)} ms`);
 });
 
 test('status reports the ghost; uninstall takes it out and puts your status line back', () => {
@@ -237,16 +198,16 @@ test('user scope: a project without .memory uses ~/.memory, for the hooks and th
   assert.equal(out, '👻 asleep, server off\n');
 });
 
-// the ghost look, the default: the pixel ghost of hooks/ghost.js, its state and the pulse's numbers beside it
+// the ghost of hooks/ghost.js, its state and the pulse's numbers beside it
 const pixelGhost = createRequire(import.meta.url)('../../hooks/ghost.js');
 const card = (pulse, { env = {}, session = 's1' } = {}) => {
   const d = project(pulse);
-  return { d, rows: line(d, { look: null, env, session }) };
+  return { d, rows: line(d, { env, session }) };
 };
 const words = (rows) => strip(rows).split('\n').map((l) => l.trim()).filter((l) => /[a-z~]/i.test(l))
   .map((l) => l.replace(/^[▀▄ ]+(?=[a-z~/≈])/i, ''));
 
-test('the ghost look is the default: the state and the pulse\'s own numbers beside the ghost', () => {
+test('the state and the pulse\'s own numbers beside the ghost', () => {
   const active = card({ event: 'prompt', facts: 3, rules: 1, chats: 2, chars: 4200, cap: 10000, at: Date.now() - 12_000 });
   assert.deepEqual(words(active.rows).slice(0, 3), [
     'spookling active · 3 facts · 1 rule · 2 past chats recalled', '≈4.2k of the 10k characters of room', 'last hook 12 s ago']);
@@ -261,7 +222,7 @@ test('the ghost look is the default: the state and the pulse\'s own numbers besi
   assert.equal(words(card({ event: 'prompt', facts: 3 }, { session: 's2' }).rows)[0], 'spookling waiting · remembering you', 'not another session\'s news');
 });
 
-test('the ghost look: 24-bit colour where the terminal says so, the xterm 256 palette otherwise, one emoji line under NO_COLOR', () => {
+test('the ghost: 24-bit colour where the terminal says so, the xterm 256 palette otherwise, one emoji line under NO_COLOR', () => {
   const pulse = { event: 'prompt', facts: 3, rules: 1 };
   assert.match(card(pulse).rows, /\x1b\[38;2;31;138;60/, 'a green outline in 24-bit');
   const plain256 = card(pulse, { env: { COLORTERM: '' } }).rows;
@@ -270,7 +231,7 @@ test('the ghost look: 24-bit colour where the terminal says so, the xterm 256 pa
   assert.equal(card(pulse, { env: { NO_COLOR: '1' } }).rows, '👻 3 facts · 1 rule recalled\n');
 });
 
-test('the ghost look: plain cells, no half blocks, where the font has none', () => {
+test('the ghost: plain cells, no half blocks, where the font has none', () => {
   const cells = card({ event: 'prompt', facts: 1 }, { env: { SPOOKLING_GHOST: 'cells' } }).rows;
   assert.doesNotMatch(cells, /[▀▄]/);
   assert.equal(strip(cells).split('\n').length, 10, 'nine rows of the small ghost and the newline');

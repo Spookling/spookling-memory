@@ -235,10 +235,34 @@ async function runCmd(ctx, cmd, args, { what, show }) {
   if (ctx.dry) { ctx.written.push([cmd, what]); info('demo: not run'); return { status: 0 }; }
   const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 60_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   for (const l of `${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n').filter(Boolean)) info(l);
-  if (r.status === 0) { ctx.written.push([cmd, what]); ok('done'); } else warn(r.error ? `${cmd}: ${r.error.code ?? r.error.message}` : `${cmd} exited ${r.status}`);
+  if (r.status === 0) { ctx.written.push([cmd, what]); ok('done'); }
+  else warn(r.error?.code === 'ENOENT' ? `${cmd} is not on your PATH` : r.error ? `${cmd}: ${r.error.code ?? r.error.message}` : `${cmd} exited ${r.status}`);
   return r;
 }
 const shq = (s) => (/^[\w./:@=-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
+
+// the official installers; both put claude in ~/.local/bin, like uv's
+export const CLAUDE_INSTALL = WIN
+  ? 'powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex"'
+  : 'curl -fsSL https://claude.ai/install.sh | bash';
+
+// user scope needs `claude mcp` to add the MCP entry; project scope only writes files, so a missing claude is a warning there
+export async function claudeCli(ctx, find = () => version('claude')) {
+  let v = find();
+  if (v) return ok(`claude ${v}`), v;
+  if (ctx.dry) return info('claude is not on your PATH. demo: init would offer to install it here.'), null;
+  warn(ctx.scope === 'user' ? 'claude is not on your PATH. Step 5 runs it to add the MCP entry.'
+    : 'claude is not on your PATH. Claude Code is what loads these hooks.');
+  info(`install it with: ${CLAUDE_INSTALL}`);
+  if (await confirm('   Run that now?', false)) {
+    spawnSync(CLAUDE_INSTALL, { shell: true, stdio: 'inherit' });
+    process.env.PATH = `${join(homedir(), '.local', 'bin')}${delimiter}${process.env.PATH}`;
+    v = find();
+  }
+  if (v) ok(`claude ${v}`);
+  else info('Carrying on without it. Install Claude Code, then run init again.');
+  return v;
+}
 
 // Claude Code writes ~/.claude.json itself, so only `claude mcp` changes it; add-json refuses a name that exists
 const userEntry = (project) => { try { return readJson(mcpPath(project, 'user')).mcpServers?.[MCP_NAME]; } catch { return undefined; } };
@@ -246,6 +270,11 @@ async function userMcp(ctx, entry) {
   const have = ctx.dry ? undefined : userEntry(ctx.project), json = JSON.stringify(entry);
   if (JSON.stringify(have) === json) return ok(`${rel(ctx, mcpPath(ctx.project, 'user'))} already has the MCP entry`);
   const add = ['mcp', 'add-json', MCP_NAME, json, '--scope', 'user'];
+  if (!ctx.dry && !ctx.claude) {
+    out(`\n   ${paint(C.GHOST, 'run')} claude ${add.map(shq).join(' ')}\n`);
+    warn('not run: claude is not on your PATH');
+    return fail(ctx, 'MCP entry not added: install Claude Code, then run init again (or the claude mcp add-json line above)');
+  }
   if (have) {
     const r = await runCmd(ctx, 'claude', ['mcp', 'remove', MCP_NAME, '--scope', 'user'],
       { what: `the old ${MCP_NAME} entry removed`, show: `claude mcp remove ${MCP_NAME} --scope user` });
@@ -377,6 +406,7 @@ async function steps(ctx, { anim, st }) {
   const pick = await choose('   Which one?', ['Claude Code', 'Codex', 'Both'], both ? 2 : found.codex ? 1 : 0);
   ctx.harnesses = [['claude'], ['codex'], ['claude', 'codex']][pick];
   ok(['Claude Code', 'Codex', 'Claude Code and Codex'][pick]);
+  if (ctx.harnesses.includes('claude')) ctx.claude = await claudeCli(ctx);
 
   await step(ctx, 3);
   if (!ctx.dry) info(`using what you have: ${TAGGERS[found.tagger].label.split(' (')[0].replace(/^Your/, 'your')}`);
