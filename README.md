@@ -1,6 +1,6 @@
 # Spookling Memory
 
-*Algorithm v2.1 · `spookling` 0.1.3 · October 2026*
+*Algorithm v2.1 · `spookling` 0.2.0 · October 2026*
 
 **Your AI forgets you every session. It brings back the car you sold. It drops your rules the moment the chat gets long.**
 
@@ -245,7 +245,7 @@ Behind each number: the result file, the judge logs, both judges' verdicts, the 
 
 In Codex, the pixel ghost shows in the hook messages: `ready` after a successful server health check, with the messages, facts and standing rules the server holds beside it; `active` after successful recall, green, with what was recalled (a search with no matching facts is one `active` line, not a ghost). Failed health checks or recall show the `degraded` ghost and do not block Codex. This is a hook indicator, not a permanent widget; [setup and removal](cli/README.md#codex) use the same local server and `.memory/` data. In Claude Code the same ghost is the status line.
 
-Spookling Memory is out as `spookling` 0.1.3, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
+Spookling Memory is out as `spookling` 0.2.0, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
 
 ```bash
 npx spookling init
@@ -293,7 +293,7 @@ Every file is shown before it is written, and `n` skips it; `--yes` writes each 
 
 `--yes` takes the first of these your machine already has, in the order Codex plan, Anthropic key, OpenRouter key, none. Jev is the default only when you choose it.
 
-**Messages are saved before anything is tagged.** If tagging fails (no key, no credit, `codex` logged out), the messages are still written to the log and found by search; `status` and the ghost say why tagging stopped, and the server tries again every five minutes. Fix the cause and those messages get tagged.
+**Messages are saved before anything is tagged.** If tagging fails (no key, no credit, `codex` logged out), the messages are still written to the log and found by search; `status` and the ghost say why tagging stopped, and the first save at least five minutes later tries again (there is no timer). Fix the cause and those messages get tagged.
 
 To switch, run `init` again: it restarts this folder's server with the new tagger. Messages tagged before keep their tags; later ones get the new tagger's. `status` shows which tagger is running.
 

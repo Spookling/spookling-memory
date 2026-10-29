@@ -28,7 +28,7 @@ export const SERVER_DIR = join(INSTALL_DIR, 'server'), HOOKS_DIR = join(INSTALL_
 const PORT = 7447, SERVER_URL = `http://127.0.0.1:${PORT}`;
 const STEPS = ['Checks', 'Harness', 'Tagger', 'Server', 'Wire harness', 'Smoke test', 'Done'];
 export const DEMO_LABEL = 'demo, nothing is written';
-const IGNORE = ['keys.env', 'server.pid', 'server.log', 'server.json', 'server.starting', 'spookling.json', 'cache.sqlite*', 'vectors.sqlite*', 'pulse.json*'];
+const IGNORE = ['keys.env', 'server.pid', 'server.log', 'server.json', 'spookling.json', 'cache.sqlite*', 'vectors.sqlite*', 'pulse.json*'];
 
 // at most 52 characters each, so the bubble fits beside the ghost at 80 columns (tested)
 export const SAY = {
@@ -149,7 +149,7 @@ const rel = (ctx, p) => {
   const r = relative(ctx.project, p), h = relative(homedir(), p);
   return !r ? p : !r.startsWith('..') && !isAbsolute(r) ? r : !h.startsWith('..') && !isAbsolute(h) ? join('~', h) : p;
 };
-const pidFile = (project) => join(project, '.memory', 'server.pid');
+const pidFile = (project) => join(project, '.memory', 'server.pid'); // 0.1.x only: newer servers name their pid in server.json
 // npm's claude and codex on Windows are .cmd files, which only a shell runs
 const version = (cmd) => {
   const r = spawnSync(`${cmd} --version`, { shell: true, encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
@@ -162,9 +162,10 @@ const real = (p) => { try { return realpathSync(p); } catch { return p; } };
 const readServer = (mem) => { try { return JSON.parse(readFileSync(join(mem, 'server.json'), 'utf8')); } catch { return null; } };
 
 // one call to the server of this memory folder: the port in its server.json, and only if that server says it serves
-// this folder (a stale server.json can name a port another folder's server has since)
-function call(mem, path, body) {
-  const s = readServer(mem);
+// this folder (a stale server.json can name a port another folder's server, or another app, has since). port: a
+// 0.1.x server on its fixed port, which sends no folder header: the caller has checked its server.pid.
+function call(mem, path, body, port) {
+  const s = port ? { port } : readServer(mem);
   if (!Number.isInteger(s?.port)) return Promise.resolve(null);
   return new Promise((res) => {
     const req = http.request(`http://127.0.0.1:${s.port}${path}`, { method: body ? 'POST' : 'GET', timeout: 1500, headers: { 'content-type': 'application/json' } }, (r) => {
@@ -174,7 +175,9 @@ function call(mem, path, body) {
       r.on('end', () => {
         const at = r.headers['x-spookling-folder'];
         const mine = (x) => (WIN ? x.toLowerCase() : x);
-        if (r.statusCode !== 200 || (at && mine(at) !== mine(real(mem)))) return res(null);
+        let here;
+        try { here = at === undefined ? undefined : decodeURIComponent(at); } catch { here = null; }
+        if (r.statusCode !== 200 || (here === undefined ? !port : mine(here ?? '') !== mine(real(mem)))) return res(null);
         try { res(JSON.parse(text)); } catch { res({ body: text.slice(0, 80) }); }
       });
     });
@@ -186,12 +189,23 @@ function call(mem, path, body) {
 }
 const stats = (mem) => call(mem, '/v1/stats');
 
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 function readPid(project) {
   try {
     const pid = Number(readFileSync(pidFile(project), 'utf8').trim());
-    if (!pid) return null;
-    try { process.kill(pid, 0); return { pid, alive: true }; } catch (e) { return { pid, alive: e.code === 'EPERM' }; }
+    return pid ? { pid, alive: alive(pid) } : null;
   } catch { return null; }
+}
+
+// the running server of this folder, as {pid, port, legacy}: the pid in server.json once its server has answered for
+// this folder (never a pid file alone, which can outlive its process and name a reused pid); else a 0.1.x server on
+// 7447, which writes no server.json, while its server.pid is alive. legacy: its pid leads uv's process group.
+async function running(project) {
+  const mem = join(project, '.memory'), s = readServer(mem);
+  if (Number.isInteger(s?.pid) && alive(s.pid) && await stats(mem)) return { pid: s.pid, port: s.port, legacy: false };
+  const p = readPid(project);
+  if (!s && p?.alive && await call(mem, '/v1/stats', undefined, PORT)) return { pid: p.pid, port: PORT, legacy: true };
+  return null;
 }
 
 // mode is POSIX only: on Windows chmod would change only the read-only flag
@@ -329,11 +343,12 @@ function startServer(ctx) {
     cwd: ctx.project, detached: true, windowsHide: true, stdio: ['ignore', log, log],
     env: { ...process.env, PYTHONUTF8: '1', ...ctx.keys },
   });
-  child.on('error', () => {});
+  child.exited = false;
+  child.on('error', () => { child.exited = true; });
+  child.on('exit', () => { child.exited = true; });
   child.unref();
   closeSync(log);
-  if (child.pid) writeFileSync(pidFile(ctx.project), `${child.pid}\n`);
-  return child.pid;
+  return child.pid ? child : null;
 }
 
 async function waitForStats(ctx) {
@@ -341,7 +356,7 @@ async function waitForStats(ctx) {
   for (let i = 0; i < 10; i++) {
     const r = await stats(ctx.mem);
     if (r) return r;
-    if (!ctx.pid || !readPid(ctx.project)?.alive) return null;
+    if (!ctx.child || ctx.child.exited) return null;
     out(paint(C.GREY, '.'));
     await sleep(d + Math.random() * d);
     d = Math.min(d * 2, 3000);
@@ -490,31 +505,41 @@ async function steps(ctx, { anim, st }) {
       await fail(ctx, 'uv sync failed');
     } else {
       if (!ctx.dry) ok('server installed');
-      // what a server started later by a hook reads: the tagger, and where the server and uv are
-      const config = { version: VERSION, server: SERVER_DIR, uv: which('uv'), model: ctx.model, decider: ctx.decider };
+      // what a server started later by a hook reads: the tagger. Where the server and uv are stays out of the project
+      // (a cloned repo could name its own executable there): the hooks run the server beside them, with this uv
+      const config = { version: VERSION, model: ctx.model, decider: ctx.decider };
       await write(ctx, join(ctx.mem, 'spookling.json'), JSON.stringify(config, null, 2) + '\n', {
-        what: 'the tagger and the server, for the hooks to restart it after a reboot',
+        what: 'the tagger, for the hooks to restart the server after a reboot',
       });
-      let up = !ctx.dry && await stats(ctx.mem);
+      if (!ctx.dry && !SHARE) writeFileSync(join(INSTALL_DIR, 'install.json'), JSON.stringify({ uv: which('uv') }) + '\n');
+      let was = !ctx.dry && await running(ctx.project), up = was && await call(ctx.mem, '/v1/stats', undefined, was.legacy ? PORT : undefined);
+      if (was?.legacy) {
+        // a 0.1.x server holds the folder on 7447: the new hooks cannot start this folder's server until it stops
+        warn(`an older Spookling server (pid ${was.pid}) holds .memory on 127.0.0.1:${PORT}.`);
+        if (await confirm(`   Stop it, so this version's server can take over? (memory stays as it is)`)) {
+          stopServer(was.pid, true);
+          if (await gone(was.pid)) { rmSync(pidFile(ctx.project), { force: true }); ok(`stopped pid ${was.pid}`); was = up = null; }
+          else await fail(ctx, `pid ${was.pid} did not stop; stop it yourself, then run init again`);
+        } else await fail(ctx, 'the older server still holds .memory: stop it (kill the pid in .memory/server.pid) and run init again');
+      }
       if (up?.tagger && (up.tagger.model !== ctx.model || (up.tagger.decider || null) !== ctx.decider)) {
-        const p = readPid(ctx.project)?.alive ? readPid(ctx.project) : readServer(ctx.mem); // uv's pid leads the group
         warn(`this folder's server tags with ${taggerText(up.tagger)}.`);
-        if (p?.pid && await confirm(`   Restart it (pid ${p.pid}) with ${taggerText({ model: ctx.model, via: viaOf(ctx.model), decider: ctx.decider })}?`)) {
-          stopServer(p.pid);
-          await gone(p.pid);
+        if (await confirm(`   Restart it (pid ${was.pid}) with ${taggerText({ model: ctx.model, via: viaOf(ctx.model), decider: ctx.decider })}?`)) {
+          stopServer(was.pid);
+          await gone(was.pid);
           up = null;
         } else await fail(ctx, 'the running server has another tagger');
       }
-      if (up) ok(`this folder's server already answers on 127.0.0.1:${readServer(ctx.mem).port}`);
+      if (up && !was?.legacy) ok(`this folder's server already answers on 127.0.0.1:${was.port}`);
       else if (!ctx.problems.length && await confirm('   Start it in the background? (log in .memory/server.log; the hooks restart it if it stops)')) {
         if (ctx.dry) {
           info('demo: not started');
           ctx.written.push(['memory server', 'its own port, in .memory/server.json']);
         } else {
-          ctx.pid = startServer(ctx);
-          if (ctx.pid) {
-            ok(`started, pid ${ctx.pid}`);
-            ctx.written.push(['memory server', `pid ${ctx.pid}, port in .memory/server.json`]);
+          ctx.child = startServer(ctx);
+          if (ctx.child) {
+            ok(`started, pid ${ctx.child.pid}`);
+            ctx.written.push(['memory server', 'pid and port in .memory/server.json']);
           } else { warn('could not start uv'); await fail(ctx, 'server did not start'); }
         }
       } else if (!up) ctx.skipped.push('starting the server (the first hook starts it)');
@@ -625,9 +650,9 @@ export async function status(project = process.cwd(), get = stats) {
   const line = (label, text, good) => out(`   ${good ? paint(C.MINT, '✓') : paint(C.LILAC, '!')} ${label.padEnd(8)} ${text}\n`);
   const ctx = newCtx(project);
   out(`${paint(C.GHOST, 'Spookling Memory', true)}  ${paint(C.GREY, project)}\n`);
-  const s = await get(ctx.mem), p = readPid(project);
-  line('server', s ? `up on 127.0.0.1:${readServer(ctx.mem)?.port ?? PORT}${p?.alive ? `, pid ${p.pid}` : ''}`
-    : `down${p && !p.alive ? ` (stale .memory/server.pid: pid ${p.pid} is not running)` : ''}; the next hook starts it`, !!s);
+  const r = await running(project), s = await get(ctx.mem) || (r?.legacy ? await call(ctx.mem, '/v1/stats', undefined, PORT) : null);
+  line('server', r?.legacy ? `an older (0.1.x) server, pid ${r.pid}, holds .memory on 127.0.0.1:${PORT}: run init to replace it`
+    : s ? `up on 127.0.0.1:${readServer(ctx.mem)?.port}${r ? `, pid ${r.pid}` : ''}` : 'down; the next hook starts it', !!s && !r?.legacy);
   const where = { events: [], mcp: [] }, got = new Set();
   for (const scope of ['project', 'user']) {
     try {
@@ -684,10 +709,11 @@ async function gone(pid) {
   return dead();
 }
 
-// the whole tree: started detached, its pid leads a process group; on Windows taskkill /T
-function stopServer(pid) {
+// the server's own pid (server.json): SIGTERM is graceful, and uv run exits with it. group: a 0.1.x server's uv pid,
+// which leads its process group (started detached), checked alive and answering just before; on Windows taskkill /T
+function stopServer(pid, group = false) {
   if (WIN) return spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).status === 0;
-  try { process.kill(-pid, 'SIGTERM'); return true; } catch { try { process.kill(pid, 'SIGTERM'); return true; } catch { return false; } }
+  try { process.kill(group ? -pid : pid, 'SIGTERM'); return true; } catch { try { process.kill(pid, 'SIGTERM'); return true; } catch { return false; } }
 }
 
 export async function uninstall(project = process.cwd(), { scope = 'project', harness = 'claude' } = {}) {
@@ -711,15 +737,15 @@ export async function uninstall(project = process.cwd(), { scope = 'project', ha
       { what: `removed MCP server ${MCP_NAME}, user scope`, show: `claude mcp remove ${MCP_NAME} --scope user` });
     if (r && r.status !== 0) ctx.problems.push(`run claude mcp remove ${MCP_NAME} --scope user yourself`);
   } else ok(`no ${MCP_NAME} entry in ${rel(ctx, mcpPath(project, 'user'))}`);
-  const p = readPid(project);
-  if (p?.alive && (await confirm(`   Stop the memory server (pid ${p.pid})?`))) {
-    if (stopServer(p.pid)) {
+  const p = await running(project);
+  if (p && (await confirm(`   Stop the memory server (pid ${p.pid})?`))) {
+    if (stopServer(p.pid, p.legacy)) {
       const went = await gone(p.pid);
-      rmSync(pidFile(project), { force: true });
+      if (p.legacy) rmSync(pidFile(project), { force: true });
       if (went) ok(`stopped pid ${p.pid}`); else warn(`pid ${p.pid} is still shutting down; check with: status`);
     }
     else warn(`could not stop pid ${p.pid}`);
-  } else if (p && !p.alive) rmSync(pidFile(project), { force: true });
+  } else if (readPid(project)?.alive === false) rmSync(pidFile(project), { force: true });
   for (const prob of ctx.problems) warn(prob);
   if (!SHARE && existsSync(INSTALL_DIR)) info(`The server and hooks stay in ${rel(ctx, INSTALL_DIR)}; delete that folder to remove them too.`);
   out(`\n   Your memory stays in .memory/. Run ${paint(C.GHOST, `npx spookling init${scope === 'user' ? ' --scope user' : ''}`)} to wire it back.\n`);

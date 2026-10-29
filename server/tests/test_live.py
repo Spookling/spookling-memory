@@ -65,6 +65,19 @@ def test_mcp_tools_find_their_folders_own_server(tmp_path, monkeypatch):
     assert M.base() == "http://127.0.0.1:9999"  # a server you run yourself wins
 
 
+def test_mcp_tools_refuse_another_folders_server(live, tmp_path, monkeypatch):
+    url, store = live
+    monkeypatch.delenv("SPOOKLING_MEMORY_URL", raising=False)
+    monkeypatch.setenv("SPOOKLING_MEMORY_FOLDER", str(tmp_path / "b"))
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "server.json").write_text(json.dumps({"port": int(url.rsplit(":", 1)[1]), "pid": 1}))
+    with pytest.raises(RuntimeError, match="another memory folder"):  # a stale server.json: the port is the live one's
+        M.memory_stats()
+    monkeypatch.setenv("SPOOKLING_MEMORY_FOLDER", str(store.folder))
+    (store.folder / "server.json").write_text(json.dumps({"port": int(url.rsplit(":", 1)[1]), "pid": 1}))
+    assert M.memory_stats()["n_events"] == 0
+
+
 def test_mcp_tools(live, tmp_path, monkeypatch):
     url, store = live
     monkeypatch.setenv("SPOOKLING_MEMORY_URL", url)
@@ -250,8 +263,8 @@ def test_serve_cleans_up_on_a_signal(tmp_path, sig):
 
 
 def own_server(tmp_path, name):
-    """A project folder wired as init wires it: .memory/spookling.json naming the server, a uv, and no tagger. The uv
-    is a stand-in that runs this test's Python, so the hooks start a real server without uv or a network."""
+    """A project folder wired as init wires it: .memory/spookling.json with no tagger. Its uv (SPOOKLING_UV, see
+    hook_env) is a stand-in that runs this test's Python, so the hooks start a real server without uv or a network."""
     import sys
 
     uv = tmp_path / "uv"
@@ -260,14 +273,20 @@ def own_server(tmp_path, name):
         uv.chmod(0o755)
     mem = tmp_path / name / ".memory"
     mem.mkdir(parents=True)
-    (mem / "spookling.json").write_text(json.dumps({"server": str(HOOKS.parent / "server"), "uv": str(uv), "model": "none"}))
+    (mem / "spookling.json").write_text(json.dumps({"model": "none"}))
     return mem.resolve()
+
+
+def hook_env(tmp_path):
+    """The hooks' environment: no SPOOKLING_MEMORY_URL, and the stand-in uv in place of install.json's."""
+    env = {k: v for k, v in os.environ.items() if k != "SPOOKLING_MEMORY_URL"}
+    return {**env, "SPOOKLING_UV": str(tmp_path / "uv")}
 
 
 def claude_hook(name, mem, payload):
     """A hook as init wires it: --memory names the folder, and no SPOOKLING_MEMORY_URL, so the hook finds or starts
     that folder's own server."""
-    env = {k: v for k, v in os.environ.items() if k != "SPOOKLING_MEMORY_URL"}
+    env = hook_env(mem.parent.parent)
     return subprocess.run(["node", str(HOOKS / f"{name}.js"), "--memory", str(mem)], input=json.dumps(payload),
                           capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
 
@@ -290,7 +309,13 @@ def test_hooks_start_each_projects_own_server_keep_projects_apart_and_restart_it
     try:
         start = claude_hook("session-start", a, {"session_id": "s1", "cwd": str(a.parent)})
         assert start.returncode == 0 and start.stdout == ""  # SessionStart output would become context
+        assert json.loads((a / "pulse.json").read_text())["event"] == "start"  # it started the server and returned
+        for _ in range(300):
+            if (a / "server.json").exists():
+                break
+            time.sleep(0.1)
         port_a = json.loads((a / "server.json").read_text())["port"]
+        start = claude_hook("session-start", a, {"session_id": "s1", "cwd": str(a.parent)})
         p = json.loads((a / "pulse.json").read_text())
         assert p["event"] == "start" and p["up"] and p["remembered"] == 0  # the server's own count, not a guess
 
@@ -323,7 +348,7 @@ def test_hooks_start_each_projects_own_server_keep_projects_apart_and_restart_it
 @pytest.mark.skipif(os.name == "nt" or not shutil.which("node"), reason="a POSIX stand-in for uv")
 def test_codexs_first_hook_starts_the_server_and_its_ghost_says_what_it_holds(tmp_path):
     mem = own_server(tmp_path, "app")
-    env = {k: v for k, v in os.environ.items() if k != "SPOOKLING_MEMORY_URL"}
+    env = hook_env(tmp_path)
     try:
         r = subprocess.run(["node", str(HOOKS / "spookling-codex.cjs"), "--memory", str(mem)], text=True, encoding="utf-8",
                            input=json.dumps({"hook_event_name": "SessionStart", "session_id": "c1", "cwd": str(mem.parent)}),
@@ -331,6 +356,38 @@ def test_codexs_first_hook_starts_the_server_and_its_ghost_says_what_it_holds(tm
         said = json.loads(r.stdout)["systemMessage"]
         assert said.startswith("spookling ready · local server connected") and "0 messages remembered" in said
         assert (mem / "server.json").exists()
+    finally:
+        if (mem / "server.json").exists():
+            stop_server(mem)
+
+
+@pytest.mark.skipif(os.name == "nt" or not shutil.which("node"), reason="a POSIX stand-in for uv")
+def test_a_start_that_dies_ends_the_wait_and_the_next_prompt_tries_again(tmp_path):
+    mem = own_server(tmp_path, "held")
+    ask = {"session_id": "s", "prompt": "what did we decide about the cache?", "hook_event_name": "UserPromptSubmit"}
+    env = {**hook_env(tmp_path), "SPOOKLING_UV": str(tmp_path / "missing-uv")}  # no uv: every start dies at once
+    for _ in range(2):  # no lock left behind: the second prompt is as quick as the first
+        t0 = time.monotonic()
+        r = subprocess.run(["node", str(HOOKS / "user-prompt-submit.js"), "--memory", str(mem)], input=json.dumps(ask),
+                           capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+        assert r.returncode == 0 and r.stdout == "" and time.monotonic() - t0 < 5
+    assert not (mem / "server.starting").exists() and not (mem / "server.pid").exists()
+
+
+@pytest.mark.skipif(os.name == "nt" or not shutil.which("node"), reason="a POSIX script as the would-be uv")
+def test_a_repo_cannot_pick_what_the_hooks_run(tmp_path):
+    mem = own_server(tmp_path, "cloned")
+    evil = tmp_path / "evil.sh"
+    evil.write_text(f"#!/bin/sh\ntouch {tmp_path / 'pwned'}\n")
+    evil.chmod(0o755)
+    (mem / "spookling.json").write_text(json.dumps({"server": str(tmp_path), "uv": str(evil), "model": "none"}))
+    ask = {"session_id": "s", "prompt": "what did we decide about the cache?", "hook_event_name": "UserPromptSubmit"}
+    try:
+        assert claude_hook("user-prompt-submit", mem, ask).returncode == 0
+        assert not (tmp_path / "pwned").exists() and (mem / "server.json").exists()  # the real server, beside the hooks
+        no_flag = subprocess.run(["node", str(HOOKS / "user-prompt-submit.js")], input=json.dumps(ask | {"cwd": str(tmp_path / "x")}),
+                                 capture_output=True, text=True, encoding="utf-8", env=hook_env(tmp_path), timeout=60)
+        assert no_flag.returncode == 0 and not (tmp_path / "x").exists()  # no --memory: nothing found, nothing started
     finally:
         if (mem / "server.json").exists():
             stop_server(mem)

@@ -221,3 +221,16 @@ test('a server folder inside WSL, seen from Windows, runs through wsl.exe, never
   const r = spawnSync('bash', ['-c', mcpEntry(dir, URL).args[5].replace('exec uv run --project', 'printf %s')], { encoding: 'utf8' });
   if (!r.error) assert.equal(r.stdout, "/home/jane o'neil/spookling-memory/serverspookling-memorymcp");
 });
+
+test('a reply counts only from this folder\'s server: its percent-encoded folder header, or a live 0.1.x on 7447', async () => {
+  const { createRequire } = await import('node:module');
+  const { ours } = createRequire(import.meta.url)('../../hooks/server.js');
+  const dir = mkdtempSync(join(tmpdir(), 'ذاكرة-'));
+  assert.equal(ours('http://127.0.0.1:50000', dir, encodeURIComponent(dir).replace(/%2F/g, '/')), true); // an Arabic path
+  assert.equal(ours('http://127.0.0.1:50000', dir, encodeURIComponent('/other/.memory')), false);
+  assert.equal(ours('http://127.0.0.1:50000', dir, undefined), false); // a stale server.json, another app on the port
+  assert.equal(ours('http://127.0.0.1:7447', dir, undefined), false); // a 0.1.x server, but not this folder's
+  writeFileSync(join(dir, 'server.pid'), `${process.pid}\n`);
+  assert.equal(ours('http://127.0.0.1:7447', dir, undefined), true); // this folder's own 0.1.x server, still alive
+  assert.equal(ours('http://127.0.0.1:50000', dir, undefined), false); // only on its fixed port
+});

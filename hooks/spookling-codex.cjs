@@ -36,11 +36,13 @@ process.stdin.on('end', async () => {
   if (!start && !Object.hasOwn(events, p.hook_event_name)) return done();
   if (p.hook_event_name === 'UserPromptSubmit' && (typeof p.prompt !== 'string' || !p.prompt.trim())) return done();
   visible = start || p.hook_event_name === 'UserPromptSubmit';
-  const timeout = p.hook_event_name === 'PreCompact' ? 60000 : 15000;
-  // A wall-clock deadline also covers a connected server that never finishes its response.
-  const deadline = setTimeout(unavailable, timeout + (start ? 16000 : 11000));
+  // Codex kills a hook at its timeout (cli/src/hooks.js: 20 s, PreCompact 65 s), so every wait ends before that and
+  // a wall-clock deadline, which also covers a connected server that never finishes, still says "memory unavailable".
+  const limit = (p.hook_event_name === 'PreCompact' ? 65 : 20) * 1000;
+  const deadline = setTimeout(unavailable, limit - 2000);
+  const wait = start ? 8000 : 5000, timeout = limit - 2000 - wait - 1000;
   const res = await server.request(server.folder(p), start ? '/v1/stats' : `/v1/hook/${events[p.hook_event_name]}`, start
-    ? { wait: 15000, timeout } : { method: 'POST', body: JSON.stringify({ ...p, harness: 'codex' }), timeout });
+    ? { wait, timeout } : { method: 'POST', body: JSON.stringify({ ...p, harness: 'codex' }), wait, timeout });
   clearTimeout(deadline);
   if (res.down || res.status !== 200) return unavailable();
   let reply;

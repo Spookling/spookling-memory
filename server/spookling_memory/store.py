@@ -205,7 +205,10 @@ class Store:
         out) never loses a turn: the turns are already in the LOG file, the views are rebuilt without a model, the
         reason is kept for stats, and the next try comes after RETRY seconds."""
         m = self.mem
-        if not unsettled(m) or time.monotonic() < self.retry_at:
+        if not unsettled(m):
+            return
+        if time.monotonic() < self.retry_at:  # still failing: no model call, but the views take in what arrived
+            m.settle(tag=False)
             return
         n = len(m.log.decisions)
         try:
@@ -270,7 +273,8 @@ class Store:
                 raise ValueError(f"session {session_id} at {ts} predates the reset at {R.latest(m.log.decisions)['at']}")
             n = len(m.log.events)
             if not any(d["step"] == "tagged" for d in m.log.decisions):
-                m.record(tagged(m))  # before the first untagged turn reaches the file
+                m.record(tagged(m))  # before the first untagged turn reaches the file:
+                self._flush()  # on disk ahead of them, or a crash between the two files would leave them "tagged"
             m.ingest(Session(session_id, agent, ts, [Turn(t["role"], t["content"]) for t in turns]), tag=False)
             self._flush()  # the turns are on disk before any model is called
             self._tag()
@@ -316,13 +320,15 @@ class Store:
 
     def reset(self, note: str = "", at: str | None = None) -> dict:
         with self._busy(self.wait):
-            out = R.reset(self.mem, at or now(), note)
+            self._tag()  # what waits is tagged first, with its mark, so it falls before the ruling; a failure only defers it
+            out = R.reset(self.mem, at or now(), note, tag=False)
             self._flush()
             return out
 
     def undo_reset(self) -> dict:
         with self._busy(self.wait):
-            out = R.undo_reset(self.mem)
+            self._tag()
+            out = R.undo_reset(self.mem, tag=False)
             self._flush()
             return out
 
@@ -332,8 +338,8 @@ class Store:
                 raise ValueError("this memory is not empty: import into an empty folder")
             load(self.mem, events, decisions)
             self.mem.settle(tag=False)
+            self._flush()  # on disk before any model call: a failed tagging pass reloads from these files
             self._tag()
-            self._flush()
             return {"events": len(self.mem.log.events), "judgements": len(self.mem.log.decisions)}
 
     def export(self, path) -> dict:

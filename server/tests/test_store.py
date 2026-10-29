@@ -245,3 +245,48 @@ def test_the_keyless_tagger_keeps_only_standing_rules(tmp_path):
     assert s.stats()["tagger"] == {"model": "none", "via": "none", "decider": None}
     assert s.stats()["n_facts"] == 0 and s.tagging()["error"] is None
     s.close()
+
+
+def test_the_tagged_mark_is_on_disk_before_the_first_untagged_turn(tmp_path, monkeypatch):
+    from spookling_memory import store as S
+
+    real = S.append
+
+    def crash(path, lines):
+        if path.name == "log.jsonl" and lines:
+            raise OSError("the disk went away")
+        return real(path, lines)
+
+    s = Store(tmp_path / "m", triage=NoKey(TAGS))
+    monkeypatch.setattr(S, "append", crash)
+    with pytest.raises(OSError):
+        fill(s, HISTORY[:1])
+    marks = [json.loads(x) for x in (tmp_path / "m" / "judgements.jsonl").read_text().splitlines()]
+    assert [d["step"] for d in marks] == ["tagged"]  # where tagging stood, so turns that land later count as untagged
+    s.close()
+
+
+def test_an_import_while_the_tagger_is_down_keeps_every_record(tmp_path):
+    s = Store(tmp_path / "a", triage=NoKey(TAGS))
+    fill(s, HISTORY[:2])
+    events, decisions = s.records()
+    s.close()
+    t = Store(tmp_path / "b", triage=NoKey(TAGS))
+    out = t.restore(events, decisions)
+    assert out["events"] == len(events) == len((tmp_path / "b" / "log.jsonl").read_text().splitlines())
+    assert t.tagging()["waiting"] == len(events) and "OPENROUTER_API_KEY" in t.tagging()["error"]
+    t.close()
+
+
+def test_a_reset_while_the_tagger_is_down_or_back_never_fails_or_tags_twice(tmp_path):
+    s = Store(tmp_path / "m", triage=NoKey(TAGS))
+    fill(s, HISTORY[:1])
+    assert s.reset("tagger down")["step"] == "reset"  # tagging fails quietly; the reset still lands
+    s.mem.triage, s.retry_at = Stub(TAGS), 0
+    s.undo_reset()  # the tagger is back: it tags what waited, with its mark, before the ruling
+    assert s.tagging()["waiting"] == 0
+    s.close()
+    t = Store(tmp_path / "m", triage=Stub(TAGS))
+    triage = [(d["seq"], d["idx"]) for d in t.mem.log.decisions if d["step"] == "triage"]
+    assert t.mem.triage.judged == [] and len(triage) == len(set(triage))  # reopening tags nothing again
+    t.close()

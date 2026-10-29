@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> None:
         s = sub.add_parser(name, help=what)
         s.add_argument("--folder", default=".memory", help="the memory folder (default .memory)")
         if name == "serve":
-            s.add_argument("--port", type=int, help="default: the folder's own port, written to <folder>/server.json")
+            s.add_argument("--port", type=int, help="default: a free port, written to <folder>/server.json")
             s.add_argument("--model", help="tagger for tagging and the slow path: an OpenRouter model id, codex for "
                                            "your Codex subscription, or none for no model (default: the folder's "
                                            "spookling.json, else the adapter's, Haiku 4.5)")

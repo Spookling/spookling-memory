@@ -11,8 +11,10 @@ process.stdin.on('error', done);
 process.stdin.on('end', async () => {
   let p = {};
   try { p = JSON.parse(Buffer.concat(chunks)) || {}; } catch {}
-  // a big memory may still be opening after 3 s: the first prompt waits for it, not the session
-  const r = await server.request(server.folder(p), '/v1/stats', { wait: 15000, timeout: 3000 });
+  // down: start it and return; the first prompt waits for it, not the session (a big memory may take a while to open)
+  const dir = server.folder(p);
+  const r = await server.request(dir, '/v1/stats', { wait: 0, timeout: 3000 });
+  if (r.down && !r.connected) server.start(dir);
   let s = null;
   try { s = r.status === 200 ? JSON.parse(r.body) : null; } catch {}
   if (r.down || !s) return pulse.write(p, { event: 'start', up: !r.down || r.connected }), done();

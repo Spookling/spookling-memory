@@ -11,20 +11,51 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
+FOLDER = "x-spookling-folder"  # api.FOLDER; not imported, so the tools start without the server's dependencies
+
 server = MCPServer("spookling-memory", instructions="Long-term memory for this user, kept on this machine. "
                    "memory_retrieve before answering from what the user said in past sessions.")
 _open = urllib.request.build_opener(urllib.request.ProxyHandler({})).open  # never send local memory through a proxy
+
+
+LEGACY = "http://127.0.0.1:7447"  # a 0.1.x server: one fixed port, no server.json
+
+
+def folder() -> Path | None:
+    f = os.environ.get("SPOOKLING_MEMORY_FOLDER")
+    return Path(f).resolve() if f else None
 
 
 def base() -> str:
     """SPOOKLING_MEMORY_URL if set; else the port in SPOOKLING_MEMORY_FOLDER's server.json; else the old fixed port."""
     if os.environ.get("SPOOKLING_MEMORY_URL"):
         return os.environ["SPOOKLING_MEMORY_URL"]
-    folder = os.environ.get("SPOOKLING_MEMORY_FOLDER")
     try:
-        return f"http://127.0.0.1:{json.loads((Path(folder) / 'server.json').read_text(encoding='utf-8'))['port']}"
+        return f"http://127.0.0.1:{json.loads((folder() / 'server.json').read_text(encoding='utf-8'))['port']}"
     except (TypeError, OSError, ValueError, KeyError):
-        return "http://127.0.0.1:7447"
+        return LEGACY
+
+
+def alive(pid_file: Path) -> bool:
+    try:
+        os.kill(int(pid_file.read_text().strip()), 0)
+        return True
+    except PermissionError:
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def ours(url: str, header: str | None) -> bool:
+    """Whether the reply came from this folder's server: its x-spookling-folder names the folder. A 0.1.x server sends
+    none; it counts only on the old fixed port with the folder's own server.pid alive. No folder set: any server."""
+    mine = folder()
+    if mine is None or os.environ.get("SPOOKLING_MEMORY_URL"):
+        return True
+    if header is None:
+        return url == LEGACY and alive(mine / "server.pid")
+    at = urllib.parse.unquote(header)
+    return at.lower() == str(mine).lower() if os.name == "nt" else at == str(mine)
 
 
 def call(path: str, body: dict | None = None, raw: bytes | None = None):
@@ -37,6 +68,9 @@ def call(path: str, body: dict | None = None, raw: bytes | None = None):
         u = urllib.parse.urlsplit(url)
         socket.create_connection((u.hostname, u.port or 80), timeout=2).close()
         with _open(req, timeout=300) as r:
+            if not ours(base(), r.headers.get(FOLDER)):
+                raise RuntimeError(f"the server at {url} serves another memory folder, not {folder()}; "
+                                   "a hook or `npx spookling init` starts this folder's own")
             out = r.read()
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"{path}: {e.code} {e.read().decode(errors='replace')}") from None
