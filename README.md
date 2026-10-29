@@ -1,6 +1,6 @@
 # Spookling Memory
 
-*Algorithm v2.1 · `spookling` 0.1.3 · October 2026*
+*Algorithm v2.1 · `spookling` 0.2.0 · October 2026*
 
 **Your AI forgets you every session. It brings back the car you sold. It drops your rules the moment the chat gets long.**
 
@@ -245,7 +245,7 @@ Behind each number: the result file, the judge logs, both judges' verdicts, the 
 
 In Codex, the pixel ghost shows in the hook messages: `ready` after a successful server health check, with the messages, facts and standing rules the server holds beside it; `active` after successful recall, green, with what was recalled (a search with no matching facts is one `active` line, not a ghost). Failed health checks or recall show the `degraded` ghost and do not block Codex. This is a hook indicator, not a permanent widget; [setup and removal](cli/README.md#codex) use the same local server and `.memory/` data. In Claude Code the same ghost is the status line.
 
-Spookling Memory is out as `spookling` 0.1.3, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
+Spookling Memory is out as `spookling` 0.2.0, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
 
 ```bash
 npx spookling init
@@ -258,7 +258,8 @@ npx spookling init
 One command. One wizard. No config files to hand-edit.
 
 ```bash
-npx spookling init                 # this project
+npx spookling init --yes           # this project, no questions: what you already run, the ghost on
+npx spookling init                 # this project, step by step
 npx spookling init --scope user    # every project you open in Claude Code
 npx spookling demo                 # the whole install, answered for you; writes nothing
 npx spookling status               # is the server up, what is wired, which tagger
@@ -270,35 +271,42 @@ You need Node 18 or newer and Claude Code v2.1.139 or later. The server runs on 
 It opens with a cutscene: the Spookling wordmark builds in block letters and the ghost flies across your terminal. Any key skips it. Then seven steps:
 
 1. **Checks your machine.** Node, then uv. No uv? It shows the one-line install for your OS and offers to run it.
-2. **Asks which harness you use.** Claude Code or Codex. Codex users review/trust the installed hooks through `/hooks`.
-3. **Asks how the tagger should run.** Three choices, in the table below. A key is typed hidden, saved to `.memory/keys.env`, and never printed.
-4. **Installs the local memory server.** It copies the server and the hooks to a folder per user and version: `~/.spookling-memory/<version>/`, or `%LOCALAPPDATA%\spookling-memory\<version>\` on Windows. It runs `uv sync` there and starts the server on 127.0.0.1:7447. Nothing Claude Code runs lives in the npx cache.
-5. **Wires Claude Code.** Three hooks that call the server: `Stop` saves the chat when it ends, `UserPromptSubmit` hands the right lines to each prompt, `PreCompact` copies the survivor block out before the squash. Plus the MCP server, so Claude can call the memory tools, and, if you say yes, the ghost in the status line. `--scope project` (the default) writes this project's files; `--scope user` writes yours, for every project.
-6. **Runs a smoke test.** It asks the server for its stats. You see it answer before you leave the wizard.
+2. **Finds your harness.** Claude Code, Codex, or both, whichever is on the machine; it wires each one it finds. Codex asks you once, in `/hooks`, to trust new hooks.
+3. **Picks the tagger you already have.** Your Codex plan if `codex` is logged in with ChatGPT, else an Anthropic or OpenRouter key already in your environment, else no tagger at all. All four choices are in the table below. A key you type is hidden, saved to `.memory/keys.env`, and never printed.
+4. **Installs the local memory server.** It copies the server and the hooks to a folder per user and version: `~/.spookling-memory/<version>/`, or `%LOCALAPPDATA%\spookling-memory\<version>\` on Windows. It runs `uv sync` there, writes `.memory/spookling.json` (the tagger, and where the server and uv are), and starts the server. Each memory folder gets its own server on its own port, written to `.memory/server.json`, so two projects never share one. Nothing Claude Code runs lives in the npx cache.
+5. **Wires Claude Code.** Four hooks that call the server: `SessionStart` wakes it, `Stop` saves the chat when it ends, `UserPromptSubmit` hands the right lines to each prompt, `PreCompact` copies the survivor block out before the squash. Plus the MCP server, so Claude can call the memory tools, and the ghost in the status line (`--no-ghost` leaves it out). `--scope project` (the default) writes this project's files; `--scope user` writes yours, for every project.
+6. **Runs a smoke test.** It asks the server for its stats, then asks it a question the way a hook does. Nothing is written to your log.
 7. **Shows a done screen.** The ghost flies once more. "Spookling Memory is in."
 
-Every file is shown before it is written, and `n` skips it. Without a terminal (an assistant's shell, a pipe), the wizard never hangs: a question nobody answers for 20 seconds takes its default.
+Every file is shown before it is written, and `n` skips it; `--yes` writes each one as it shows it. Without a terminal (an assistant's shell, a pipe), the wizard never hangs: a question nobody answers for 20 seconds takes its default.
 
-### The three taggers
+**It keeps running by itself.** If the server is not up when a hook runs (after a reboot, a crash, or the first session), the hook starts it and waits for it. That prompt gets its memory a second or two late; nothing is lost.
+
+### The four taggers
 
 | Choice | What runs | Cost | Needs |
 | --- | --- | --- | --- |
 | **1. Jev through an OpenRouter key** (the default) | A cheap router model picks the words. Jev decides every gate in its Choice and Noul modes, each answer with a probability. Code takes a yes only at 0.8 or higher, and a pick from a list only at 0.6 or higher. | the cheapest: about $0.002 a chat | `OPENROUTER_API_KEY` |
 | **2. An Anthropic API key** | Haiku 4.5 | Anthropic's API price | `ANTHROPIC_API_KEY` |
 | **3. Your Codex subscription** | the `codex` CLI, one `codex exec` per call | a little of your plan's allowance; several seconds a chat | `codex`, logged in with ChatGPT (Plus or higher) |
+| **4. No tagger** | no model: every message kept and searched word for word; standing rules ("always use pnpm") found by the survivor block's own pattern | free; nothing leaves your machine | nothing |
 
-To switch, stop the server (`uninstall` offers to) and run `init` again. `status` shows which tagger is running.
+`--yes` takes the first of these your machine already has, in the order Codex plan, Anthropic key, OpenRouter key, none. Jev is the default only when you choose it.
+
+**Messages are saved before anything is tagged.** If tagging fails (no key, no credit, `codex` logged out), the messages are still written to the log and found by search; `status` and the ghost say why tagging stopped, and the first save at least five minutes later tries again (there is no timer). Fix the cause and those messages get tagged.
+
+To switch, run `init` again: it restarts this folder's server with the new tagger. Messages tagged before keep their tags; later ones get the new tagger's. `status` shows which tagger is running.
 
 ### What it writes
 
 | Where | What |
 | --- | --- |
 | `~/.spookling-memory/<version>/` (`%LOCALAPPDATA%\spookling-memory\<version>\` on Windows) | the server and the hooks, copied from the package; `uv sync` makes the server's `.venv` there |
-| `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | three hooks merged in: `PreCompact`, `UserPromptSubmit`, `Stop`; and the ghost's `statusLine`, if you said yes |
+| `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | four hooks merged in: `SessionStart`, `PreCompact`, `UserPromptSubmit`, `Stop`, each naming this `.memory` folder; and the ghost's `statusLine` (left out with `--no-ghost`) |
 | `.mcp.json` (project) or Claude Code's user MCP list (user) | the `spookling-memory` server and its tools, `memory_retrieve` and `memory_reset` among them |
-| `.memory/` | your memory, your tagger's key in `keys.env`, the server's pid and log, and a `.gitignore` that keeps the key and the caches out of git |
+| `.memory/` | your memory, your tagger's key in `keys.env`, `spookling.json` (the tagger and where the server is), the server's port in `server.json`, its pid and log, and a `.gitignore` that keeps the key, those files and the caches out of git |
 
-Every other key in those files is kept. A file that is not valid JSON is left alone and reported, never overwritten. In an interactive session, Claude Code runs the hooks once you trust the folder, and asks you once to approve a project `.mcp.json` server. `/hooks` and `/mcp` show what is wired. With the server down, the hooks print nothing and exit 0 within about a second, so a prompt is never blocked.
+Every other key in those files is kept. A file that is not valid JSON is left alone and reported, never overwritten. In an interactive session, Claude Code runs the hooks once you trust the folder, and asks you once to approve a project `.mcp.json` server. `/hooks` and `/mcp` show what is wired. With the server down, a hook starts it and waits up to ten seconds; if it still is not up, the hook prints nothing and exits 0, so a prompt is never blocked.
 
 ### Where it runs
 
@@ -308,7 +316,7 @@ Windows (native PowerShell, no Git Bash needed), macOS and Linux, WSL included. 
 
 ![Claude Code with the ghost in its status line: "1 fact · 1 rule · 2 past chats recalled"](cli/renders/ghost-status-line.png)
 
-In Claude Code a small ghost sits in the status line under the prompt (`init` asks; `--no-ghost` skips it). It says what memory last did, in plain words: `3 facts · 1 rule recalled` while Claude answers, `saved` after, `kept your 2 rules and 38 lines` after a compaction, `remembering you` when nothing is new, `asleep, server off` when the server is down. Its arms go up and down between refreshes; the words change only when memory does something. When a prompt recalls something, one quiet line lands under it: `👻 3 facts and 1 rule from memory`. Standing rules alone, a save or a compaction add nothing to the conversation. Already have a status line? Yours stays first with the ghost after it, and `uninstall` puts yours back exactly.
+In Claude Code a small ghost sits in the status line under the prompt (in by default; `--no-ghost` leaves it out). It says what memory last did, in plain words: `3 facts · 1 rule recalled` while Claude answers, `saved` after, `kept your 2 rules and 38 lines` after a compaction, `remembering you` when nothing is new, `asleep, server off` when the server is down. Its arms go up and down between refreshes; the words change only when memory does something. When a prompt recalls something, one quiet line lands under it: `👻 3 facts and 1 rule from memory`. Standing rules alone, a save or a compaction add nothing to the conversation. Already have a status line? Yours stays first with the ghost after it, and `uninstall` puts yours back exactly.
 
 ---
 
@@ -350,7 +358,7 @@ So moving is one file. Export writes a `.spookling` archive of the two records. 
 ```text
 memory_export      # MCP tool in Claude Code: writes the archive to a path you name
 memory_import      # MCP tool: restores it into an empty memory; the views rebuild
-GET  /v1/export    # the same over HTTP, on 127.0.0.1:7447
+GET  /v1/export    # the same over HTTP, on the port in .memory/server.json
 POST /v1/import    # the archive, as application/octet-stream
 ```
 
@@ -409,7 +417,7 @@ For the people who want the detail. The result files sit in our private benchmar
 
 What leaves your machine, and when:
 
-- **Each chat goes to the tagger's API once, after it ends.** OpenRouter for Jev (Jev's decisions go there too, on the same key), Anthropic for Haiku, OpenAI through your own `codex` login for Codex.
+- **Each chat goes to the tagger's API once, after it ends.** OpenRouter for Jev (Jev's decisions go there too, on the same key), Anthropic for Haiku, OpenAI through your own `codex` login for Codex. With no tagger, nothing goes anywhere.
 - **The reader is your harness.** Recalled lines ride along with your prompt to the model Claude Code already talks to. We send them nowhere else.
 - **A flagged item goes once more,** to the same tagger (or to Jev), with its message: a contradiction, a rule, a correction, a doubtful date, a low-confidence tag, an unlisted class.
 

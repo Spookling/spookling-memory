@@ -1,10 +1,13 @@
-// .memory/pulse.json: what the hooks last did, for the status line. The project's .memory, else ~/.memory, as status finds it.
+// .memory/pulse.json: what the hooks last did, for the status line. The --memory folder; else the project's .memory,
+// else ~/.memory, as status finds it.
 const { existsSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
 const { homedir } = require('node:os');
 const { join } = require('node:path');
 
+// --memory <folder>, as init wires every hook and the status line, wins
+const given = () => { const i = process.argv.indexOf('--memory'); return i < 0 ? undefined : process.argv[i + 1]; };
 const where = (project) => {
-  const dir = [project, homedir()].filter(Boolean).map((d) => join(d, '.memory')).find((d) => existsSync(d));
+  const dir = given() || [project, homedir()].filter(Boolean).map((d) => join(d, '.memory')).find((d) => existsSync(d));
   return dir && join(dir, 'pulse.json');
 };
 

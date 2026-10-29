@@ -139,7 +139,7 @@ def test_an_empty_prompt_injects_nothing(open_store, prompt):
     assert c.post("/v1/hook/user-prompt-submit", json={"session_id": "x", "prompt": prompt}).json() == {}
 
 
-def test_a_missing_model_key_is_a_503_and_the_server_lives(open_store):
+def test_a_missing_model_key_saves_the_turns_and_recall_still_finds_them(open_store, tmp_path):
     class NoKey(Stub):
         def judge(self, turns, date, known):
             raise SystemExit("OPENROUTER_API_KEY is not set")  # what core.models does
@@ -148,10 +148,15 @@ def test_a_missing_model_key_is_a_503_and_the_server_lives(open_store):
     c = client(store)
     store.mem.triage = NoKey(TAGS)
     r = c.post("/v1/ingest", json={"id": "s1", "ts": "2024-05-22T10:00:00Z", "turns": turns(["I drive a Toyota Corolla, nothing fancy."])})
-    assert r.status_code == 503 and "OPENROUTER_API_KEY" in r.json()["detail"]
-    store.mem.triage = Stub(TAGS)
+    assert r.status_code == 200 and r.json() == {"logged": 2}
+    assert "Corolla" in (tmp_path / "m" / "log.jsonl").read_text()  # on disk before any model was asked
+    t = c.get("/v1/stats").json()["tagging"]
+    assert t["waiting"] == 2 and "OPENROUTER_API_KEY" in t["error"] and t["retry_in"] > 0
+    assert "Toyota Corolla" in c.post("/v1/retrieve", json={"question": "Which Toyota do I drive?"}).json()["context"]
+    store.mem.triage, store.retry_at = Stub(TAGS), 0  # a key arrives, the wait is over
     assert c.post("/v1/ingest", json={"id": "s2", "ts": "2024-05-23T10:00:00Z", "turns": turns(["How do I roast peppers?"])}).status_code == 200
-    assert c.get("/v1/stats").json()["n_events"] == 4  # the first session waited in memory
+    s = c.get("/v1/stats").json()
+    assert s["n_events"] == 4 and s["n_facts"] == 1 and s["tagging"] == {"waiting": 0, "error": None, "retry_in": 0}
 
 
 def test_injected_context_fits_claude_codes_cap():
@@ -315,3 +320,18 @@ def test_empty_turns_hold_their_place_and_old_parts_still_line_up(open_store, tm
         {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Shipped."}]}}])
     c.post("/v1/hook/stop", json={**STOP, "session_id": "old", "transcript_path": str(path)})
     assert [(e.session_id, e.text) for e in store.mem.log.events if e.session_id.startswith("old#")][5:] == [("old#5", "Shipped.")]
+
+
+def test_a_non_latin_folder_path_answers_and_names_itself(tmp_path):
+    from urllib.parse import unquote
+
+    from spookling_memory.store import Store
+
+    folder = tmp_path / "ذاكرة المشروع" / ".memory"
+    store = Store(folder, triage=Stub(TAGS))
+    try:
+        r = client(store).get("/v1/stats")
+        assert r.status_code == 200  # Starlette writes headers as Latin-1: the raw path would be a 500 on every call
+        assert unquote(r.headers["x-spookling-folder"]) == str(folder.resolve())
+    finally:
+        store.close()

@@ -26,9 +26,12 @@ const user = {
 test('hooks run in exec form: node, then the script path as one argument; the ghost names the spinner', () => {
   const h = (f, statusMessage) => ({ type: 'command', command: 'node', args: [`/opt/spookling-memory/hooks/${f}`], ...(statusMessage && { statusMessage }) });
   assert.deepEqual(cmds, {
-    PreCompact: h('pre-compact.js', '👻 keeping your rules'), UserPromptSubmit: h('user-prompt-submit.js', '👻 remembering'), Stop: h('stop.js'),
+    SessionStart: h('session-start.js'), PreCompact: h('pre-compact.js', '👻 keeping your rules'),
+    UserPromptSubmit: h('user-prompt-submit.js', '👻 remembering'), Stop: h('stop.js'),
   });
   assert.deepEqual(hookHandlers("/my spookling's $dir/hooks", path.posix).Stop.args, ["/my spookling's $dir/hooks/stop.js"]);
+  // init names the memory folder, so each project's hooks reach that project's own server
+  assert.deepEqual(hookHandlers('/h', path.posix, "/work/Jane's app/.memory").Stop.args, ['/h/stop.js', '--memory', "/work/Jane's app/.memory"]);
 });
 
 test('win32: a path with spaces, quotes, $ or a WSL share goes into args verbatim, no quoting', () => {
@@ -67,7 +70,7 @@ const HOOKS = fileURLToPath(new globalThis.URL('../../hooks/', import.meta.url))
 const spaced = () => {
   const d = join(mkdtempSync(join(tmpdir(), 'spk-')), "Jane O'Neil $pace", 'spookling-memory', 'hooks');
   mkdirSync(d, { recursive: true });
-  for (const f of [...Object.values(HOOK_FILES), 'pulse.js']) copyFileSync(join(HOOKS, f), join(d, f));
+  for (const f of [...Object.values(HOOK_FILES), 'pulse.js', 'server.js']) copyFileSync(join(HOOKS, f), join(d, f));
   return hookHandlers(d);
 };
 // a home and project of their own: a hook writes .memory/pulse.json, never into the real ~/.memory
@@ -116,9 +119,9 @@ test('exec form: UserPromptSubmit prints the server reply whole; Stop and PreCom
   assert.ok(seen.every((s) => s[1] === 'application/json' && s[2] === input));
 });
 
-test('addHooks on an empty file adds the three events', () => {
+test('addHooks on an empty file adds the four events', () => {
   const out = addHooks({}, cmds);
-  assert.deepEqual(Object.keys(out.hooks), ['PreCompact', 'UserPromptSubmit', 'Stop']);
+  assert.deepEqual(Object.keys(out.hooks), ['SessionStart', 'PreCompact', 'UserPromptSubmit', 'Stop']);
   assert.deepEqual(out.hooks.Stop, [{ hooks: [cmds.Stop] }]);
 });
 
@@ -191,7 +194,7 @@ test('wiring reports what is in place', () => {
   assert.deepEqual(wiring({}, {}), { events: [], mcp: false });
   const s = addHooks(user, cmds), m = addMcp({}, mcpEntry('/x', URL));
   const w = wiring(s, m);
-  assert.deepEqual([w.events.sort(), w.mcp], [['PreCompact', 'Stop', 'UserPromptSubmit'], true]);
+  assert.deepEqual([w.events.sort(), w.mcp], [['PreCompact', 'SessionStart', 'Stop', 'UserPromptSubmit'], true]);
 });
 
 test('readJson: missing or empty is {}, broken JSON throws', () => {
@@ -217,4 +220,17 @@ test('a server folder inside WSL, seen from Windows, runs through wsl.exe, never
   // the quoted path survives bash
   const r = spawnSync('bash', ['-c', mcpEntry(dir, URL).args[5].replace('exec uv run --project', 'printf %s')], { encoding: 'utf8' });
   if (!r.error) assert.equal(r.stdout, "/home/jane o'neil/spookling-memory/serverspookling-memorymcp");
+});
+
+test('a reply counts only from this folder\'s server: its percent-encoded folder header, or a live 0.1.x on 7447', async () => {
+  const { createRequire } = await import('node:module');
+  const { ours } = createRequire(import.meta.url)('../../hooks/server.js');
+  const dir = mkdtempSync(join(tmpdir(), 'ذاكرة-'));
+  assert.equal(ours('http://127.0.0.1:50000', dir, encodeURIComponent(dir).replace(/%2F/g, '/')), true); // an Arabic path
+  assert.equal(ours('http://127.0.0.1:50000', dir, encodeURIComponent('/other/.memory')), false);
+  assert.equal(ours('http://127.0.0.1:50000', dir, undefined), false); // a stale server.json, another app on the port
+  assert.equal(ours('http://127.0.0.1:7447', dir, undefined), false); // a 0.1.x server, but not this folder's
+  writeFileSync(join(dir, 'server.pid'), `${process.pid}\n`);
+  assert.equal(ours('http://127.0.0.1:7447', dir, undefined), true); // this folder's own 0.1.x server, still alive
+  assert.equal(ours('http://127.0.0.1:50000', dir, undefined), false); // only on its fixed port
 });

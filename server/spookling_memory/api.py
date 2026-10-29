@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import socket
 import threading
+from urllib.parse import quote
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
@@ -19,6 +23,9 @@ from .portability import read_archive
 from .store import Busy, Store
 
 HOST, PORT = "127.0.0.1", 7447
+SERVER_FILE = "server.json"  # in the folder: the port it listens on and its pid, for the hooks and the MCP tools
+FOLDER = "x-spookling-folder"  # on every reply: which folder answered, so a hook never talks to another one's memory
+# percent-encoded: Starlette writes headers as Latin-1, so an Arabic or CJK path would fail every reply; clients unquote
 POST_TYPES = ("application/json", "application/octet-stream")
 WAIT = 10  # seconds before a 503: under the hooks' 15 s, so they hear back
 
@@ -52,6 +59,13 @@ class NoteIn(BaseModel):
 def create_app(store: Store) -> FastAPI:
     app = FastAPI(title="Spookling Memory", version="0.1.0")
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[HOST, "localhost"])
+    here = str(Path(store.folder).resolve())
+
+    @app.middleware("http")
+    async def which_folder(request: Request, call_next):
+        response = await call_next(request)
+        response.headers[FOLDER] = quote(here, safe="/\\:")
+        return response
 
     @app.middleware("http")
     async def no_simple_posts(request: Request, call_next):
@@ -127,6 +141,8 @@ def create_app(store: Store) -> FastAPI:
             tasks.add_task(quietly, store, event, payload)
             return {}
         body, pulse = await run_in_threadpool(hooks.handle, store, event, payload)
+        if store.tag_error:  # recall works, tagging does not: the status line says why
+            pulse = {**pulse, "tagging": store.tag_error[:160]}
         return JSONResponse(body, headers={hooks.PULSE: json.dumps(pulse, separators=(",", ":"))} if pulse else None)
 
     return app
@@ -140,21 +156,54 @@ def quietly(store, event: str, payload: dict) -> None:
         hooks.LOG.warning("hook %s: the turns were not logged this time (%s: %s)", event, type(e).__name__, e)
 
 
-def serve(folder: str, port: int = PORT, **adapter) -> None:
-    """Listens at once; the folder opens in the background, 503 until then."""
+def bind(port: int | None) -> socket.socket:
+    """The given port, else any free one (port 0): server.json says which, and every client reads it there."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if os.name == "nt":
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind((HOST, port or 0))
+        s.listen(2048)  # now, not when uvicorn starts: a hook reading server.json is queued, never refused
+    except OSError:
+        s.close()
+        raise
+    return s
+
+
+def serve(folder: str, port: int | None = None, **adapter) -> None:
+    """Listens at once; the folder opens in the background, 503 until then. port None: a free port, written to
+    <folder>/server.json once bound (and removed on the way out) for the hooks to find."""
     import uvicorn
 
-    store = Store(folder, background=True, wait=WAIT, **adapter)
+    store = Store(folder, background=True, wait=WAIT, **adapter)  # the folder's lock first: one server per folder
+    try:
+        sock = bind(port)
+    except OSError:
+        store.close()
+        raise
+    info = Path(folder) / SERVER_FILE
+    mine = {"port": sock.getsockname()[1], "pid": os.getpid(), "folder": str(Path(folder).resolve())}
+    info.write_text(json.dumps(mine) + "\n", encoding="utf-8")
     app = create_app(store)
+
+    def leave() -> None:
+        store.close()
+        try:  # only our own: a newer server for this folder may have written its port since
+            if json.loads(info.read_text(encoding="utf-8")).get("pid") == os.getpid():
+                info.unlink()
+        except (OSError, ValueError):
+            pass
 
     @asynccontextmanager
     async def lifespan(_):
         yield
         # here too: uvicorn re-raises SIGINT or SIGTERM after shutdown, which ends the process before a finally runs
-        store.close()
+        leave()
 
     app.router.lifespan_context = lifespan
-    server = uvicorn.Server(uvicorn.Config(app, host=HOST, port=port))
+    server = uvicorn.Server(uvicorn.Config(app, host=HOST, port=mine["port"]))
 
     def opened():
         store.ready.wait()
@@ -164,8 +213,8 @@ def serve(folder: str, port: int = PORT, **adapter) -> None:
 
     threading.Thread(target=opened, daemon=True).start()
     try:
-        server.run()
+        server.run(sockets=[sock])
     finally:
-        store.close()  # covers a failed start
+        leave()  # covers a failed start
     if store.failed is not None:
         raise store.failed

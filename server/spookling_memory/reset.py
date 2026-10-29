@@ -83,20 +83,20 @@ sleep.fold = fold
 
 def _refold(mem) -> None:
     mem.full_seq = -1  # settle() runs a full sleep only when the LOG grew
-    mem.settle()
+    mem.settle(tag=False)  # a refold of what is judged: the callers settled first
 
 
 def _source(mem) -> str:
     return mem.log.events[-1].hash if mem.log.events else ""
 
 
-def reset(mem, at: str, note: str = "") -> dict:
-    """`at` may not predate a turn already in the LOG."""
+def reset(mem, at: str, note: str = "", tag: bool = True) -> dict:
+    """`at` may not predate a turn already in the LOG. tag=False: the caller tagged first (Store, with its mark)."""
     t = tx_of(at, 0, 0)  # also validates the timestamp
     late = [e.ts for e in mem.log.events if tx_of(e.ts, 0, 0) > t]
     if late:
         raise ValueError(f"a reset at {at} would predate turns already recorded (latest {max(late)})")
-    mem.settle()  # judge what is pending first, so those judgements fall before the ruling
+    mem.settle(tag)  # judge what is pending first, so those judgements fall before the ruling
     r = {"id": _id("reset", at, mem.log.last_seq, len(mem.log.decisions)), "step": "reset", "at": at,
          "upto": mem.log.last_seq, "note": note, "source": _source(mem), "created": at}
     mem.record(r)
@@ -104,11 +104,11 @@ def reset(mem, at: str, note: str = "") -> dict:
     return r
 
 
-def undo_reset(mem) -> dict:
+def undo_reset(mem, tag: bool = True) -> dict:
     r = latest(mem.log.decisions)
     if r is None:
         raise ValueError("no reset to undo")
-    mem.settle()
+    mem.settle(tag)
     u = {"id": _id("reset_undo", r["id"], len(mem.log.decisions)), "step": "reset_undo", "of": r["id"],
          "source": _source(mem), "created": now()}
     mem.record(u)

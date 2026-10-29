@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import path, { join } from 'node:path';
 
 export const HOOK_FILES = {
+  SessionStart: 'session-start.js',
   PreCompact: 'pre-compact.js',
   UserPromptSubmit: 'user-prompt-submit.js',
   Stop: 'stop.js',
@@ -13,12 +14,14 @@ export const MCP_NAME = 'spookling-memory';
 export const CODEX_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreCompact', 'Stop'];
 // Codex command hooks use a shell command, not Claude Code's command + args form.
 // Single quotes protect spaces, apostrophes and shell substitutions in POSIX paths.
-export const codexHandlers = (hooksDir, p = path) => {
+// memory: the .memory folder the hooks serve (--memory), so each project's hooks reach that project's own server
+export const codexHandlers = (hooksDir, p = path, memory) => {
   const script = p.join(hooksDir, 'spookling-codex.cjs');
   const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
   // Use a quoted native Windows path; reject shell expansion/control characters rather than misquote them.
-  if (p === path.win32 && /["%$`!\r\n]/.test(script)) throw new Error('Codex hook path contains unsupported Windows shell characters');
-  const command = p === path.win32 ? `node "${script}"` : `node ${quote(script)}`;
+  if (p === path.win32 && [script, memory ?? ''].some((s) => /["%$`!\r\n]/.test(s))) throw new Error('Codex hook path contains unsupported Windows shell characters');
+  const q = p === path.win32 ? (s) => `"${s}"` : quote;
+  const command = `node ${q(script)}${memory ? ` --memory ${q(memory)}` : ''}`;
   return Object.fromEntries(CODEX_EVENTS.map((ev) => [ev, {
     type: 'command', command, timeout: ev === 'PreCompact' ? 65 : 20, statusMessage: '👻 Spookling memory',
     ...(ev === 'UserPromptSubmit' && { additionalContextLimit: 4000 }),
@@ -29,8 +32,9 @@ export const codexHooksPath = (project, scope = 'project', env = process.env) =>
 
 // exec form (Claude Code v2.1.139+): no shell on any OS, so the path needs no quoting; statusMessage is the spinner's text
 const SPINNER = { UserPromptSubmit: '👻 remembering', PreCompact: '👻 keeping your rules' };
-export const hookHandlers = (hooksDir, p = path) => Object.fromEntries(Object.entries(HOOK_FILES)
-  .map(([ev, f]) => [ev, { type: 'command', command: 'node', args: [p.join(hooksDir, f)], ...(SPINNER[ev] && { statusMessage: SPINNER[ev] }) }]));
+export const hookHandlers = (hooksDir, p = path, memory) => Object.fromEntries(Object.entries(HOOK_FILES)
+  .map(([ev, f]) => [ev, { type: 'command', command: 'node', args: [p.join(hooksDir, f), ...(memory ? ['--memory', memory] : [])],
+    ...(SPINNER[ev] && { statusMessage: SPINNER[ev] }) }]));
 
 // \\wsl.localhost\<distro>\... or \\wsl$\<distro>\... -> { distro, path }
 export const wslShare = (dir) => {
@@ -39,8 +43,10 @@ export const wslShare = (dir) => {
 };
 
 // a folder inside WSL runs in WSL: a Windows uv would build a Windows .venv over WSL's; bash -l puts uv on PATH
-export const mcpEntry = (serverDir, url) => {
+// memory (instead of url): the folder whose server.json names the port, so the tools reach that folder's own server
+export const mcpEntry = (serverDir, url, memory) => {
   const w = wslShare(serverDir);
+  if (!w && memory) return { type: 'stdio', command: 'uv', args: ['run', '--project', serverDir, 'spookling-memory', 'mcp'], env: { SPOOKLING_MEMORY_FOLDER: memory } };
   if (!w) return { type: 'stdio', command: 'uv', args: ['run', '--project', serverDir, 'spookling-memory', 'mcp'], env: { SPOOKLING_MEMORY_URL: url } };
   const q = `'${w.path.replace(/'/g, `'\\''`)}'`;
   return {
@@ -50,7 +56,7 @@ export const mcpEntry = (serverDir, url) => {
 };
 
 // ours: one of our scripts (.js, or .sh from an older install) under a spookling path
-const SCRIPT = /[\\/]hooks[\\/](?:(pre-compact|user-prompt-submit|stop)\.(js|sh)|spookling-codex\.cjs)\b/;
+const SCRIPT = /[\\/]hooks[\\/](?:(session-start|pre-compact|user-prompt-submit|stop)\.(js|sh)|spookling-codex\.cjs)\b/;
 export const isOurs = (h) => {
   const s = typeof h === 'string' ? h : [h?.command, ...(Array.isArray(h?.args) ? h.args : [])].filter((x) => typeof x === 'string').join(' ');
   return /spookling/i.test(s) && SCRIPT.test(s);
@@ -106,13 +112,17 @@ export function removeHooks(settings) {
 export const STATUS_FILE = 'status-line.js';
 const WIN_BAD = /["$`!\r\n]/; // what double quotes do not keep literal in Git Bash or PowerShell
 const posixQuote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
-export function statusCommand(hooksDir, prev, p = path) {
-  if (p !== path.win32) return `node ${posixQuote(p.join(hooksDir, STATUS_FILE))}${prev ? ` --then ${posixQuote(prev)}` : ''}`;
+// --memory before --then: previous() reads --then from the end
+export function statusCommand(hooksDir, prev, p = path, memory) {
+  if (p !== path.win32) {
+    return `node ${posixQuote(p.join(hooksDir, STATUS_FILE))}${memory ? ` --memory ${posixQuote(memory)}` : ''}${prev ? ` --then ${posixQuote(prev)}` : ''}`;
+  }
   const script = p.join(hooksDir, STATUS_FILE).replaceAll('\\', '/'); // Git Bash eats unquoted backslashes
-  if ([script, prev ?? ''].some((s) => WIN_BAD.test(s))) {
+  const mem = memory?.replaceAll('\\', '/');
+  if ([script, prev ?? '', mem ?? ''].some((s) => WIN_BAD.test(s))) {
     throw new Error('the status line path or your current status line command has a character Git Bash and PowerShell read differently ("$`!); run init with --no-ghost');
   }
-  return `node "${script}"${prev ? ` --then "${prev}"` : ''}`;
+  return `node "${script}"${mem ? ` --memory "${mem}"` : ''}${prev ? ` --then "${prev}"` : ''}`;
 }
 export const isOurStatus = (sl) => isObj(sl) && typeof sl.command === 'string' && /spookling/i.test(sl.command)
   && /[\\/]hooks[\\/]status-line\.js\b/.test(sl.command);
@@ -122,14 +132,14 @@ const previous = (cmd) => {
 };
 
 // a status line of your own keeps everything but command; with none we refresh every 5 s so the ghost moves while idle
-export function addStatusLine(settings, hooksDir, p = path) {
+export function addStatusLine(settings, hooksDir, p = path, memory) {
   checkShape(settings);
   const sl = settings.statusLine;
   if (sl !== undefined && !isObj(sl)) throw new Error('"statusLine" in settings.json is not an object');
   const prev = isOurStatus(sl) ? previous(sl.command) : sl?.command || null;
   const out = structuredClone(settings);
-  out.statusLine = sl ? { ...sl, type: 'command', command: statusCommand(hooksDir, prev, p) }
-    : { type: 'command', command: statusCommand(hooksDir, null, p), refreshInterval: 5 };
+  out.statusLine = sl ? { ...sl, type: 'command', command: statusCommand(hooksDir, prev, p, memory) }
+    : { type: 'command', command: statusCommand(hooksDir, null, p, memory), refreshInterval: 5 };
   return out;
 }
 

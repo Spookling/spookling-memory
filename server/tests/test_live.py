@@ -8,6 +8,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,29 @@ def hook(runner, name, payload, url, **env):
     exe, ext = runner
     return subprocess.run([exe, str(HOOKS / (name + ext))], input=json.dumps(payload), capture_output=True,
                           text=True, encoding="utf-8", env={**os.environ, "SPOOKLING_MEMORY_URL": url, **env}, timeout=90)
+
+
+def test_mcp_tools_find_their_folders_own_server(tmp_path, monkeypatch):
+    monkeypatch.delenv("SPOOKLING_MEMORY_URL", raising=False)
+    monkeypatch.setenv("SPOOKLING_MEMORY_FOLDER", str(tmp_path))
+    assert M.base() == "http://127.0.0.1:7447"  # no server.json yet: the old fixed port
+    (tmp_path / "server.json").write_text('{"port": 7731, "pid": 1}')
+    assert M.base() == "http://127.0.0.1:7731"
+    monkeypatch.setenv("SPOOKLING_MEMORY_URL", "http://127.0.0.1:9999")
+    assert M.base() == "http://127.0.0.1:9999"  # a server you run yourself wins
+
+
+def test_mcp_tools_refuse_another_folders_server(live, tmp_path, monkeypatch):
+    url, store = live
+    monkeypatch.delenv("SPOOKLING_MEMORY_URL", raising=False)
+    monkeypatch.setenv("SPOOKLING_MEMORY_FOLDER", str(tmp_path / "b"))
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "server.json").write_text(json.dumps({"port": int(url.rsplit(":", 1)[1]), "pid": 1}))
+    with pytest.raises(RuntimeError, match="another memory folder"):  # a stale server.json: the port is the live one's
+        M.memory_stats()
+    monkeypatch.setenv("SPOOKLING_MEMORY_FOLDER", str(store.folder))
+    (store.folder / "server.json").write_text(json.dumps({"port": int(url.rsplit(":", 1)[1]), "pid": 1}))
+    assert M.memory_stats()["n_events"] == 0
 
 
 def test_mcp_tools(live, tmp_path, monkeypatch):
@@ -237,3 +261,136 @@ def test_serve_cleans_up_on_a_signal(tmp_path, sig):
     finally:
         proc.kill()
     assert not list(tmp.glob("spookling-log-*"))
+
+
+def own_server(tmp_path, name):
+    """A project folder wired as init wires it: .memory/spookling.json with no tagger. Its uv (SPOOKLING_UV, see
+    hook_env) is a stand-in that runs this test's Python, so the hooks start a real server without uv or a network."""
+    import sys
+
+    uv = tmp_path / "uv"
+    if not uv.exists():
+        uv.write_text(f'#!/bin/sh\nshift 4\nexec "{sys.executable}" -c "from spookling_memory import main; main()" "$@"\n')
+        uv.chmod(0o755)
+    mem = tmp_path / name / ".memory"
+    mem.mkdir(parents=True)
+    (mem / "spookling.json").write_text(json.dumps({"model": "none"}))
+    return mem.resolve()
+
+
+def hook_env(tmp_path):
+    """The hooks' environment: no SPOOKLING_MEMORY_URL, and the stand-in uv in place of install.json's."""
+    env = {k: v for k, v in os.environ.items() if k != "SPOOKLING_MEMORY_URL"}
+    return {**env, "SPOOKLING_UV": str(tmp_path / "uv")}
+
+
+def claude_hook(name, mem, payload):
+    """A hook as init wires it: --memory names the folder, and no SPOOKLING_MEMORY_URL, so the hook finds or starts
+    that folder's own server."""
+    env = hook_env(mem.parent.parent)
+    return subprocess.run(["node", str(HOOKS / f"{name}.js"), "--memory", str(mem)], input=json.dumps(payload),
+                          capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+
+
+def stop_server(mem):
+    import signal
+
+    pid = json.loads((mem / "server.json").read_text())["pid"]
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(100):
+        if not (mem / "server.json").exists():
+            return
+        time.sleep(0.1)
+    raise AssertionError(f"pid {pid} did not stop")
+
+
+@pytest.mark.skipif(os.name == "nt" or not shutil.which("node"), reason="a POSIX stand-in for uv")
+def test_hooks_start_each_projects_own_server_keep_projects_apart_and_restart_it(tmp_path):
+    a, b = own_server(tmp_path, "shop"), own_server(tmp_path, "blog")
+    try:
+        start = claude_hook("session-start", a, {"session_id": "s1", "cwd": str(a.parent)})
+        assert start.returncode == 0 and start.stdout == ""  # SessionStart output would become context
+        assert json.loads((a / "pulse.json").read_text())["event"] == "start"  # it started the server and returned
+        for _ in range(300):  # its port, then the folder open (a 503 until then has no counts)
+            try:
+                port_a = json.loads((a / "server.json").read_text())["port"]
+                urllib.request.urlopen(f"http://127.0.0.1:{port_a}/v1/stats", timeout=2)
+                break
+            except (OSError, ValueError):
+                time.sleep(0.1)
+        start = claude_hook("session-start", a, {"session_id": "s1", "cwd": str(a.parent)})
+        p = json.loads((a / "pulse.json").read_text())
+        assert p["event"] == "start" and p["up"] and p["remembered"] == 0  # the server's own count, not a guess
+
+        transcript = tmp_path / "shop.jsonl"
+        transcript.write_text("".join(json.dumps({"type": t["role"], "message": t}) + "\n" for t in turns(
+            ["From now on, always use pnpm in this repo, never npm.", "Add a dark mode toggle to settings."])))
+        assert claude_hook("stop", a, {"session_id": "s1", "transcript_path": str(transcript), "hook_event_name": "Stop",
+                                       "cwd": str(a.parent)}).returncode == 0
+        for _ in range(50):  # Stop replies at once and saves after
+            if "pnpm" in (a / "log.jsonl").read_text() if (a / "log.jsonl").exists() else False:
+                break
+            time.sleep(0.1)
+        ask = {"session_id": "s2", "prompt": "install lodash for the settings page", "hook_event_name": "UserPromptSubmit"}
+        ctx = json.loads(claude_hook("user-prompt-submit", a, ask).stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "always use pnpm in this repo, never npm" in ctx.split("</rules>")[0]  # a standing rule with no tagger
+
+        out = claude_hook("user-prompt-submit", b, ask)  # the blog's hook starts the blog's server
+        port_b = json.loads((b / "server.json").read_text())["port"]
+        assert port_b != port_a and "pnpm" not in out.stdout  # another project's memory never comes through
+
+        stop_server(a)  # a crash, a reboot: the next hook brings it back with everything it had
+        again = json.loads(claude_hook("user-prompt-submit", a, ask).stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "always use pnpm" in again and (a / "server.json").exists()
+    finally:
+        for m in (a, b):
+            if (m / "server.json").exists():
+                stop_server(m)
+
+
+@pytest.mark.skipif(os.name == "nt" or not shutil.which("node"), reason="a POSIX stand-in for uv")
+def test_codexs_first_hook_starts_the_server_and_its_ghost_says_what_it_holds(tmp_path):
+    mem = own_server(tmp_path, "app")
+    env = hook_env(tmp_path)
+    try:
+        r = subprocess.run(["node", str(HOOKS / "spookling-codex.cjs"), "--memory", str(mem)], text=True, encoding="utf-8",
+                           input=json.dumps({"hook_event_name": "SessionStart", "session_id": "c1", "cwd": str(mem.parent)}),
+                           capture_output=True, env={**env, "NO_COLOR": "1"}, timeout=60)
+        said = json.loads(r.stdout)["systemMessage"]
+        assert said.startswith("spookling ready · local server connected") and "0 messages remembered" in said
+        assert (mem / "server.json").exists()
+    finally:
+        if (mem / "server.json").exists():
+            stop_server(mem)
+
+
+@pytest.mark.skipif(os.name == "nt" or not shutil.which("node"), reason="a POSIX stand-in for uv")
+def test_a_start_that_dies_ends_the_wait_and_the_next_prompt_tries_again(tmp_path):
+    mem = own_server(tmp_path, "held")
+    ask = {"session_id": "s", "prompt": "what did we decide about the cache?", "hook_event_name": "UserPromptSubmit"}
+    env = {**hook_env(tmp_path), "SPOOKLING_UV": str(tmp_path / "missing-uv")}  # no uv: every start dies at once
+    for _ in range(2):  # no lock left behind: the second prompt is as quick as the first
+        t0 = time.monotonic()
+        r = subprocess.run(["node", str(HOOKS / "user-prompt-submit.js"), "--memory", str(mem)], input=json.dumps(ask),
+                           capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+        assert r.returncode == 0 and r.stdout == "" and time.monotonic() - t0 < 5
+    assert not (mem / "server.starting").exists() and not (mem / "server.pid").exists()
+
+
+@pytest.mark.skipif(os.name == "nt" or not shutil.which("node"), reason="a POSIX script as the would-be uv")
+def test_a_repo_cannot_pick_what_the_hooks_run(tmp_path):
+    mem = own_server(tmp_path, "cloned")
+    evil = tmp_path / "evil.sh"
+    evil.write_text(f"#!/bin/sh\ntouch {tmp_path / 'pwned'}\n")
+    evil.chmod(0o755)
+    (mem / "spookling.json").write_text(json.dumps({"server": str(tmp_path), "uv": str(evil), "model": "none"}))
+    ask = {"session_id": "s", "prompt": "what did we decide about the cache?", "hook_event_name": "UserPromptSubmit"}
+    try:
+        assert claude_hook("user-prompt-submit", mem, ask).returncode == 0
+        assert not (tmp_path / "pwned").exists() and (mem / "server.json").exists()  # the real server, beside the hooks
+        no_flag = subprocess.run(["node", str(HOOKS / "user-prompt-submit.js")], input=json.dumps(ask | {"cwd": str(tmp_path / "x")}),
+                                 capture_output=True, text=True, encoding="utf-8", env=hook_env(tmp_path), timeout=60)
+        assert no_flag.returncode == 0 and not (tmp_path / "x").exists()  # no --memory: nothing found, nothing started
+    finally:
+        if (mem / "server.json").exists():
+            stop_server(mem)
