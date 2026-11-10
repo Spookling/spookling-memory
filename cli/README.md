@@ -21,7 +21,7 @@ npx spookling tokens revoke --all  # revoke every token, this device included
 npx spookling refresh [--org <id or name>]   # pull the org feeds into ~/.spookling/team-feed.json, then retry queued uploads and shares
 npx spookling sessions [project] [--limit N | --all]   # your uploaded sessions, newest 20 by default: private or shared, and the auto-share rules
 npx spookling share [<session id> | --last] [--org <id or name>] [--yes]     # share a session with an org; no id: the current session, else this project's newest; asks first unless --yes
-npx spookling unshare <session id> [--org <id or name>]   # stop sharing it (all orgs without --org)
+npx spookling unshare [<session id> | --last] [--org <id or name>]   # stop sharing it (all orgs without --org); cancels a share still pending
 npx spookling autoshare <project> on|off [--org <id or name>] [--backfill]   # share every new session of a project
 npx spookling delete <session id> [--yes]   # delete one uploaded session from the cloud; .memory/ is not touched
 npx spookling delete --all [--yes]          # delete every session you uploaded (asks you to type DELETE; --yes without a terminal)
