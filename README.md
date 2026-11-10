@@ -275,7 +275,7 @@ npx spookling logout               # forget the saved token
 npx spookling whoami               # who you are, the API and your default org
 npx spookling orgs                 # the orgs you belong to
 npx spookling tokens               # your CLI tokens; `tokens revoke <id>` or `--all` to revoke
-npx spookling refresh              # pull the org feeds into the local cache
+npx spookling refresh              # pull the org feeds into the local cache, and retry queued uploads and shares
 npx spookling sessions [project]   # your newest 20 uploaded sessions (--all, --limit N)
 npx spookling share <session id>   # share a session with an org (unshare to stop)
 npx spookling autoshare <project> on|off   # share every new session of a project
@@ -291,7 +291,7 @@ The team commands are explained under [Team memory](#team-memory), `update` unde
 - **Past sessions.** If it finds sessions in this project's or your home `.memory/log.jsonl` that were never uploaded, it asks whether to upload them privately. The default is yes, and with no terminal it takes yes after 20 seconds. Other projects upload when their next session stops. A failed upload never fails the login.
 - **Where the token goes.** It talks to the Spookling app (`https://api.spookling.com`) and saves the token in `~/.spookling/credentials.json` (mode `0600`) together with the server that issued it. The token only ever goes to that server (see [Advanced](#advanced)) and is never printed.
 - **The sign-in link** is opened only when it is on the API's host or a `spookling.com` host; on another host it asks first (default No) at a terminal, and is only printed with a warning when there is none.
-- **Afterwards.** `spookling whoami` prints your name and email, the API URL and the default org. If the API cannot be reached, commands say `Couldn't reach <url>`.
+- **Afterwards.** `spookling whoami` prints your name and email, the API URL and your orgs, asked of the API just now (never from a cache). If the API cannot be reached, commands say `Couldn't reach <url>`.
 
 You need Node 18 or newer and Claude Code v2.1.139 or later. The server runs on uv, which fetches Python 3.12 if you do not have it.
 
@@ -427,7 +427,7 @@ Optional, and only after `spookling login`. `init` never logs in and works offli
 ```bash
 spookling orgs                          # your orgs, as id and name
 spookling sessions [project] [--limit N | --all]   # newest 20 uploaded sessions: private, or shared with which org; plus auto-share rules
-spookling share <session id> [--org <id or name>]
+spookling share [<session id> | --last] [--org <id or name>] [--yes]   # no id: the current session, else this project's newest
 spookling unshare <session id> [--org <id or name>]   # all orgs without --org
 spookling autoshare <project> on|off [--org <id or name>] [--backfill]
 spookling delete <session id> [--yes]   # delete one uploaded session from the cloud
@@ -435,6 +435,25 @@ spookling delete --all [--yes]          # delete all of yours, in batches
 ```
 
 `--org` can be left out: `share` and `autoshare on` then use your default org (saved at login), or your only org. `unshare`, `autoshare off` and `refresh` without `--org` cover every org. `autoshare on` shares every new session of that project; `--backfill` also shares the ones already uploaded. `off` removes the rule; sessions already shared stay shared. Sharing shows the cleaned turns to every active member of the org, and unsharing hides them again but cannot un-tell someone who already read them. The org owns what is shared to it.
+
+**Four ways to share a session:**
+
+- **Ask Claude.** Say "share this session". Claude calls `memory_share`, and Spookling shows its own confirmation dialog naming the session and the org. Nothing is shared without your yes.
+- **`/spookling-share [org]`.** A slash command that `init` writes to `.claude/commands/spookling-share.md` (or your Claude config folder with `--scope user`). Typing it is your confirmation, so it shares the current session without a dialog.
+- **`spookling share [id] [--org X] [--last] [--yes]`.** With no id it takes the current session (the one a terminal inside Claude Code runs in, else the newest in this project, else your newest upload). It asks first unless `--yes`, and prints the session's web link when it can build one. `--last` is the same as leaving the id out.
+- **The Share button** in the web app.
+
+**Orgs are always checked live.** The default org is saved with the API and account it was chosen under; if either changes (a new login, another API such as a local one), the default and the cached team feed (`~/.spookling/team-feed.json`, which also records its API and user) are ignored, and `login` and `logout` delete the old feed. When you share, the default is checked against your live orgs: if it is gone, Spookling says so, uses your only org, or (with several) asks you to pick. `spookling share` names the org it picked, shows a picker in a terminal when you have several and gave no `--org`, and needs `--org` without a terminal. `spookling orgs`, `whoami` and `status` list your live orgs. For Claude, the MCP tool `team_orgs` does the same, and Claude is told never to state your orgs from memory.
+
+**No dialog in your client?** Some clients cannot show MCP confirmation dialogs. Then `memory_share` shares nothing and returns the session title, project, org (resolved live) and a command to give you, for example `spookling share <id> --org 'Org test'` (it shows what will be shared and asks you), plus `/spookling-share <org>` for the current session. Claude is told to relay it word for word and not to guess the org.
+
+**The allow rule.** `init` asks, and so does `login` (once, and only where Spookling's hooks are wired and no rule is set yet): "Let Claude share sessions to your team when you ask? Spookling still asks you to confirm each share." A yes adds five tools to `permissions.allow` in `.claude/settings.json` (or your user settings with `--scope user`): `mcp__spookling-memory__memory_share`, `memory_share_status`, `team_sessions`, `team_session` and `team_orgs` (all read-only). Anyone who said yes before gets only the new `team_orgs` rule, without a question, at `init --update`, `update` or the next `login`; a no stays a no. `memory_delete` and `memory_autoshare` are never added.
+
+- `init --allow-share` adds the rules without asking; `init --no-allow-share` leaves them out without asking. Without either flag, init asks at a terminal and otherwise skips the question and says how to allow it.
+- A "no" is remembered in `~/.spookling/share-allow.json`, so `login` and `spookling update` do not ask again. `init` always asks.
+- `uninstall` removes only the rules Spookling itself added (it records them per settings file in `share-allow.json`; a rule you had before stays, even if it is one of the five) and the `/spookling-share` command, as it removes the hooks.
+
+**Pending shares.** Sharing a session that is not saved yet uploads it now from its local log. If that fails, the share is queued and applies after the session's next save. `unshare` cancels a queued share, and `memory_share_status` reports it as `share pending`. A queued share is dropped after 7 days (noted in `~/.spookling/upload.log`). If the server refuses a queued share when it is applied (not a member, session or org gone, login rejected), the share is dropped and the next `spookling share`, `sessions`, `status` or `memory_share_status` says so once, for example `Share of 'Fix login' to Acme did not apply: 403 not a member`. A session id you type that is in no local log and not on the server is an error (`No session <id> found here or in the cloud`) and queues nothing. `spookling refresh` retries queued uploads and shares and prints the result.
 
 **Delete.** `spookling delete <session id>` removes one uploaded session from the cloud; `spookling delete --all` removes every session you uploaded. It deletes the cloud copy only: local memory (`.memory/`) is never touched. On a terminal it asks first (`--all` asks you to type `DELETE`); without a terminal it refuses unless you pass `--yes`. Sessions shared with an org belong to the org: they are kept and listed as skipped. A deleted session is marked in `~/.spookling/upload-state.json` and never uploads again, even if you keep working in it; sessions you start later upload as usual. Deleting a session that is already gone counts as done. The MCP tool `memory_delete(session_id | all=true)` does the same from chat, and always opens a yes/no dialog first (for one session and for all); a client that cannot show it gets the `spookling delete` command to run instead.
 
@@ -444,7 +463,12 @@ You can also ask in the chat: when you are logged in, the prompt hook tells Clau
 
 **Read.** Colleagues' agents read what you shared through two MCP tools, `team_sessions` (list and filter by query, person, project or org) and `team_session` (one session, in full). Each call refreshes every org feed on demand first, then reads the local cache (`~/.spookling/team-feed.json`); if the refresh fails it answers from the cache and says it may be stale. There is no background pull, and the hooks never put colleague text in your prompt: the model calls these tools, and what comes back is quoted data, wrapped so the agent does not follow instructions inside it. `spookling refresh [--org <id or name>]` pulls the feeds by hand. When an org has more than 500 shared sessions the feed says its id list is truncated, and refresh then keeps every cached session instead of purging the ones it did not list.
 
-**`status`.** `npx spookling status` has a `cloud` line: who you are logged in as (or `not logged in`), the last sync, and the pending turns. It reads local files only, so it never waits on the network. "Last sync" is the newest feed time from the last `refresh` or team-tool call, `never` if there has been none; it says nothing about uploads. "Pending" is the number of turns queued in `upload-state.json` that the server has not accepted yet, usually because you were offline; turns that Stop has not reached yet are not counted. A session skipped after a repeated `seq_conflict` is listed on its own `upload` line.
+**`status`.** `npx spookling status` has a `cloud` line: who you are logged in as (or `not logged in`), the last sync, the pending turns and the shares waiting for their session to upload (a refused share is shown there once). It reads local files only, so it never waits on the network. "Last sync" is the newest feed time from the last `refresh` or team-tool call, `never` if there has been none; it says nothing about uploads. "Pending" is the number of turns queued in `upload-state.json` that the server has not accepted yet, usually because you were offline; turns that Stop has not reached yet are not counted. A session skipped after a repeated `seq_conflict` is listed on its own `upload` line.
+
+**Troubleshooting.**
+
+- **"Claude was blocked from sharing."** Claude Code denied the tool call, or no confirmation dialog could be shown, and Claude is told not to retry. Run `/spookling-share` in the chat or `spookling share` in a terminal, or accept the allow rule above.
+- **Upload errors.** Each failed upload is logged to `~/.spookling/upload.log` with its HTTP status and error code, for example `upload queued: 500 INTERNAL_ERROR`. A 5xx is a problem on the Spookling server, not on your machine: the turns stay queued and go up at the next Stop or the next login. `spookling refresh` does not retry uploads.
 
 ---
 

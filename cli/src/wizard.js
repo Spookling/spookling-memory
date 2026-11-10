@@ -9,18 +9,21 @@ import { fileURLToPath } from 'node:url';
 import { C, DOWN, MODE, UP, askHidden, bail, choose, confirm, fits, paint, press, setFeed, setRaw, sleep, write as out } from './term.js';
 import { play } from './cutscene.js';
 import { flyOnce } from './ghost.js';
+import { ALLOW_SHARE_QUESTION, forgetAdded, pendingShareRules, recordAdded, addedRules, setShareDeclined, shareDeclined } from './allow-share.js';
 import { stage } from './stage.js';
 import {
-  HOOK_FILES, MCP_NAME, addHooks, addMcp, claudeDesktopConfigPath, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
+  HOOK_FILES, MCP_NAME, addHooks, addMcp, addPermissions, claudeDesktopConfigPath, commandsPath, hasPermissions, isOurShareCommand, removePermissions, shareCommand, SHARE_TOOLS, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
   wiring, wslShare, CODEX_EVENTS, codexHandlers, codexHooksPath, STATUS_FILE, addStatusLine, removeStatusLine, isOurStatus,
   addCodexMcp, codexConfigPath, codexEntry, codexMcpEntry, codexMcpToml, installVersions, mcpCommand, ourHookCommands, removeCodexMcp,
 } from './hooks.js';
-import { pendingUploads, skipText, skippedSessionIds, uploadProblems } from './push.js';
+import { takeShareFailures } from './upload-state.js';
+import { pendingShares, pendingUploads, skipText, skippedSessionIds, uploadProblems } from './push.js';
 import { readCredentials, writeFileSecure } from './credentials.js';
 import { compareVersions, updateAvailable } from './registry.js';
 import { createRun, tilde } from './backup.js';
 import { checkToml } from './toml-check.js';
 import { readCache } from './team.js';
+import { liveOrgs } from './share.js';
 
 const WIN = process.platform === 'win32';
 const ROOT = fileURLToPath(new URL('../..', import.meta.url)).replace(/[\\/]$/, '');
@@ -594,7 +597,7 @@ export function staleWiring(project = process.cwd(), home = homedir()) {
 }
 
 // `init --update`: no cutscene, no prompts, works without a TTY. Returns the exit code.
-export async function initUpdate({ project = process.cwd(), home = homedir(), probe = stats, ps, stop, alive, pause, find = detectInstall, withStatus = true } = {}) {
+export async function initUpdate({ project = process.cwd(), home = homedir(), probe = stats, ps, stop, alive, pause, find = detectInstall, withStatus = true, allowShare } = {}) {
   out(`${paint(C.GHOST, `Updating Spookling Memory to ${VERSION}`, true)}  ${paint(C.GREY, project)}\n`);
   const { targets, elsewhere, live } = await find({ project, home, probe });
   if (elsewhere.length) info(`Other projects with a project-scope install: ${elsewhere.join(', ')}. Run spookling update in each.`);
@@ -605,7 +608,7 @@ export async function initUpdate({ project = process.cwd(), home = homedir(), pr
     return 1;
   }
   const run = createRun(home);
-  const shared = { home, ps, stop, alive, pause, step4Done: false, knownProjects: elsewhere };
+  const shared = { home, ps, stop, alive, pause, step4Done: false, knownProjects: elsewhere, allowShare };
   let code = 0;
   for (const t of targets) {
     out(`\n   ${paint(C.GHOST, `${t.harness === 'claude' ? 'Claude Code' : 'Codex'}, ${t.scope} scope`)}${t.scope === 'project' ? paint(C.GREY, `  ${t.project}`) : ''}\n`);
@@ -629,10 +632,10 @@ export async function initUpdate({ project = process.cwd(), home = homedir(), pr
   return code;
 }
 
-export async function init({ anim = true, project = process.cwd(), scope = 'project', dry = false, fast = false, ghost = true } = {}) {
+export async function init({ anim = true, project = process.cwd(), scope = 'project', dry = false, fast = false, ghost = true, allowShare } = {}) {
   const label = dry ? DEMO_LABEL : '';
   await play({ anim: anim && !fast, keep: fits(anim), label });
-  const ctx = { ...newCtx(project, scope), ghost };
+  const ctx = { ...newCtx(project, scope), ghost, allowShare };
   const demo = dry ? demoInput(fast) : null;
   const st = stage({ anim, label, hold: fast ? 0 : 1200 });
   Object.assign(ctx, { dry, say: st.say, beat: demo?.beat ?? ctx.beat });
@@ -843,7 +846,57 @@ async function stepWire(ctx) {
       preview: `${mcpJson(desktopEntry)}\n  merged into Claude's desktop config; other keys stay`,
       same: `${rel(ctx, desktopPath)} already has the MCP entry`,
     });
+    await stepAllowShare(ctx, sp);
+    await shareCommandFile(ctx);
   }
+}
+
+// Let Claude call the five share tools without Claude Code blocking them. Each share is still confirmed by Spookling.
+// --allow-share / --no-allow-share decide without asking. With no flag: init asks (a terminal only); update asks only
+// at a terminal and only if the answer was never "no" before. Anything else leaves the settings alone.
+async function stepAllowShare(ctx, sp) {
+  const flag = ctx.auto ? ctx.auto.allowShare : ctx.allowShare;
+  // an earlier yes (recorded in share-allow.json) covers tools added since: add only those, no question
+  const later = ctx.dry || flag === false ? [] : pendingShareRules(sp, homeOf(ctx));
+  if (later.length) {
+    await mergeFile(ctx, sp, (s) => addPermissions(s, later), {
+      what: 'permissions.allow: the new Spookling tool you already allowed the others of',
+      preview: `"permissions": { "allow": ${JSON.stringify(later)} }`,
+      same: `${rel(ctx, sp)} already lets Claude use the share tools`,
+    });
+    try { if (readJson(sp).permissions?.allow?.includes(later[0])) recordAdded(sp, later, homeOf(ctx)); } catch { /* the note is best effort */ }
+  }
+  let have = false;
+  try { have = !ctx.dry && hasPermissions(readJson(sp)); } catch { /* mergeFile reports an unreadable file */ }
+  if (have) return ok(`${rel(ctx, sp)} already lets Claude use the share tools`);
+  let want = flag;
+  if (want === undefined) {
+    const tty = ctx.dry || (process.stdin.isTTY && process.stdout.isTTY);
+    if (!tty) return info('Claude is not allowed to share sessions yet: run init with --allow-share to allow it.');
+    if (ctx.auto && shareDeclined(homeOf(ctx))) return;
+    // update has no prompts of its own, but this one is a consent, so it is asked
+    want = await confirm(`   ${ALLOW_SHARE_QUESTION}`, true);
+    if (!ctx.dry && !want) setShareDeclined(true, homeOf(ctx));
+  }
+  if (!want) return info('Claude may not share sessions on its own. Use spookling share, or run init with --allow-share.');
+  // remember which rules are ours (not already the user's), so uninstall removes only those
+  let added = [];
+  try { if (!ctx.dry) { const allow = readJson(sp).permissions?.allow; added = SHARE_TOOLS.filter((r) => !(Array.isArray(allow) && allow.includes(r))); } } catch { /* mergeFile reports it */ }
+  await mergeFile(ctx, sp, (s) => addPermissions(s), {
+    what: 'permissions.allow: the Spookling share tools',
+    preview: `"permissions": { "allow": ${JSON.stringify(SHARE_TOOLS, null, 2).replace(/\n/g, '\n    ')} }\n  merged in; your other rules stay. Spookling still asks you to confirm each share.`,
+    same: `${rel(ctx, sp)} already lets Claude use the share tools`,
+  });
+  try { if (!ctx.dry && added.length && hasPermissions(readJson(sp))) recordAdded(sp, added, homeOf(ctx)); } catch { /* the note is best effort */ }
+}
+
+// /spookling-share: the file is ours or it is not written
+async function shareCommandFile(ctx) {
+  const cp = commandsPath(ctx.project, ctx.scope), text = shareCommand();
+  const have = readText(cp);
+  if (have === text) return ok(`${rel(ctx, cp)} is up to date`);
+  if (have && !isOurShareCommand(have)) return info(`${rel(ctx, cp)} is yours; left it as it is.`);
+  await write(ctx, cp, text, { what: '/spookling-share command', redo: () => text });
 }
 
 // Ask the server for its stats.
@@ -925,8 +978,8 @@ function cloudLine(line, home) {
     const who = creds.fromEnv && !creds.user ? 'SPOOKLING_TOKEN' : (creds.user?.email || creds.user?.name || creds.user?.id || 'saved login');
     const times = Object.values(readCache(home).orgs).map((o) => o.serverTime).filter((t) => t && !Number.isNaN(Date.parse(t))).sort();
     const sync = times.length ? times[times.length - 1] : null;
-    const { turns, sessions } = pendingUploads(home);
-    line('cloud', `logged in as ${who}; last sync ${sync || 'never'}; ${turns ? `${turns} turn${turns === 1 ? '' : 's'} in ${sessions} session${sessions === 1 ? '' : 's'} not uploaded yet` : 'no turns waiting to upload'}`, true);
+    const { turns, sessions } = pendingUploads(home), shares = pendingShares(home);
+    line('cloud', `logged in as ${who}; last sync ${sync || 'never'}; ${turns ? `${turns} turn${turns === 1 ? '' : 's'} in ${sessions} session${sessions === 1 ? '' : 's'} not uploaded yet` : 'no turns waiting to upload'}${shares ? `; ${shares} share${shares === 1 ? '' : 's'} waiting for the session to upload` : ''}`, true);
   } catch (e) { line('cloud', `could not read local cloud state: ${e.message}`, false); }
 }
 
@@ -1029,15 +1082,16 @@ function modelLine(line, m) {
 }
 
 // Sessions the uploader gave up on, and an expired login.
-function uploadLines(line, home) {
+async function uploadLines(line, home) {
   const held = skippedSessionIds(home);
   if (held.length) line('upload', `${held.join(', ')} skipped after seq_conflict`, false);
   const problems = uploadProblems(home);
   for (const x of problems.skipped) line('upload', `${x.sid} skipped for good: ${skipText(x.reason)}`, false);
+  for (const text of await takeShareFailures(home).catch(() => [])) line('share', text, false);
   if (problems.loginExpired && readCredentials({ home }).token) line('login', 'expired, run spookling login (the last upload was refused with 401)', false);
 }
 
-export async function status(project = process.cwd(), get = stats, home = homedir(), { update = {}, noUpdate = false } = {}) {
+export async function status(project = process.cwd(), get = stats, home = homedir(), { update = {}, noUpdate = false, liveOrgs: checkOrgs = false } = {}) {
   const line = (label, text, good) => out(`   ${good ? paint(C.MINT, '✓') : paint(C.LILAC, '!')} ${label.padEnd(8)} ${text}\n`);
   const ctx = newCtx(project);
   out(`${paint(C.GHOST, 'Spookling Memory', true)}  ${paint(C.GREY, project)}\n`);
@@ -1070,11 +1124,17 @@ export async function status(project = process.cwd(), get = stats, home = homedi
   keysLine(line, project, s?.tagger);
   modelLine(line, s?.model);
   cloudLine(line, home);
+  if (checkOrgs && readCredentials({ home }).token) {
+    // asked of the API now, never from a cache or a saved default; a slow or down API only costs a few seconds
+    const live = await Promise.race([liveOrgs({ home }), new Promise((r) => { setTimeout(() => r({ error: 'timed out' }), 4000).unref(); })]).catch(() => ({ error: 'failed' }));
+    if (live.error) line('orgs', `could not check just now (${live.error}); run spookling orgs`, false);
+    else line('orgs', `${live.orgs.length ? live.orgs.map((o) => o.name + (o.default ? ' (default)' : '')).join(', ') : 'none'}; checked just now${live.note ? `. ${live.note}` : ''}`, live.orgs.length > 0);
+  }
   if (!noUpdate) {
     const v = await updateAvailable({ home, current: VERSION, ...update }).catch(() => null);
     if (v) line('update', `${v} is available. Run spookling update.`, false);
   }
-  uploadLines(line, home);
+  await uploadLines(line, home);
   return s && !upgrade && ((claude && !missing.length) || (codex && codexScript)) ? 0 : 1;
 }
 
@@ -1088,11 +1148,14 @@ export async function uninstall(project = process.cwd(), { scope = 'project', ha
   const ctx = newCtx(project, scope);
   const sp = harness === 'codex' ? codexHooksPath(project, scope) : settingsPath(project, scope);
   out(`${paint(C.GHOST, 'Removing Spookling Memory wiring', true)}  ${paint(C.GREY, scope === 'user' ? `${project} (user scope)` : project)}\n`);
-  await mergeFile(ctx, sp, harness === 'codex' ? removeHooks : (s) => removeStatusLine(removeHooks(s)), {
+  // only the allow rules Spookling itself added (share-allow.json); a rule the user had before stays
+  const ours = harness === 'codex' ? [] : addedRules(sp, homeOf(ctx));
+  await mergeFile(ctx, sp, harness === 'codex' ? removeHooks : (s) => removePermissions(removeStatusLine(removeHooks(s)), ours), {
     what: 'removed the Spookling hooks',
-    preview: `drop only the Spookling hooks${harness === 'codex' ? '' : ' and the ghost (your own status line comes back)'}; everything else stays`,
+    preview: `drop only the Spookling hooks${harness === 'codex' ? '' : ', the share tools in permissions.allow and the ghost (your own status line comes back)'}; everything else stays`,
     same: `no Spookling hooks in ${rel(ctx, sp)}`,
   });
+  try { if (ours.length && !readJson(sp).permissions?.allow?.some((r) => ours.includes(r))) forgetAdded(sp, homeOf(ctx)); } catch { /* the note stays */ }
   if (harness === 'codex') {
     const cfg = codexConfigPath(project, scope), name = rel(ctx, cfg);
     const viaFile = () => mergeText(ctx, cfg, removeCodexMcp, {
@@ -1117,6 +1180,8 @@ export async function uninstall(project = process.cwd(), { scope = 'project', ha
     if (r && r.status !== 0) ctx.problems.push(`run claude mcp remove ${MCP_NAME} --scope user yourself`);
   } else ok(`no ${MCP_NAME} entry in ${rel(ctx, mcpPath(project, 'user'))}`);
   if (harness !== 'codex') {
+    const cp = commandsPath(project, scope);
+    if (isOurShareCommand(readText(cp))) { rmSync(cp, { force: true }); ok(`removed ${rel(ctx, cp)}`); }
     const desktopPath = claudeDesktopConfigPath();
     await mergeFile(ctx, desktopPath, removeMcp, {
       what: `removed MCP server ${MCP_NAME} from the Claude desktop app`,

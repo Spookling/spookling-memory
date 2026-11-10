@@ -6,8 +6,10 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { VERSION, apiBase, clean, createCloud, isNetworkError, networkMessage } from './cloud.js';
-import { readCredentials, removeStoredToken, setDefaultOrg, writeCredentials } from './credentials.js';
+import { forgetTeamFeed, readCredentials, removeStoredToken, setDefaultOrg, writeCredentials } from './credentials.js';
+import { noteUpload } from './upload-state.js';
 import { clearLoginExpired, deletedSessionIds, pushFromLog, projectLog, uploadedCursors } from './push.js';
+import { offerAllowShare } from './allow-share.js';
 import { orgRecords } from './team.js';
 import { cachedNotice } from './registry.js';
 
@@ -133,19 +135,29 @@ async function chooseDefaultOrg({ client, token, home, write, choose }) {
   say(write, `Default org: ${clean(org.name)}`);
 }
 
+const PAST_PACE_MS = 150; // between sessions in the login backfill; Stop-hook uploads are not paced
 const FRAMES = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
 
 // One updating line (spinner and count) while `work` runs; only on a terminal, nothing at all otherwise.
 // The line is cleared before this returns or throws, and the timer always stops so the process can exit.
 export async function withProgress({ write, tty, label, total, interval = 90 }, work) {
-  if (!tty) return work(() => {});
-  let done = 0, frame = 0;
-  const draw = () => write(`\r\x1b[2K${FRAMES[frame++ % FRAMES.length]} ${label}… ${done}/${total}`);
+  // progress(n) sets the count; progress.say(text) prints a line of its own; progress.status(text) sets a short note on the spinner
+  if (!tty) {
+    const quiet = (() => {});
+    quiet.say = (m) => write(`${m}\n`);
+    quiet.status = () => {};
+    return work(quiet);
+  }
+  let done = 0, frame = 0, note = '';
+  const draw = () => write(`\r\x1b[2K${FRAMES[frame++ % FRAMES.length]} ${label}… ${done}/${total}${note ? ` · ${note}` : ''}`);
   draw();
   const timer = setInterval(draw, interval);
   timer.unref?.();
+  const progress = (n) => { done = Math.min(n, total); draw(); };
+  progress.say = (m) => { write(`\r\x1b[2K${m}\n`); draw(); };
+  progress.status = (t) => { note = String(t || ''); draw(); };
   try {
-    return await work((n) => { done = Math.min(n, total); draw(); });
+    return await work(progress);
   } finally {
     clearInterval(timer);
     write('\r\x1b[2K');
@@ -153,7 +165,7 @@ export async function withProgress({ write, tty, label, total, interval = 90 }, 
 }
 
 // Offer to upload what is already logged. Never throws and never changes the login result.
-async function backfill({ home, cwd, env, cloud, write, confirm, tty = false }) {
+async function backfill({ home, cwd, env, cloud, write, confirm, tty = false, sleep }) {
   try {
     const logs = localLogs({ home, cwd });
     const sids = pastSessions(logs, home);
@@ -165,19 +177,41 @@ async function backfill({ home, cwd, env, cloud, write, confirm, tty = false }) 
       say(write, 'Skipped. They upload one by one when a session stops.');
       return;
     }
-    let pushed = 0, queued = false;
-    const notes = [];
+    let pushed = 0, queued = false, waiting = 0;
+    const failed = [], skipped = [];
+    const pace = { ms: PAST_PACE_MS, sent: false }; // shared across logs so the pause carries over
     await withProgress({ write, tty, label: 'Uploading past sessions', total: n }, async (progress) => {
       for (const log of logs) {
         const base = pushed;
-        const r = await pushFromLog({ logPath: log.path, home, env, cloud, project: log.project, log: (m) => notes.push(m), onProgress: (d) => progress(base + d) });
+        const r = await pushFromLog({ logPath: log.path, home, env, cloud, project: log.project, onProgress: (d) => progress(base + d),
+          log: (m) => noteUpload(home, m), notify: progress.say, status: progress.status, pace, sleep });
         pushed += r.pushed || 0;
         progress(pushed);
         if (r.queued) queued = true;
+        waiting += r.queuedCount || 0;
+        failed.push(...(r.failed || []));
+        skipped.push(...(r.skipped || []));
       }
     });
+    // one line for all skipped sessions (per-session detail is in ~/.spookling/upload.log), grouped by reason
+    const byReason = new Map();
+    for (const k of skipped) byReason.set(k.reason, (byReason.get(k.reason) || 0) + 1);
+    const sk = (reason, c) => (reason === 'seq_conflict'
+      ? `${c} ${c === 1 ? 'session' : 'sessions'} skipped: the server already has a different copy of ${c === 1 ? 'it' : 'them'}`
+      : `${c} ${c === 1 ? 'session' : 'sessions'} skipped: ${String(reason).replace(/_/g, ' ')}`);
+    const skipLines = [...byReason].map(([r, c]) => sk(r, c));
     say(write, `Uploaded ${pushed} ${pushed === 1 ? 'session' : 'sessions'} privately.`);
-    if (queued) say(write, `Some turns did not go up${notes.length ? ` (${notes[0]})` : ''}. They retry at the next Stop, or run spookling refresh.`);
+    for (const l of skipLines) say(write, l);
+    if (queued) {
+      // the uploader stops at the first refusal and leaves the rest queued, so count tried and untried apart, and name each distinct reason
+      const reasons = [...new Set(failed.map((f) => f.why))];
+      const untried = Math.max(0, waiting - failed.length);
+      const n = failed.length;
+      if (n) say(write, `${n} ${n === 1 ? 'session' : 'sessions'} could not be uploaded: ${reasons.join('; ')}${untried ? `; ${untried} more ${untried === 1 ? 'was' : 'were'} not tried` : ''}.`);
+      else say(write, `${waiting || 'Some'} ${waiting === 1 ? 'session' : 'sessions'} did not go up.`);
+      const server = failed.some((f) => /^5\d\d\b/.test(f.why));
+      say(write, `${server ? 'The server had a problem, not your setup. ' : ''}They stay queued and retry at the next Stop, or run spookling refresh.`);
+    }
     say(write, `Looked in ${logs.map((l) => l.path.replace(home, '~')).join(' and ')}. Other projects upload when their next session stops.`);
   } catch (e) {
     say(write, `Could not upload past sessions (${e?.code || e?.message || 'error'}). They upload at the next Stop; spookling refresh checks the connection.`);
@@ -258,13 +292,17 @@ async function pollApproval({ client, started, sleep, now }) {
 }
 
 // Approved: save the token with the origin it came from, then the default org and the offer to upload past sessions. None can fail the login.
-async function finishLogin({ data, origin, client, label, home, env, cloud, cwd, term, confirm, choose, write, tty }) {
+async function finishLogin({ data, origin, client, label, home, env, cloud, cwd, term, confirm, choose, write, tty, sleep }) {
+  // a different account or API leaves its cached team feed (and default org, see writeCredentials) behind
+  const before = readCredentials({ env: {}, home });
+  if (before.savedToken && ((before.apiUrl || '') !== (origin || '') || (before.user?.id || '') !== (data.user?.id || ''))) forgetTeamFeed(home);
   writeCredentials({ token: data.token, user: data.user ?? null, label: label || hostname(), apiUrl: origin }, { home });
   try { await clearLoginExpired(home); } catch { /* a stale flag is harmless */ }
   const name = clean(data.user?.name || data.user?.email || data.user?.id);
   say(write, name ? `Logged in as ${name}.` : 'Logged in.');
   await chooseDefaultOrg({ client, token: data.token, home, write, choose: choose || term.choose });
-  await backfill({ home, cwd, env, cloud, write, confirm: confirm || term.confirm, tty });
+  await backfill({ home, cwd, env, cloud, write, confirm: confirm || term.confirm, tty, sleep });
+  await offerAllowShare({ home, cwd: cwd || process.cwd(), env, write: (s) => write(s), confirm: confirm || term.confirm, tty });
 }
 
 export async function login({
@@ -292,7 +330,7 @@ export async function login({
   const outcome = await pollApproval({ client, started, sleep, now });
   switch (outcome.status) {
     case 'approved':
-      await finishLogin({ data: outcome.data, origin, client, label, home, env, cloud, cwd, term, confirm, choose, write, tty });
+      await finishLogin({ data: outcome.data, origin, client, label, home, env, cloud, cwd, term, confirm, choose, write, tty, sleep });
       return 0;
     case 'invalid': say(write, 'This login code is no longer valid.'); return 1;
     case 'denied': say(write, 'Login denied.'); return 1;
@@ -325,7 +363,7 @@ export async function logout({
   return 0;
 }
 
-export function whoami({ home, env = process.env, write = (s) => process.stdout.write(s) } = {}) {
+export function whoami({ home, env = process.env, write = (s) => process.stdout.write(s), orgsFollow = false } = {}) {
   const creds = readCredentials({ home, env });
   let base = null;
   try { base = apiBase(env, { home }); } catch { /* the saved user is enough when no URL is stored yet */ }
@@ -338,7 +376,7 @@ export function whoami({ home, env = process.env, write = (s) => process.stdout.
     : clean([u.name, u.email].filter(Boolean).join(' ') || u.id || 'Logged in.');
   say(write, who);
   if (base) say(write, `API ${base}`);
-  say(write, `Default org ${clean(creds.defaultOrgName || creds.defaultOrgId || 'none')}`);
+  if (!orgsFollow) say(write, `Default org ${clean(creds.defaultOrgName || creds.defaultOrgId || 'none')}${creds.defaultOrgId ? ' (saved; spookling orgs checks it live)' : ''}`);
   const newer = cachedNotice({ home: home ?? undefined, current: VERSION, env });
   if (newer) say(write, `! update   ${newer} is available. Run spookling update.`);
   return 0;
@@ -346,7 +384,7 @@ export function whoami({ home, env = process.env, write = (s) => process.stdout.
 
 // The orgs this login is an active member of: GET /cli/orgs.
 export async function orgs({
-  home, env = process.env, cloud, write = (s) => process.stdout.write(s),
+  home, env = process.env, cloud, write = (s) => process.stdout.write(s), heading = false,
 } = {}) {
   const creds = readCredentials({ home, env });
   if (!creds.token) {
@@ -363,11 +401,19 @@ export async function orgs({
     return 1;
   }
   const list = orgRecords(listed);
+  if (heading) say(write, 'Orgs (checked just now):');
+  // the saved default is only kept when it is still one of these
+  const stale = creds.defaultOrgId && !list.some((o) => o.id === creds.defaultOrgId) ? (creds.defaultOrgName || creds.defaultOrgId) : creds.staleDefaultOrg;
+  if (stale) {
+    try { setDefaultOrg(null, { home }); } catch { /* the note is enough */ }
+    say(write, `Your saved default org '${clean(stale)}' is no longer one of your orgs, so it was cleared.${list.length > 1 ? ' Pick one when you share, or run spookling login to choose a default.' : ''}`);
+  }
   if (!list.length) {
-    say(write, 'You are not in an org.');
+    say(write, 'You are not in an org. Join or create one in the Spookling web app, then run spookling orgs again.');
     return 0;
   }
-  for (const o of list) say(write, `${clean(o.id)}  ${clean(o.name)}${o.id === creds.defaultOrgId ? '  (default)' : ''}`);
+  const kept = stale ? null : creds.defaultOrgId;
+  for (const o of list) say(write, `${clean(o.id)}  ${clean(o.name)}${o.id === kept ? '  (default)' : ''}`);
   return 0;
 }
 

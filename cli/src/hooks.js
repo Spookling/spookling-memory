@@ -90,6 +90,66 @@ export function addHooks(settings, handlers) {
   return out;
 }
 
+// permissions.allow rules for the share tools. Other rules, and the other keys of permissions, are never touched.
+// All read-only (or, for memory_share, confirmed by Spookling per share). memory_delete and memory_autoshare are never listed.
+const rule = (t) => `mcp__${MCP_NAME}__${t}`;
+export const SHARE_TOOLS = ['memory_share', 'memory_share_status', 'team_sessions', 'team_session', 'team_orgs'].map(rule);
+// Rules added to SHARE_TOOLS after the first release: someone who accepted the earlier list gets just these, without a new question.
+export const LATER_SHARE_TOOLS = ['team_orgs'].map(rule);
+function checkPerms(settings) {
+  if (!isObj(settings)) throw new Error('settings.json is not a JSON object');
+  const p = settings.permissions;
+  if (p === undefined) return;
+  if (!isObj(p)) throw new Error('"permissions" in settings.json is not an object');
+  if (p.allow !== undefined && !Array.isArray(p.allow)) throw new Error('"permissions.allow" in settings.json is not a list');
+}
+export function addPermissions(settings, rules = SHARE_TOOLS) {
+  checkPerms(settings);
+  const out = structuredClone(settings);
+  const allow = out.permissions?.allow ?? [];
+  const add = rules.filter((r, i) => !allow.includes(r) && rules.indexOf(r) === i);
+  if (!add.length) return out;
+  out.permissions = { ...out.permissions, allow: [...allow, ...add] };
+  return out;
+}
+export function removePermissions(settings, rules = SHARE_TOOLS) {
+  checkPerms(settings);
+  const out = structuredClone(settings);
+  if (!out.permissions?.allow) return out;
+  const kept = out.permissions.allow.filter((r) => !rules.includes(r));
+  if (kept.length === out.permissions.allow.length) return out;
+  if (kept.length) out.permissions.allow = kept;
+  else delete out.permissions.allow;
+  if (!Object.keys(out.permissions).length) delete out.permissions;
+  return out;
+}
+export const hasPermissions = (settings, rules = SHARE_TOOLS) =>
+  Array.isArray(settings?.permissions?.allow) && rules.every((r) => settings.permissions.allow.includes(r));
+
+// /spookling-share: the user typing it is the consent, so it may run `spookling share` without a prompt
+export const SHARE_COMMAND_FILE = 'spookling-share.md';
+const SHARE_MARK = '<!-- spookling-memory: share command -->';
+export const shareCommand = () => `---
+description: Share this Claude Code session with your Spookling team
+argument-hint: [org name or id]
+allowed-tools: Bash(spookling share:*)
+---
+${SHARE_MARK}
+Share the current Claude Code session with the user's Spookling team. The user typed this command, so that is their confirmation.
+
+The current session id is \`${'$'}{CLAUDE_SESSION_ID}\` (Claude Code fills it in). Run this one Bash command and show its output as it is:
+
+- Org argument empty: \`spookling share ${'$'}{CLAUDE_SESSION_ID} --yes\`
+- Org argument given: \`spookling share ${'$'}{CLAUDE_SESSION_ID} --yes --org "$ARGUMENTS"\`
+
+Org argument: $ARGUMENTS
+
+If it fails, tell the user what it printed and stop. Do not try another way to share, and do not change any settings.
+`;
+export const isOurShareCommand = (text) => typeof text === 'string' && text.includes(SHARE_MARK);
+export const commandsPath = (project, scope = 'project', env = process.env, home = homedir()) =>
+  join(scope === 'user' ? configDir(env, home) : join(project, '.claude'), 'commands', SHARE_COMMAND_FILE);
+
 export function removeHooks(settings) {
   checkShape(settings);
   const out = structuredClone(settings);
@@ -171,9 +231,9 @@ export function readJson(path) {
   try { return JSON.parse(text); } catch (e) { throw new Error(`${path} is not valid JSON (${e.message}); left it untouched`); }
 }
 
-const configDir = (env) => env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
-export const settingsPath = (project, scope = 'project', env = process.env) =>
-  scope === 'user' ? join(configDir(env), 'settings.json') : join(project, '.claude', 'settings.json');
+const configDir = (env, home = homedir()) => env.CLAUDE_CONFIG_DIR || join(home, '.claude');
+export const settingsPath = (project, scope = 'project', env = process.env, home = homedir()) =>
+  scope === 'user' ? join(configDir(env, home), 'settings.json') : join(project, '.claude', 'settings.json');
 export const mcpPath = (project, scope = 'project', env = process.env) =>
   scope === 'user' ? (env.CLAUDE_CONFIG_DIR ? join(env.CLAUDE_CONFIG_DIR, '.claude.json') : join(homedir(), '.claude.json'))
     : join(project, '.mcp.json');
