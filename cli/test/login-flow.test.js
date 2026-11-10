@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tmpHome } from './helpers.mjs';
 import { CloudError, isNetworkError, networkMessage } from '../src/cloud.js';
-import { readCredentials, writeCredentials } from '../src/credentials.js';
+import { readCredentials, setDefaultOrg, writeCredentials } from '../src/credentials.js';
 import { login, logout, orgs, whoami } from '../src/account.js';
 import { setProjectAutoShare, setSessionShare, shareStatus } from '../src/share.js';
 import { refresh } from '../src/team.js';
@@ -146,6 +146,18 @@ test('past sessions: asked, uploaded privately, counted; already uploaded ones a
   assert.match(r.out, /Looked in .*app[\\/]\.memory[\\/]log\.jsonl and ~[\\/]\.memory[\\/]log\.jsonl\. Other projects upload when their next session stops\./);
 });
 
+test('several skipped sessions are one summary line; per-session detail goes to upload.log', async () => {
+  const home = homeOf();
+  writeLog(home, 's1', 's2', 's3');
+  const cloud = { ...fake(), upsertSession: async () => { throw new CloudError('conflict', { status: 409, code: 'SEQ_CONFLICT', reason: 'seq_conflict' }); } };
+  const r = await run(home, { confirm: async () => true }, cloud);
+  assert.equal(r.code, 0);
+  assert.equal((r.out.match(/skipped/g) || []).length, 1, r.out);
+  assert.match(r.out, /Uploaded 0 sessions privately\.\n3 sessions skipped: the server already has a different copy of them\n/);
+  const log = readFileSync(join(home, '.spookling', 'upload.log'), 'utf8');
+  for (const id of ['s1', 's2', 's3']) assert.match(log, new RegExp(`session ${id} .*seq_conflict`));
+});
+
 test('declining the backfill uploads nothing', async () => {
   const home = homeOf();
   writeLog(home, 's1');
@@ -162,8 +174,29 @@ test('a backfill that fails never fails the login', async () => {
   const cloud = { ...fake(), upsertSession: async () => { throw down(); } };
   const r = await run(home, { confirm: async () => true }, cloud);
   assert.equal(r.code, 0);
-  assert.match(r.out, /Uploaded 0 sessions privately\.\nSome turns did not go up .*retry at the next Stop/);
+  assert.match(r.out, /Uploaded 0 sessions privately\.\n1 session could not be uploaded: ECONNREFUSED\.\n.*retry at the next Stop/);
   assert.equal(readCredentials({ home, env: {} }).token, 'spk_t');
+});
+
+test('a server 500 is reported with its status and code, and the sessions not tried are counted', async () => {
+  const home = homeOf();
+  writeLog(home, 's1', 's2', 's3');
+  let puts = 0;
+  const cloud = { ...fake(), upsertSession: async () => { puts += 1; throw new CloudError('INTERNAL_ERROR', { status: 500, code: 'INTERNAL_ERROR' }); } };
+  const r = await run(home, { confirm: async () => true }, cloud);
+  assert.equal(r.code, 0);
+  assert.equal(puts, 1, 'the uploader stops at the first refusal');
+  assert.match(r.out, /Uploaded 0 sessions privately\.\n1 session could not be uploaded: 500 INTERNAL_ERROR; 2 more were not tried\.\nThe server had a problem, not your setup\. They stay queued/);
+  assert.doesNotMatch(r.out, /spk_t/);
+});
+
+test('a 400 reason is shown and is not called a server problem', async () => {
+  const home = homeOf();
+  writeLog(home, 's1');
+  const cloud = { ...fake(), upsertSession: async () => { throw new CloudError('BAD_REQUEST', { status: 400, code: 'BAD_REQUEST', reason: 'weird' }); } };
+  const r = await run(home, { confirm: async () => true }, cloud);
+  assert.match(r.out, /1 session could not be uploaded: 400 BAD_REQUEST weird\.\nThey stay queued/);
+  assert.doesNotMatch(r.out, /server had a problem/);
 });
 
 test('with no TTY the real prompt takes Yes by default', () => {
@@ -203,10 +236,15 @@ test('whoami prints name, email, API and default org; logged out exits 1', () =>
   out = '';
   assert.equal(whoami({ home, env: {}, write: (s) => { out += s; } }), 0);
   assert.equal(out, 'Ada ada@x.com\nAPI https://api.test\nDefault org none\n');
+  setDefaultOrg({ id: 'o1', name: 'Acme' }, { home });
+  out = '';
+  whoami({ home, env: {}, write: (s) => { out += s; } });
+  assert.match(out, /Default org Acme \(saved/);
+  // a default saved without the API and account it was chosen for (an older file) cannot be trusted
   writeFileSync(join(home, '.spookling', 'credentials.json'), JSON.stringify({ token: 't', user: { name: 'Ada', email: 'ada@x.com' }, defaultOrgId: 'o1', defaultOrgName: 'Acme' }));
   out = '';
   whoami({ home, env: {}, write: (s) => { out += s; } });
-  assert.match(out, /Default org Acme\n$/);
+  assert.match(out, /Default org none\n$/);
 });
 
 test('logout, orgs, refresh and share say the API is unreachable', async () => {
@@ -244,8 +282,7 @@ test('--org defaults to the saved default org for share and autoshare on', async
     listAutoShare: async () => ({ rules: [] }),
   };
   const noDefault = await setSessionShare({ sessionId: 's', share: true, env: {}, home, cloud });
-  assert.match(noDefault.error, /Which org\? Acme, Beta\./);
-  const { setDefaultOrg } = await import('../src/credentials.js');
+  assert.match(noDefault.error, /several orgs: 'Acme', 'Beta'/);
   setDefaultOrg({ id: 'o2', name: 'Beta' }, { home });
   await setSessionShare({ sessionId: 's', share: true, env: {}, home, cloud });
   await setProjectAutoShare({ project: 'p', enabled: true, env: {}, home, cloud });
@@ -256,7 +293,7 @@ test('--org defaults to the saved default org for share and autoshare on', async
   await setSessionShare({ sessionId: 's', share: false, env: {}, home, cloud });
   assert.deepEqual(shared.sort(), ['un s>o1', 'un s>o2'], 'unshare without --org still covers every org');
   setDefaultOrg({ id: 'gone', name: 'Gone' }, { home });
-  assert.match((await setSessionShare({ sessionId: 's', share: true, env: {}, home, cloud })).error, /Which org\?/, 'a stale default is ignored');
+  assert.match((await setSessionShare({ sessionId: 's', share: true, env: {}, home, cloud })).error, /several orgs/, 'a stale default is ignored');
 });
 
 const capture = async (fn) => {

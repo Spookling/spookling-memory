@@ -18,16 +18,16 @@ npx spookling orgs                 # the orgs you belong to, as id and name
 npx spookling tokens               # your CLI tokens: id, label, created, last used, (this device)
 npx spookling tokens revoke <id>   # revoke one (a unique prefix of 6+ characters works); this device's token also forgets the login
 npx spookling tokens revoke --all  # revoke every token, this device included
-npx spookling refresh [--org <id or name>]   # pull the org feeds into ~/.spookling/team-feed.json
+npx spookling refresh [--org <id or name>]   # pull the org feeds into ~/.spookling/team-feed.json, then retry queued uploads and shares
 npx spookling sessions [project] [--limit N | --all]   # your uploaded sessions, newest 20 by default: private or shared, and the auto-share rules
-npx spookling share <session id> [--org <id or name>]     # share a session with an org
-npx spookling unshare <session id> [--org <id or name>]   # stop sharing it (all orgs without --org)
+npx spookling share [<session id> | --last] [--org <id or name>] [--yes]     # share a session with an org; no id: the current session, else this project's newest; asks first unless --yes
+npx spookling unshare [<session id> | --last] [--org <id or name>]   # stop sharing it (all orgs without --org); cancels a share still pending
 npx spookling autoshare <project> on|off [--org <id or name>] [--backfill]   # share every new session of a project
 npx spookling delete <session id> [--yes]   # delete one uploaded session from the cloud; .memory/ is not touched
 npx spookling delete --all [--yes]          # delete every session you uploaded (asks you to type DELETE; --yes without a terminal)
 ```
 
-`orgs`, `refresh` and the sharing commands need a saved login (or `SPOOKLING_TOKEN`, see [Advanced](#advanced)); without one they say so and exit 1. `whoami` exits 1 when logged out. An unknown command prints `Unknown command: <name>` to stderr, then the help, and exits 1; a bare `spookling`, `help`, `-h` and `--help` print the help and exit 0. `orgs` lists the orgs where you are an active member; `--org` takes either column. See [Team memory](#team-memory).
+`orgs`, `refresh` and the sharing commands need a saved login (or `SPOOKLING_TOKEN`, see [Advanced](#advanced)); without one they say so and exit 1. `whoami` exits 1 when logged out. An unknown command prints `Unknown command: <name>` to stderr, then the help, and exits 1; a bare `spookling`, `help`, `-h` and `--help` print the help and exit 0. `orgs` lists the orgs where you are an active member, asked of the API now (and clears a saved default that is no longer one of them); `whoami` and `status` show the same live list; `--org` takes either column. See [Team memory](#team-memory).
 
 `init` never logs in and does not need an account. It installs the hooks and a `spookling` command (`~/.local/bin/spookling`, or `%USERPROFILE%\AppData\Local\spookling-memory\bin\spookling.cmd` on Windows).
 
@@ -92,10 +92,12 @@ Windows sessions then log into the WSL project's `.memory/`; the server reads th
 
 ## Flags
 
-- `--org <id or name>` (refresh, share, unshare, autoshare) picks the org. Left out, `share` and `autoshare on` use the default org saved at login (if it is still one of yours), else your only org. `unshare`, `autoshare off` and `refresh` without `--org` cover every org, so a default never leaves a session shared elsewhere.
+- `--org <id or name>` (refresh, share, unshare, autoshare) picks the org. Left out, `share` and `autoshare on` use the default org saved at login only if it is still one of your live orgs (and was saved for this API and account), else your only org (the command names it); with several orgs `share` shows a picker at a terminal and otherwise requires `--org`. A default that no longer applies is cleared and reported, never used silently. `unshare`, `autoshare off` and `refresh` without `--org` cover every org, so a default never leaves a session shared elsewhere.
 - `--limit N` and `--all` (sessions): 20 newest by default, then `Showing 20 of 43. spookling sessions --all for all.` Titles are cut at 80 characters. `--backfill` (autoshare) also shares sessions already uploaded.
 - `--scope project` (default) or `--scope user`, for `init` and `uninstall`. See the table below.
 - `--no-ghost` (init) skips the question about the ghost in the Claude Code status line, and leaves the status line alone.
+- `--allow-share` and `--no-allow-share` (init) add or leave out the five share tools in `permissions.allow` without asking. Without either, init asks at a terminal. Use only one of them.
+- `--yes` (share, delete) skips the confirmation. Without a terminal, share and delete refuse unless it is given.
 - `--no-anim` skips the animation: the wordmark prints as a still and the ghost's lines print as plain text.
 - `--fast` (demo only) drops the pauses. Without it the demo takes about a minute; any key cuts the current pause short.
 - `--frames N` (demo only) prints N frames from across the intro, one after another, and stops. Useful for checking the drawing without a live terminal.
@@ -216,11 +218,18 @@ Optional, and never part of `init`. The full picture is in the [main README](htt
   - Masking: turns are masked first (`cli/src/mask.js`: JWTs, PEM private-key blocks, `scheme://user:pass@`, Slack `xox?-` tokens, Stripe `sk_live_`/`rk_live_`/test keys, plus the API-key and `NAME_TOKEN=value` patterns the server applies) and cut to 16,000 characters (a cut ends with "…"). `log.jsonl` is never rewritten.
   - Network down: the turns are queued in `~/.spookling/upload-state.json`. That file is kept per account and server (the saved user id plus the API origin): after you switch servers or log in as someone else, the cursors, queue, skips and share jobs of the other account are parked, not applied, and an unscoped file from an older version is kept under `legacy` while the current account starts fresh. If the server answers `400 seq_gap` (the saved position is ahead of what it holds), the client asks it how many turns it has, resets the cursor to that and resends once. `upload.log` records the reason, for example `upload queued: BAD_REQUEST seq_gap`, never the token or any turn text.
   - 429: waits once and retries.
+  - 5xx and other failures (network down included): queued, and retried at the next Stop or login. `upload.log` names the status and code, for example `500 INTERNAL_ERROR`. `spookling refresh` retries them now, through the same path as the Stop hook (per-session claims, so it cannot double-send), and prints what went up or why not.
   - 409 `seq_conflict`: retried on the next Stop, then skipped; `status` names the session.
   - Final refusals, which never block the other sessions: 403 `org_owned` (shared with an org you left), 400 `turn_limit` and 400 `session_limit` (that one also stops creating new sessions in the same push while existing sessions keep growing). They are recorded in `upload-state.json` and `status` lists them.
   - 401: stops the push, keeps your login, and makes `status` print `login expired, run spookling login` until the next login or successful upload.
   - Limits: `project` is cut to 100 characters and `title` to 120, the API's limits.
+- **Stale org data.** `defaultOrgAt` in `credentials.json` and `apiBase`/`userId` in `team-feed.json` record the API and account the data belongs to. A mismatch (another API or user, or an older file with no stamp for the default) discards it. `login` as another account or API, and `logout`, delete `team-feed.json`. `spookling share <id>` always asks `Share? (y/N)` at a terminal unless `--yes` (a typed id too), and refuses without a terminal or `--yes`.
+- **No-dialog clients.** `memory_share` and `memory_autoshare` return `{ok:false, needsUserConfirmation:true, title, project, org, command, slashCommand?}` and a message telling the model to relay `command` exactly. The MCP tool `team_orgs` (`team-invoke orgs`) lists live orgs. With several orgs and none named, a client that can show dialogs gets an org picker first.
 - **Share.** `share`, `unshare` and `autoshare` change who can see your own sessions; the org owns what is shared to it. Unsharing cannot un-tell someone who already read it. The MCP tools `memory_share`, `memory_autoshare` and `memory_share_status` call the same code.
+  - No id: `share` takes the session in `SPOOKLING_SESSION_ID` or `CLAUDE_SESSION_ID`, else the newest session in the local log for this project, else your newest upload. It prints the web link after a successful share.
+  - A session not on the server yet is uploaded now from its local log. If that fails, the share is queued in `upload-state.json` and applied after the session's next save. `unshare` cancels it; `memory_share_status` reports `share pending`. A queued share older than 7 days is dropped, with a line in `upload.log`. A share the server refuses when it is applied (401, 403, 404) is dropped and recorded in `upload-state.json` (`shareFailures`); `share`, `sessions`, `status` and `memory_share_status` show it once (`Share of '<title>' to <org> did not apply: 403 not a member`) and clear it. An explicit session id found in no local log and not on the server is refused with `No session <id> found here or in the cloud`, and nothing is queued (the id in `SPOOKLING_SESSION_ID` / `CLAUDE_SESSION_ID`, the session you are in, may still be queued). Waiting shares never count as turns "not uploaded".
+  - `init` writes the `/spookling-share` command to `.claude/commands/` (or the user config folder with `--scope user`). It runs `spookling share <session> --yes`, so typing it is the confirmation.
+  - Allow rule: `init` and `login` offer to add `mcp__spookling-memory__memory_share`, `memory_share_status`, `team_sessions`, `team_session` and `team_orgs` to `permissions.allow`. Where a yes is already recorded, `init --update`, `update` and `login` add only a rule that is new since, without asking; a no stays a no. A "no" from `login` or `update` is kept in `~/.spookling/share-allow.json`. The rules Spookling added are recorded per settings file in `share-allow.json` (`added`), and `uninstall` removes only those: a rule you had before stays, even if it is one of the five.
 - **Forks.** The server (`hooks.py`, `fork_of`) spots a forked Claude Code transcript: its leading lines carry another `sessionId` (the parent's) than the file's own.
   - Record: `{parent, relation, branched_at, copied}` in `forks.json` beside `log.jsonl` (which keeps the whole conversation, as before).
   - Upload: the uploader reads that file. A new fork sends only the turns after the first `copied`, numbered from 0, and its PUT carries `parentSessionId`, `branchedAtTurn` and `relation`; the title comes from its first new user message.
@@ -229,7 +238,7 @@ Optional, and never part of `init`. The full picture is in the [main README](htt
   - Earlier sessions: one uploaded before forks were known keeps its numbering (`forkModes` in `upload-state.json`) and is linked with one PUT.
   - Codex rollouts: no fork marker was found in the local files, so Codex forks upload like any session.
 - **Read.** `team_sessions` and `team_session` (MCP) refresh every org feed when called, then read `~/.spookling/team-feed.json`; if the refresh fails they answer from the cache with a stale note. There is no background pull and no hook injects colleague text. `refresh` does the same pull by hand and keeps the old cache when the API is down. If the feed reports `sharedIdsTruncated` (more than 500 shared sessions in an org), the purge of unshared sessions is skipped for that org. Session reads use pages of 100 and follow `nextAfter`.
-- **`status` cloud line.** `logged in as <email>; last sync <time or never>; N turns in M sessions not uploaded yet`, or `not logged in`. Local files only (credentials, team feed cache, upload queue), so it cannot hang offline. Last sync is the newest org feed time in the cache; pending is the turns queued in `upload-state.json`, not turns Stop has yet to read. It does not change the exit code.
+- **`status` cloud line.** `logged in as <email>; last sync <time or never>; N turns in M sessions not uploaded yet; K shares waiting for the session to upload`, or `not logged in`. Local files only (credentials, team feed cache, upload queue), so it cannot hang offline. Last sync is the newest org feed time in the cache; pending is the turns queued in `upload-state.json`, not turns Stop has yet to read. It does not change the exit code.
 
 ## Undo
 
