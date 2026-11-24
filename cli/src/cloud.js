@@ -236,6 +236,18 @@ export function createCloud({ env = process.env, fetchImpl = globalThis.fetch, t
     projectContext({ projectKey, token: t, timeoutMs } = {}) {
       return call(`/memory/context?${new URLSearchParams({ projectKey })}`, { method: 'GET', token: t || auth(), ...(timeoutMs ? { timeoutMs } : {}) });
     },
+    listPapercuts({ orgId, query, cursor, limit } = {}) {
+      const q = new URLSearchParams();
+      if (query) q.set('q', query);
+      if (cursor) q.set('cursor', cursor);
+      if (limit) q.set('limit', String(limit));
+      const path = `/memory/orgs/${encodeURIComponent(orgId)}/papercuts`;
+      const search = q.toString();
+      return call(search ? `${path}?${search}` : path, { method: 'GET', token: auth() });
+    },
+    appendPapercut({ orgId, entry } = {}) {
+      return call(`/memory/orgs/${encodeURIComponent(orgId)}/papercuts`, { method: 'POST', token: auth(), body: entry });
+    },
     // project rules (typed by the user: /spookling-rules in the chat, or spookling rules at a terminal; the API does not know which)
     getRules({ orgId, projectKey, token: t } = {}) {
       return call(`${rulesPath(orgId, projectKey)}`, { method: 'GET', token: t || auth() });

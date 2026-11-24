@@ -475,6 +475,18 @@ spookling delete --all [--yes]          # delete all of yours, in batches
 
 You can also ask in the chat: when you are logged in, the prompt hook tells Claude the session id (and nothing else), and the MCP tools `memory_share`, `memory_autoshare` and `memory_share_status` do the same as the commands above. Sharing from chat (`memory_share`, `memory_autoshare on`, and always `--backfill`) first opens a yes/no dialog in your client (MCP elicitation) that names the session or project, the org and, for a backfill, how many sessions; nothing happens without your yes. If your client cannot show that dialog, the tool does nothing and tells Claude to have you run the `spookling share` or `spookling autoshare` command yourself. Unsharing and `autoshare off` reduce exposure and need no confirmation. Text inside a colleague's session can never trigger any of this. `memory_export` and `memory_import` read and write only `~/.spookling/exports/`, and `memory_export` will not replace a file unless `overwrite` is true.
 
+### Team papercuts
+
+Each team has one shared log of tooling problems and verified fixes. Sign in with `spookling login` to read or add entries for your team. A project label helps teammates find an entry in the shared log.
+
+```bash
+spookling papercuts
+spookling papercuts search "build timeout"
+spookling papercuts add "Build timed out" "Restart the local worker" --project Web
+```
+
+If you belong to several teams, pass `--org <id or name>`. The add command shows the entry and team before posting. To look up an error from Claude Code or Codex, ask the agent to check Team Papercuts. It can search the log with `team_papercuts`. Continue through older entries with the cursor shown in the CLI or returned by the tool.
+
 ### Project rules
 
 Team rules that every AI session on a project follows, for example "Use MVVM for all UI code". They live in the Spookling cloud per org and project (the project is the folder's git remote, else its folder name). A person sets them: typing `/spookling-rules` in Claude Code is the yes, and the AI can only check a rule and show you the line to type.

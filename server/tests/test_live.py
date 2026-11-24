@@ -64,7 +64,7 @@ def test_mcp_tools(live, tmp_path, monkeypatch):
     monkeypatch.setattr(M, "_cloud_retrieve", lambda q: None)  # a machine wired for cloud mode must not answer from the real cloud
     names = {t.name for t in asyncio.run(M.server.list_tools())}
     assert names == {"memory_retrieve", "memory_ingest", "memory_compact", "memory_reset", "memory_export",
-                     "memory_import", "memory_stats", "team_sessions", "team_session", "team_orgs", "memory_share",
+                     "memory_import", "memory_stats", "team_sessions", "team_session", "team_orgs", "team_papercuts", "memory_share",
                      "memory_autoshare", "memory_share_status", "memory_delete",
                      "project_rules", "project_rule_set", "project_rule_remove"}
     conv = turns(["I drive a Toyota Corolla, nothing fancy.", "From now on, always answer in metric units."])
