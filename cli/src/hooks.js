@@ -10,8 +10,8 @@ export const HOOK_FILES = {
   // The desktop app closes a code session without a model Stop. Same uploader as Stop.
   SessionEnd: 'stop.js',
 };
-// Cloud mode only: the project brief at session start
-export const CLOUD_HOOK_FILES = { SessionStart: 'session-start.js' };
+// Cloud mode: the project brief at session start and a read-only lookup after a tool error.
+export const CLOUD_HOOK_FILES = { SessionStart: 'session-start.js', PostToolUseFailure: 'post-tool-use-failure.js' };
 export const MCP_NAME = 'spookling-memory';
 
 export const CODEX_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreCompact', 'Stop'];
@@ -55,7 +55,7 @@ export const mcpEntry = (serverDir, url, command = 'uv') => {
 };
 
 // ours: one of our scripts (.js, or .sh from an older install) under a spookling path
-const SCRIPT = /[\\/]hooks[\\/](?:(pre-compact|user-prompt-submit|stop|session-start)\.(js|sh)|spookling-codex\.cjs)\b/;
+const SCRIPT = /[\\/]hooks[\\/](?:(pre-compact|user-prompt-submit|stop|session-start|post-tool-use-failure)\.(js|sh)|spookling-codex\.cjs)\b/;
 export const isOurs = (h) => {
   const s = typeof h === 'string' ? h : [h?.command, ...(Array.isArray(h?.args) ? h.args : [])].filter((x) => typeof x === 'string').join(' ');
   return /spookling/i.test(s) && SCRIPT.test(s);

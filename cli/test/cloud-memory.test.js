@@ -11,6 +11,7 @@ import { ASK_BUDGET_MS, cloudBrief, startContext, cloudMode, cloudRetrieve, info
 import { setFeed, press } from '../src/term.js';
 import { MODES, detectInstall, newCtx, stepSmoke, stepTagger } from '../src/wizard.js';
 import { CLOUD_HOOK_FILES, addHooks, hookHandlers, isOurs } from '../src/hooks.js';
+import { recallCommand } from '../src/recall.js';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const PROMPT_HOOK = join(ROOT, 'hooks', 'user-prompt-submit.js');
@@ -56,6 +57,39 @@ function cloudHome({ api, mode = 'cloud', scope = 'user', project = null, user =
   return home;
 }
 const workdir = () => { const d = tmpHome('spk-work-'); return d; };
+
+test('recall explains a live source, applies a project mute and hides the source when access ends', async (t) => {
+  const spaceId = 'org/org-1/dir:test';
+  const item = { id: 'm1', spaceId, sid: 'member:source', seq: 2 };
+  let authorized = true;
+  const api = await fakeApi((req) => {
+    if (req.url === '/cli/orgs') return { data: { orgs: authorized ? [{ id: 'org-1', name: 'Test team' }] : [] } };
+    if (req.url === '/memory/sessions/member%3Asource?after=1&limit=1') {
+      return { data: { session: { title: 'Chosen database' }, turns: [{ seq: 2, ts: '2026-11-15T00:00:00Z', text: 'Use Postgres.' }] } };
+    }
+    if (req.body?.mutedSources?.length) return ok({ context: '', items: [], tier: 'none', status: 'empty' });
+    return ok({ items: [item] });
+  });
+  t.after(api.close);
+  const home = cloudHome({ api: api.url }), cwd = workdir();
+  const retrieve = { cwd, home, env: {}, question: QUESTION };
+  const run = async (words) => {
+    let output = '';
+    assert.equal(await recallCommand({ ...retrieve, words, write: (line) => { output += line; } }), 0);
+    return output;
+  };
+  assert((await cloudRetrieve(retrieve)).context);
+  assert.match(await run(['why']), /Test team · Chosen database · 2026-11-15[\s\S]*Use Postgres/);
+  authorized = false;
+  assert.doesNotMatch(await run(['why']), /Use Postgres|Chosen database/);
+  assert.match(await run(['mute', '1']), /Muted/);
+  assert.equal((await cloudRetrieve(retrieve)).context, '');
+  assert.deepEqual(api.seen.at(-1).body.mutedSources, [{ spaceId, sid: item.sid }]);
+  assert((await cloudRetrieve({ ...retrieve, cwd: workdir() })).context);
+  assert.equal(api.seen.at(-1).body.mutedSources, undefined);
+  assert.match(await run(['muted']), /member:source/);
+  assert.match(await run(['unmute', '1']), /Unmuted/);
+});
 
 // ---------------------------------------------------------------- the client-side filter and identity
 

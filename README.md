@@ -482,10 +482,16 @@ Each team has one shared log of tooling problems and verified fixes. Sign in wit
 ```bash
 spookling papercuts
 spookling papercuts search "build timeout"
-spookling papercuts add "Build timed out" "Restart the local worker" --project Web
+spookling papercuts add "Build timed out" "Restart the local worker" --project Web --source "CI run 123"
 ```
 
 If you belong to several teams, pass `--org <id or name>`. The add command shows the entry and team before posting. To look up an error from Claude Code or Codex, ask the agent to check Team Papercuts. It can search the log with `team_papercuts`. Continue through older entries with the cursor shown in the CLI or returned by the tool.
+
+Open **Papercuts** under **Team Memory** in the web app to search, publish, or supersede a fix. In cloud mode, Claude Code checks recognizable error codes after a tool failure and Codex checks codes in your prompt. These checks send only the matched error identifier. Set `SPOOKLING_PAPERCUTS_ORG` when using automatic lookup with multiple teams.
+
+### Inspect cloud recall
+
+`spookling recall why` shows the latest cloud recall's cited sessions and source excerpts you can still read. From that list, run `spookling recall mute <number>` to exclude a transcript source from future cloud retrieval in this project. Run `spookling recall muted` and `spookling recall unmute <number>` to restore it. Preferences apply to your account on this machine.
 
 ### Project rules
 

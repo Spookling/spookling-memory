@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { papercutsFromFailure } from '../src/papercuts.js';
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -77,7 +78,9 @@ test('shows the team and posts only the confirmed entry', async (t) => {
   } });
   assert.equal(added.code, 0, added.output);
   assert.match(added.output, /Add to Acme's Papercuts log · Web/);
-  assert.deepEqual(requests.at(-1).body, { symptom: 'Build timed out', fix: 'Restart the worker', project: 'Web' });
+  const { idempotencyKey, ...sent } = requests.at(-1).body;
+  assert.match(idempotencyKey, /^[a-f0-9]{64}$/);
+  assert.deepEqual(sent, { symptom: 'Build timed out', fix: 'Restart the worker', project: 'Web' });
 });
 
 test('installed agent bridge searches, quotes colleague text, and exposes no append call', async (t) => {
@@ -96,4 +99,24 @@ test('installed agent bridge searches, quotes colleague text, and exposes no app
   assert.deepEqual(requests.at(-1).query, { q: 'worker', limit: '10' });
   await assert.rejects(run(process.execPath, [script, 'papercuts-add'], { env }), /Command failed/);
   assert.equal(requests.filter((r) => r.method === 'POST').length, 0);
+});
+
+test('automatic Papercuts lookup sends only an error identifier and ignores superseded fixes', async () => {
+  const calls = [];
+  const cloud = {
+    listOrgs: async () => ({ orgs: [{ id: 'team', name: 'Team' }] }),
+    listPapercuts: async (query) => {
+      calls.push(query);
+      return { entries: [
+        { symptom: 'Old', fix: 'Old fix', supersededBy: 'new' },
+        { symptom: 'ERR_TEST_FAILURE', fix: 'Current <fix>' },
+      ] };
+    },
+  };
+  assert.equal(await papercutsFromFailure({ error: 'something failed for no known reason', cloud }), '');
+  assert.equal(calls.length, 0);
+  const hint = await papercutsFromFailure({ error: 'ERR_TEST_FAILURE in /private/transcript', cloud });
+  assert.deepEqual(calls.map(({ query }) => query), ['ERR_TEST_FAILURE']);
+  assert.match(hint, /Current &lt;fix&gt;/);
+  assert.doesNotMatch(hint, /Old fix|private\/transcript/);
 });

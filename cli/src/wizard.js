@@ -366,7 +366,7 @@ function vendorUploader(from, dir) {
   const lib = join(dir, 'hooks', 'lib');
   mkdirSync(lib, { recursive: true });
   writeFileSync(join(lib, 'package.json'), '{ "type": "module" }\n');
-  for (const f of ['cloud.js', 'version.js', 'credentials.js', 'push.js', 'team.js', 'share.js', 'team-invoke.js', 'mask.js', 'upload-state.js', 'repo-url.js', 'cloud-retrieve.js', 'cloud-retrieve-invoke.js', 'rules.js', 'delete.js', 'transcript.js', 'papercuts.js']) cpSync(join(src, f), join(lib, f));
+  for (const f of ['cloud.js', 'version.js', 'credentials.js', 'push.js', 'team.js', 'share.js', 'team-invoke.js', 'mask.js', 'upload-state.js', 'repo-url.js', 'cloud-retrieve.js', 'cloud-retrieve-invoke.js', 'recall-state.js', 'rules.js', 'delete.js', 'transcript.js', 'papercuts.js']) cpSync(join(src, f), join(lib, f));
 }
 
 export function install(from, dir) {
@@ -916,7 +916,7 @@ async function stepWire(ctx) {
     let line = '';
     try { line = ghost ? addStatusLine(ctx.dry ? {} : readJson(sp), HOOKS_DIR).statusLine : ''; } catch {} // mergeFile reports it
     await mergeFile(ctx, sp, (s) => (ghost ? addStatusLine(addHooks(s, handlers), HOOKS_DIR) : addHooks(s, handlers)), {
-      what: `hooks: ${withSession ? 'SessionStart, ' : ''}PreCompact, UserPromptSubmit, Stop, SessionEnd${ghost ? '; the ghost in the status line' : ''}`,
+      what: `hooks: ${Object.keys(handlers).join(', ')}${ghost ? '; the ghost in the status line' : ''}`,
       preview: `${hooksJson(handlers)}${line ? `\n"statusLine": ${JSON.stringify(line, null, 2)}` : ''}\n  merged in; nothing else in the file changes`
         + (line && / --then /.test(line.command) ? '\n  your status line stays first; uninstall puts it back as it was' : ''),
       same: `${rel(ctx, sp)} already has the hooks${ghost ? ' and the ghost' : ''}`,

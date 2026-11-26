@@ -24,6 +24,12 @@ jobs:
       - run: uv sync --project server
       - run: uv run --project server pytest -q
       - run: npm test
-      - run: npm publish --provenance --access public
+      - name: Pack and smoke-test the release
+        run: |
+          package="$(npm pack --pack-destination "$RUNNER_TEMP")"
+          mv "$RUNNER_TEMP/$package" "$RUNNER_TEMP/spookling-release.tgz"
+          npm run test:release -- "$RUNNER_TEMP/spookling-release.tgz"
+      - run: npm publish "$RUNNER_TEMP/spookling-release.tgz" --provenance --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Set NPM_TRUSTED_PUBLISHING after registering this workflow on npm.
+          NODE_AUTH_TOKEN: ${{ vars.NPM_TRUSTED_PUBLISHING != 'true' && secrets.NPM_TOKEN || '' }}

@@ -263,10 +263,10 @@ export function createCloud({ env = process.env, fetchImpl = globalThis.fetch, t
       const body = { expectedVersion, via, ...(sessionId && { sessionId: String(sessionId).slice(0, 200) }) };
       return call(`${rulesPath(orgId, projectKey)}/${encodeURIComponent(ruleId)}/remove`, { method: 'POST', token: t || auth(), body });
     },
-    getSession({ sid, after, token: t } = {}) {
+    getSession({ sid, after, limit = 100, token: t } = {}) {
       const q = new URLSearchParams();
       if (after !== undefined && after !== null) q.set('after', String(after));
-      q.set('limit', '100'); // the API's maximum for a read page; callers page with `after`
+      q.set('limit', String(limit));
       return call(`/memory/sessions/${encodeURIComponent(sid)}?${q}`, { method: 'GET', token: t || auth() });
     },
   };
