@@ -9,6 +9,7 @@ import { basename, join, resolve, sep } from 'node:path';
 import { createCloud } from './cloud.js';
 import { readCredentials, writeFileSecure } from './credentials.js';
 import { findGitRoot, repoUrlFor } from './repo-url.js';
+import { recallScope, readRecall, recordRecall } from './recall-state.js';
 
 export const DEFAULT_BUDGET_MS = 1800;
 export const ASK_BUDGET_MS = 4000; // a tool call the model chose to make: the user is already waiting for it
@@ -183,9 +184,13 @@ export async function cloudRetrieve({
     if (!cloudMode({ cwd, home, env })) return null;
     const budget = budgetMs ?? budgetFrom(env, mode === 'ask' ? ASK_BUDGET_MS : DEFAULT_BUDGET_MS);
     const started = Date.now();
-    return await withBudget((async () => {
-      const id = await identify(cwd, { home, env });
-      const key = `${mode}|${id.projectKey}|${sessionId ?? ""}|${hashOf(question)}`; // per session: its answer was cut by what that session had seen
+    const id = await withBudget(identify(cwd, { home, env }), budget);
+    if (!id) return null;
+    const scope = recallScope(home, env, id.projectKey, cwd);
+    const mutedSources = readRecall(scope).muted;
+    const muteKey = createHash('sha256').update(JSON.stringify(mutedSources)).digest('hex').slice(0, 16);
+    const answer = await withBudget((async () => {
+      const key = `${scope.key}|${mode}|${sessionId ?? ""}|${hashOf(question)}|${muteKey}`; // cache scoped to account, workspace and mute state
       const hit = cacheGet(home, key, now());
       if (hit) return { ...withoutRules({ context: '', items: [], ...hit }), cached: true };
       const client = cloud ?? createCloud({ env, home, ...(fetchImpl && { fetchImpl }) });
@@ -193,18 +198,25 @@ export async function cloudRetrieve({
       const seen = (sessionId ? shownIds(home, sessionId) : []).filter((i) => i.length <= SEND_ID_CHARS);
       const sent = trimIds(seen, SEND_IDS_MAX);
       const body = { mode, question, ...(id.projectKey && { projectKey: id.projectKey }), ...(id.repoUrl && { repoUrl: id.repoUrl }),
-        ...(id.project && { project: id.project }), ...(sessionId && { sessionId }), ...(sent.length && { shownIds: sent }), clientTs: new Date(now()).toISOString() };
+        ...(id.project && { project: id.project }), ...(sessionId && { sessionId }), ...(sent.length && { shownIds: sent }),
+        ...(mutedSources.length && { mutedSources }), clientTs: new Date(now()).toISOString() };
       const data = await client.retrieve({ body, timeoutMs: left });
       if (data && data.status !== 'ok' && data.status !== 'empty') return rulesOnly(data, sessionId, home, now); // the API's own rules fallback
       if (!data) return null;
       const out = { context: typeof data.context === 'string' ? data.context : '', items: Array.isArray(data.items) ? data.items : [],
         tier: data.tier ?? null, status: data.status, spaces: Array.isArray(data.spaces) ? data.spaces : [], ...(data.paused && { paused: true }), cached: false };
+      // Protect against an older API that doesn't apply mutedSources. Context is one block.
+      if (out.items.some((item) => mutedSources.some((muted) => muted.spaceId === item.spaceId && muted.sid === item.sid))) {
+        return rulesOnly(out, sessionId, home, now);
+      }
       cachePut(home, key, withoutRules(out), now());
       if (sessionId && out.items.length) {
         updateShown(home, sessionId, now(), (cur) => ({ ids: trimIds([...(cur.ids ?? []), ...ids(out.items)], SHOWN_IDS_MAX) }));
       }
       return out;
-    })(), budget);
+    })(), Math.max(1, budget - (Date.now() - started)));
+    if (answer) recordRecall(scope, answer, now());
+    return answer;
   } catch { return null; }
 }
 

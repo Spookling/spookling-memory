@@ -6,9 +6,9 @@ const { pathToFileURL } = require('node:url');
 
 const CONTEXT_MAX = 12000; // a safety cap; the API bounds its own answer
 
-async function lib() {
+async function lib(name = 'cloud-retrieve.js') {
   try {
-    const f = [join(__dirname, 'lib', 'cloud-retrieve.js'), join(__dirname, '..', 'cli', 'src', 'cloud-retrieve.js')].find((p) => existsSync(p));
+    const f = [join(__dirname, 'lib', name), join(__dirname, '..', 'cli', 'src', name)].find((p) => existsSync(p));
     return f ? await import(pathToFileURL(f).href) : null;
   } catch { return null; }
 }
@@ -16,6 +16,14 @@ const cwdOf = (p) => (typeof p.cwd === 'string' && p.cwd ? p.cwd : process.env.C
 
 // Is this folder wired in cloud mode (and logged in)? Local files only.
 exports.on = async (p) => { try { const l = await lib(); return !!l && l.cloudMode({ cwd: cwdOf(p) }); } catch { return false; } };
+
+exports.papercuts = async (error) => {
+  if (typeof error !== 'string') return '';
+  try {
+    const l = await lib('papercuts.js');
+    return l ? l.papercutsFromFailure({ error, org: process.env.SPOOKLING_PAPERCUTS_ORG || '' }) : '';
+  } catch { return ''; }
+};
 
 // { context, items, ... } when the cloud answered, else null (then the local server is asked)
 exports.retrieve = async (p) => {

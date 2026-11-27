@@ -19,6 +19,8 @@ import { deleteAllSessions, deleteSession, formatDelete } from './delete.js';
 import { currentSession, setProjectAutoShare, setSessionShare, shareStatus, webUrl } from './share.js';
 import { shareTarget } from './team.js';
 import { rulesCommand, rulesSlash } from './rules.js';
+import { papercutsCommand } from './papercuts.js';
+import { recallCommand } from './recall.js';
 
 const HELP = `Spookling Memory
 
@@ -52,6 +54,12 @@ const HELP = `Spookling Memory
   spookling rules remove <id> [--org <id or name>]   remove a rule (asks y/N; its history stays)
   spookling rules history <id> [--org <id or name>]  every version of a rule, newest first
                             set and remove always ask at a terminal, and change nothing without one
+  spookling papercuts       list recent entries in your team's shared troubleshooting log
+  spookling papercuts search "<text>"    find previous symptoms and fixes
+  spookling papercuts add "<symptom>" "<verified fix>" [--project <label>]    add an entry
+  spookling recall why     inspect the sources of the latest cloud recall
+  spookling recall mute <number>    mute a cited transcript source for this project
+                            use --org <id or name> if you belong to several teams
 
   --org: share and autoshare on use your only org, or your saved default if it is still one of yours; with several orgs
          and no --org they ask which one at a terminal and need --org otherwise;
@@ -118,7 +126,7 @@ const usage = (text) => { throw new UsageError(text); };
 // the words of a command that are not flags or flag values
 const operands = (args, valued = ['org', 'limit']) => args.slice(1).filter((a, i, all) => !a.startsWith('--') && !valued.some((n) => all[i - 1] === `--${n}`));
 // commands that talk to the API with the saved login: a different SPOOKLING_API_URL is called out before they run
-const AUTHENTICATED = new Set(['logout', 'whoami', 'orgs', 'tokens', 'refresh', 'sessions', 'share', 'unshare', 'autoshare', 'delete', 'rules']);
+const AUTHENTICATED = new Set(['logout', 'whoami', 'orgs', 'tokens', 'refresh', 'sessions', 'share', 'unshare', 'autoshare', 'delete', 'rules', 'papercuts', 'recall']);
 
 // several orgs and none named: the user picks (never a saved default that may be stale); no terminal means --org is required
 async function resolveOrg(resolve, orgArg, { ask, tty }, verb) {
@@ -245,6 +253,7 @@ async function route(args, deps) {
     delete: { one: deleteSession, all: deleteAllSessions },
     share: { status: shareStatus, session: setSessionShare, project: setProjectAutoShare },
     rules: rulesCommand,
+    papercuts: papercutsCommand,
     ...Object.fromEntries(Object.entries(deps).filter(([, v]) => typeof v === 'function' || (v && typeof v === 'object' && ('status' in v || 'one' in v)))),
   };
   const cmd = !args[0] || ['-h', '--help'].includes(args[0]) ? 'help' : args[0];
@@ -288,6 +297,16 @@ async function route(args, deps) {
     }
     case 'sessions': case 'share': case 'unshare': case 'autoshare': return sharing(cmd, args, ctx, { ask: deps.ask || readLine, tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY) });
     case 'delete': return deleteCommand(args, ctx, { ask: deps.ask || readLine, tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY) });
+    case 'recall': return recallCommand({ words: args[1] === '--help' ? ['help'] : operands(args, []), cwd, home, env, write: deps.write, cloud: deps.cloud });
+    case 'papercuts': {
+      if (args.includes('--help') || args[1] === '-h') return fns.papercuts({ sub: 'help' });
+      const valued = ['org', 'project', 'source', 'cursor'];
+      const unknown = args.find((arg) => arg.startsWith('--') && !valued.includes(arg.slice(2).split('=')[0]));
+      if (unknown) usage(`Unknown Papercuts option: ${unknown}`);
+      const words = operands(args, valued);
+      return fns.papercuts({ sub: words.shift(), words, org, project: flag(args, 'project'), source: flag(args, 'source'), cursor: flag(args, 'cursor'), home, env,
+        tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY), ask: deps.confirm, write: deps.write, cloud: deps.cloud });
+    }
     case 'rules': {
       // the internal entry the /spookling-rules command file runs: the typed text arrives on stdin (see rules.js rulesSlash)
       if (args[1] === 'slash') {

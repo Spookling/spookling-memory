@@ -236,6 +236,18 @@ export function createCloud({ env = process.env, fetchImpl = globalThis.fetch, t
     projectContext({ projectKey, token: t, timeoutMs } = {}) {
       return call(`/memory/context?${new URLSearchParams({ projectKey })}`, { method: 'GET', token: t || auth(), ...(timeoutMs ? { timeoutMs } : {}) });
     },
+    listPapercuts({ orgId, query, cursor, limit } = {}) {
+      const q = new URLSearchParams();
+      if (query) q.set('q', query);
+      if (cursor) q.set('cursor', cursor);
+      if (limit) q.set('limit', String(limit));
+      const path = `/memory/orgs/${encodeURIComponent(orgId)}/papercuts`;
+      const search = q.toString();
+      return call(search ? `${path}?${search}` : path, { method: 'GET', token: auth() });
+    },
+    appendPapercut({ orgId, entry } = {}) {
+      return call(`/memory/orgs/${encodeURIComponent(orgId)}/papercuts`, { method: 'POST', token: auth(), body: entry });
+    },
     // project rules (typed by the user: /spookling-rules in the chat, or spookling rules at a terminal; the API does not know which)
     getRules({ orgId, projectKey, token: t } = {}) {
       return call(`${rulesPath(orgId, projectKey)}`, { method: 'GET', token: t || auth() });
@@ -251,10 +263,10 @@ export function createCloud({ env = process.env, fetchImpl = globalThis.fetch, t
       const body = { expectedVersion, via, ...(sessionId && { sessionId: String(sessionId).slice(0, 200) }) };
       return call(`${rulesPath(orgId, projectKey)}/${encodeURIComponent(ruleId)}/remove`, { method: 'POST', token: t || auth(), body });
     },
-    getSession({ sid, after, token: t } = {}) {
+    getSession({ sid, after, limit = 100, token: t } = {}) {
       const q = new URLSearchParams();
       if (after !== undefined && after !== null) q.set('after', String(after));
-      q.set('limit', '100'); // the API's maximum for a read page; callers page with `after`
+      q.set('limit', String(limit));
       return call(`/memory/sessions/${encodeURIComponent(sid)}?${q}`, { method: 'GET', token: t || auth() });
     },
   };

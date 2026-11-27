@@ -25,3 +25,6 @@ jobs:
       - run: uv run --project server pytest -q
       - run: npm test
       - run: npm pack --dry-run
+      - name: Smoke-test the installed package
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        run: npm run test:release

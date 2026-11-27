@@ -23,10 +23,11 @@ const done = () => {
   process.exit(0);
 };
 let rulesBlock = ''; // the cloud's project rules when its memory answer was unavailable: they go first, before any local recall
+let papercuts = '';
 const emit = (value) => {
-  if (rulesBlock && p && p.hook_event_name === 'UserPromptSubmit') {
+  if ((rulesBlock || papercuts) && p && p.hook_event_name === 'UserPromptSubmit') {
     const h = value.hookSpecificOutput || { hookEventName: 'UserPromptSubmit' };
-    value = { ...value, hookSpecificOutput: { ...h, additionalContext: [rulesBlock, h.additionalContext].filter(Boolean).join('\n') } };
+    value = { ...value, hookSpecificOutput: { ...h, additionalContext: [rulesBlock, h.additionalContext, papercuts].filter(Boolean).join('\n') } };
   }
   process.stdout.write(JSON.stringify(value), done);
 };
@@ -41,7 +42,7 @@ const said = (state, title, details) => {
   return details ? [head, ...ghost.card(state, details.map((t) => [[t, GREY]]))].join('\n') : head;
 };
 let cloudOn = false; // cloud mode: no local server is no error, there is just nothing to say
-const unavailable = () => visible && cloudOn && rulesBlock ? emit({}) : visible && !cloudOn
+const unavailable = () => visible && cloudOn && (rulesBlock || papercuts) ? emit({}) : visible && !cloudOn
   ? emit({ systemMessage: said('degraded', 'memory unavailable', ['the local server did not answer', 'check it with: spookling-memory status']) })
   : done();
 process.stdin.on('data', (c) => chunks.push(c));
@@ -64,7 +65,8 @@ process.stdin.on('end', async () => {
         systemMessage: said('ready', `${cloud.startMessage(b)} from your cloud memory`) });
     }
     if (cloudOn && !start) {
-      const r = await cloud.retrieve(p);
+      const [r, fixes] = await Promise.all([cloud.retrieve(p), cloud.papercuts(p.prompt)]);
+      papercuts = fixes;
       if (r && r.rulesOnly) rulesBlock = r.context;
       else if (r) {
         const n = r.items.length;

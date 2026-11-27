@@ -18,7 +18,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node cli/test/run-suite.mjs"
+    "test": "node cli/test/run-suite.mjs",
+    "test:release": "node cli/test/release-smoke.mjs"
   },
   "repository": {
     "type": "git",

@@ -3,6 +3,7 @@ import { shareTarget, teamSession, teamSessions } from './team.js';
 import { deleteAllSessions, deleteSession } from './delete.js';
 import { liveOrgs, setProjectAutoShare, setSessionShare, shareStatus } from './share.js';
 import { invoke as rules } from './rules.js';
+import { papercutsForTool } from './papercuts.js';
 
 const name = process.argv[2];
 let args = {};
@@ -20,6 +21,7 @@ const tools = {
   // project rules: read-only (it resolves the project and org). The MCP server never writes a rule: a person types /spookling-rules
   // or runs `spookling rules`, so there is no rules-set or rules-remove here.
   'rules-get': rules.get,
+  papercuts: papercutsForTool,
 };
 // an unknown name is an error, not a quiet team_sessions
 const out = Object.hasOwn(tools, name) ? await tools[name](args) : { error: `Unknown team tool: ${String(name).slice(0, 40)}` };

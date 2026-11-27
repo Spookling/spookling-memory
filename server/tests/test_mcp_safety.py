@@ -95,6 +95,12 @@ def test_tools_are_still_listed_without_a_ctx_argument():
     assert "colleague" in tools["memory_share"].description and "colleague" in tools["memory_autoshare"].description
 
 
+def test_team_papercuts_lists_through_the_read_only_bridge(team):
+    result = run(T._go("team_papercuts", {"query": "build timeout", "org": "Acme"}, None))
+    assert result == {"ok": True, "name": "papercuts"}
+    assert team == [("papercuts", {"query": "build timeout", "org": "Acme", "cursor": ""})]
+
+
 def test_share_asks_naming_the_session_and_the_org_then_acts_on_yes(team):
     ctx = Ctx(Res("accept", True))
     out = run(T.memory_share("sid1", True, "acme", ctx))
